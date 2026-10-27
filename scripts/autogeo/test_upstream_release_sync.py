@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -26,7 +27,8 @@ class ReleaseMergeTest(unittest.TestCase):
         git(self.fork, "rm", ".github/workflows/publish.yml")
         self.write(self.fork, ".github/workflows/autogeo.yml", "trusted fork CI\n")
         self.write(self.fork, "autogeo.txt", "our feature\n")
-        self.write(self.fork, STATE, json.dumps({"release_commit": self.initial}) + "\n")
+        self.write(self.fork, "scripts/autogeo/trusted.txt", "trusted maintenance\n")
+        self.write(self.fork, STATE, json.dumps({"release_tag": "v1.0.0", "release_commit": self.initial}) + "\n")
         self.commit(self.fork, "fork customization")
         self.base = git(self.fork, "rev-parse", "HEAD").stdout.strip()
 
@@ -48,6 +50,8 @@ class ReleaseMergeTest(unittest.TestCase):
         self.write(self.upstream, "app.txt", app)
         self.write(self.upstream, ".github/workflows/publish.yml", "changed publish\n")
         self.write(self.upstream, ".github/workflows/new-deploy.yml", "new deploy\n")
+        self.write(self.upstream, "scripts/autogeo/trusted.txt", "upstream replacement\n")
+        self.write(self.upstream, "scripts/autogeo/test_new.py", "raise RuntimeError('must not execute')\n")
         self.commit(self.upstream, "next release")
         if annotated:
             git(self.upstream, "tag", "-a", "v1.0.1", "-m", "stable")
@@ -67,6 +71,8 @@ class ReleaseMergeTest(unittest.TestCase):
         self.assertEqual((self.fork / ".github/workflows/autogeo.yml").read_text(), "trusted fork CI\n")
         self.assertEqual(list((self.fork / ".github/workflows").iterdir()), [self.fork / ".github/workflows/autogeo.yml"])
         self.assertEqual(json.loads((self.fork / STATE).read_text())["release_commit"], sha)
+        self.assertEqual((self.fork / "scripts/autogeo/trusted.txt").read_text(), "trusted maintenance\n")
+        self.assertFalse((self.fork / "scripts/autogeo/test_new.py").exists())
         self.assertEqual(git(self.fork, "rev-parse", "HEAD^2").stdout.strip(), sha)
         self.assertFalse(merge_release(self.fork, "v1.0.1", sha, str(self.upstream)))
 
@@ -95,6 +101,25 @@ class ReleaseMergeTest(unittest.TestCase):
         merge_release(self.fork, "v1.0.1", sha, str(self.upstream))
         with self.assertRaisesRegex(RuntimeError, "does not descend"):
             merge_release(self.fork, "v1.0.0", self.initial, str(self.upstream))
+
+    def test_recorded_tag_cannot_move_to_a_descendant_commit(self):
+        self.release()
+        git(self.upstream, "tag", "-f", "v1.0.0")
+        sha = git(self.upstream, "rev-parse", "HEAD").stdout.strip()
+        with self.assertRaisesRegex(RuntimeError, "Recorded release tag moved"):
+            merge_release(self.fork, "v1.0.0", sha, str(self.upstream))
+        self.assert_original()
+
+    def test_isolated_discovery_does_not_import_application_shadow_modules(self):
+        self.write(self.fork, "json.py", "raise RuntimeError('application module executed')\n")
+        self.write(self.fork, "unittest.py", "raise RuntimeError('application module executed')\n")
+        self.write(self.fork, "scripts/autogeo/test_trusted.py", "import json\nimport unittest\nclass TrustedTest(unittest.TestCase):\n    def test_safe(self):\n        self.assertEqual(json.loads('1'), 1)\n")
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", "-m", "unittest", "discover", "-s", "scripts/autogeo", "-p", "test_trusted.py"],
+            cwd=self.fork, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Ran 1 test", result.stderr)
 
     def test_whitespace_failure_aborts_without_publishing(self):
         sha = self.release(app="trailing whitespace  \n")

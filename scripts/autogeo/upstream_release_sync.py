@@ -10,6 +10,7 @@ import subprocess
 UPSTREAM = "every-app/open-seo"
 FORK = "ajdevy/open-seo"
 STATE = "docs/maintainers/autogeo-upstream.json"
+FORK_OWNED = (".github/workflows", "scripts/autogeo")
 
 
 def git(root, *args, check=True):
@@ -45,7 +46,10 @@ def merge_release(root, tag, commit, upstream_url):
         raise RuntimeError("Release tag moved or does not match the API commit")
     state_file = Path(root) / STATE
     if state_file.exists():
-        previous = json.loads(state_file.read_text())["release_commit"]
+        state = json.loads(state_file.read_text())
+        previous = state["release_commit"]
+        if state["release_tag"] == tag and previous != commit:
+            raise RuntimeError("Recorded release tag moved to a different commit")
         if git(root, "merge-base", "--is-ancestor", previous, commit, check=False).returncode:
             raise RuntimeError("Latest release does not descend from the recorded release")
     if git(root, "merge-base", "--is-ancestor", commit, base, check=False).returncode == 0:
@@ -54,18 +58,22 @@ def merge_release(root, tag, commit, upstream_url):
     try:
         merge = git(root, "merge", "--no-ff", "--no-commit", commit, check=False)
         conflicts = git(root, "diff", "--name-only", "--diff-filter=U").stdout.splitlines()
-        code_conflicts = [p for p in conflicts if not p.startswith(".github/workflows/")]
+        code_conflicts = [
+            p for p in conflicts
+            if not any(p == owned or p.startswith(owned + "/") for owned in FORK_OWNED)
+        ]
         if code_conflicts:
             raise RuntimeError("Release conflicts require review: " + ", ".join(code_conflicts))
         if merge.returncode and not conflicts:
             raise RuntimeError("Merge failed: " + merge.stderr.strip())
 
-        # Upstream publishing/deploy workflows must never become active on our VPS.
-        # Keep this directory exactly as it was on the trusted fork branch.
-        git(root, "rm", "-r", "-f", "--ignore-unmatch", "--", ".github/workflows")
-        git(root, "restore", f"--source={base}", "--staged", "--worktree", "--", ".github/workflows")
-        if git(root, "diff", "--cached", "--name-only", "--", ".github/workflows").stdout:
-            raise RuntimeError("Fork-owned workflows changed during synchronization")
+        # Keep every file executed by maintenance under fork control, including
+        # test discovery. Fetched application code is never executed by this job.
+        for owned in FORK_OWNED:
+            git(root, "rm", "-r", "-f", "--ignore-unmatch", "--", owned)
+            git(root, "restore", f"--source={base}", "--staged", "--worktree", "--", owned)
+            if git(root, "diff", "--cached", "--name-only", "--", owned).stdout:
+                raise RuntimeError("Fork-owned maintenance files changed during synchronization")
 
         state_file.parent.mkdir(parents=True, exist_ok=True)
         state_file.write_text(json.dumps({

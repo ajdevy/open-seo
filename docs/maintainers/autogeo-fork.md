@@ -13,13 +13,15 @@ that tag, checks the identity and merges it into this fork's `main`.
 
 Updates use an ordinary merge and push, never force-push, rebase, or replacement
 of fork history. No change is made if the release is already included. Conflicts
-outside `.github/workflows/`, a moved tag, a non-descendant release, whitespace
+outside fork-owned maintenance paths, a moved tag, a non-descendant release, whitespace
 errors, or a concurrent branch update fail the job without publishing a partial
 merge. Resolve conflicts on a reviewed branch and dispatch again.
 
-`.github/workflows/` belongs to this fork: upstream deployment, preview, image
+`.github/workflows/` and `scripts/autogeo/` belong to this fork: upstream deployment, preview, image
 publication and release workflows are excluded from automated merges. Review
-upstream CI changes separately when changing our CI. The sync job does not
+upstream CI changes separately when changing our CI. The maintenance scripts and
+tests run with isolated Python imports, so application files cannot shadow the
+standard library. The sync job does not
 execute fetched application scripts, install dependencies, run provider requests,
 publish images, migrate databases, or deploy the app. A successful sync proves
 Git integration; application tests and deployment acceptance remain separate.
