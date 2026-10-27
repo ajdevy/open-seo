@@ -1,0 +1,55 @@
+name: Sync stable OpenSEO release
+
+on:
+  schedule:
+    # Monday 04:17 UTC / 07:17 Europe/Moscow, away from the top of the hour.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autogeo-upstream-release-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'ajdevy/open-seo' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, ductor, open-seo-sync]
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out trusted fork branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check release merge behavior
+        run: python3 -I -B -m unittest discover -s scripts/autogeo -p 'test_upstream_release_sync.py' -v
+      - name: Verify authenticated fork push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+            push --dry-run origin HEAD:refs/heads/main
+      - name: Merge latest published stable release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: python3 -I -B scripts/autogeo/upstream_release_sync.py
+      - name: Publish ordinary merge to fork
+        if: steps.release.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+            push origin HEAD:refs/heads/main

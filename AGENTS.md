@@ -1,5 +1,11 @@
 # Agent guidance
 
+## AutoGEO fork
+
+- Follow [fork maintenance and provider routing](docs/maintainers/autogeo-fork.md).
+- Keep `.github/workflows/` and `scripts/autogeo/` under fork control during upstream release merges.
+- Preserve upstream licensing and keep client data and credentials out of this public repository.
+
 ## Engineering principles
 
 - Prefer simple, readable, flat code with minimal indirection.
