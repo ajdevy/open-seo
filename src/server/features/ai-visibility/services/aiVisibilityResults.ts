@@ -34,17 +34,22 @@ import {
 export function aiRunView(
   run: RunRow,
   observations: Pick<ObservationRow, "status">[],
+  nativeResults: { status: string }[] = [],
 ): AiRun {
-  const completed = observations.filter((o) => o.status === "completed").length;
-  const failed = observations.filter((o) => o.status === "failed").length;
+  const statuses = [
+    ...observations.map((o) => o.status),
+    ...nativeResults.map((result) => result.status),
+  ];
+  const completed = statuses.filter((status) => status === "completed").length;
+  const failed = statuses.filter((status) => status === "failed").length;
   return {
     id: run.id,
     status: run.status,
     trigger: run.trigger,
-    expected: observations.length,
+    expected: statuses.length,
     completed,
     failed,
-    pending: observations.length - completed - failed,
+    pending: statuses.length - completed - failed,
     createdAt: run.createdAt,
     completedAt: run.completedAt,
     // Manual and baseline runs collect live answers, which arrive within seconds.
@@ -130,6 +135,9 @@ async function loadAiResultSet(
     promptId: input.promptId,
     topic: input.topic,
   });
+  const nativeStatuses = run
+    ? await repo.getNativeResultStatuses([run.id])
+    : [];
   const scoped = observations.filter(
     (o) =>
       (!input.topic || o.topic === input.topic) &&
@@ -157,13 +165,38 @@ async function loadAiResultSet(
       ? aiRunView(
           run,
           observations.filter((o) => o.runId === run.id),
+          nativeStatuses,
         )
       : null,
     rows: filtered,
     nativeResults,
     totalCount: filtered.length,
     summaries: summarizeAiBrands(filtered),
-    coverage: aiAnswerCoverage(rows),
+    coverage: (() => {
+      const legacy = aiAnswerCoverage(rows);
+      const nativeCompleted = nativeResults.filter(
+        (nativeResult) => nativeResult.resultStatus === "completed",
+      );
+      const nativeFailed = nativeResults.filter(
+        (nativeResult) => nativeResult.resultStatus === "failed",
+      ).length;
+      return {
+        expected: legacy.expected + nativeResults.length,
+        completed:
+          legacy.completed +
+          nativeCompleted.filter((nativeResult) => !!nativeResult.answer)
+            .length,
+        noAnswer:
+          legacy.noAnswer +
+          nativeCompleted.filter((nativeResult) => !nativeResult.answer).length,
+        failed: legacy.failed + nativeFailed,
+        pending:
+          legacy.pending +
+          nativeResults.length -
+          nativeCompleted.length -
+          nativeFailed,
+      };
+    })(),
     appliedFilters: {
       topic: input.topic,
       engines: input.engines,

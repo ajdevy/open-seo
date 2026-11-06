@@ -7,6 +7,7 @@ import {
   aiPrompts,
   aiRuns,
   aiObservations,
+  aiNativeResults,
   aiSources,
   aiMatches,
   projects,
@@ -316,6 +317,30 @@ export const AiVisibilityRepository = {
           .from(aiObservations)
           .where(inArray(aiObservations.runId, runIds))
       : Promise.resolve([]),
+  getNativeResultStatuses: (runIds: string[]) =>
+    runIds.length
+      ? db
+          .select({
+            runId: aiNativeResults.runId,
+            status: aiNativeResults.resultStatus,
+          })
+          .from(aiNativeResults)
+          .where(inArray(aiNativeResults.runId, runIds))
+      : Promise.resolve([]),
+  listNativeAnsweredPromptIds: async (trackerId: string) =>
+    (
+      await db
+        .selectDistinct({ promptId: aiNativeResults.questionId })
+        .from(aiNativeResults)
+        .innerJoin(aiPrompts, eq(aiPrompts.id, aiNativeResults.questionId))
+        .where(
+          and(
+            eq(aiPrompts.trackerId, trackerId),
+            eq(aiNativeResults.resultStatus, "completed"),
+            ne(aiNativeResults.answer, ""),
+          ),
+        )
+    ).map((row) => row.promptId),
   listPendingObservationIds: async (runId: string) =>
     (
       await db

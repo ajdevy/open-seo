@@ -32,3 +32,44 @@ export const aiNativeResultSchema = z.object({
 });
 
 export type AiNativeResultInput = z.infer<typeof aiNativeResultSchema>;
+
+const nativeTargetSchema = z.object({
+  requestedModel: z.string().trim().min(1).max(100),
+  route: z.string().trim().min(1).max(100),
+});
+
+/** A bounded synthetic request; every question/target pair becomes one task. */
+export const createAiNativeRunSchema = z.object({
+  projectId: z.string().uuid(),
+  questionIds: z.array(z.string().uuid()).min(1).max(90),
+  targets: z.array(nativeTargetSchema).min(1).max(90),
+});
+
+export const recordAiNativeResultSchema = z.object({
+  projectId: z.string().uuid(),
+  runId: z.string().uuid(),
+  resultId: z.string().uuid(),
+  resultStatus: z.enum(["completed", "failed"]),
+  answer: z.string().nullable(),
+  observedModel: z.string().trim().min(1).max(100).nullable().optional(),
+  searchStatus: z.string().trim().min(1).max(100),
+  searchEvidence: z
+    .array(
+      z.object({
+        tool: z.string().min(1).max(100),
+        status: z.string().min(1).max(100),
+        evidenceRef: z.string().min(1).max(2000),
+      }),
+    )
+    .max(100),
+  searchSources: z.array(z.string().min(1).max(2000)).max(100),
+  sources: z.array(z.string().min(1).max(2000)).max(100),
+  eligibleForVisibility: z.boolean().nullable(),
+  errorCode: z.string().min(1).max(100).nullable().optional(),
+  turnStatus: z.string().min(1).max(100).nullable().optional(),
+});
+
+export type CreateAiNativeRunInput = z.infer<typeof createAiNativeRunSchema>;
+export type RecordAiNativeResultInput = z.infer<
+  typeof recordAiNativeResultSchema
+>;

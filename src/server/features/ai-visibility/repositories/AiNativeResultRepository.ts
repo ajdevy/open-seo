@@ -48,13 +48,6 @@ async function validateRunQuestion(input: AiNativeResultInput) {
             eq(aiPrompts.trackerId, aiRuns.trackerId),
           ),
         )
-        .innerJoin(
-          aiObservations,
-          and(
-            eq(aiObservations.runId, aiRuns.id),
-            eq(aiObservations.promptId, aiPrompts.id),
-          ),
-        )
         .where(
           and(
             eq(aiRuns.id, input.run_id),
@@ -69,10 +62,87 @@ async function validateRunQuestion(input: AiNativeResultInput) {
     throw new Error(
       "Native result identity does not match an existing client, project, run, and question.",
     );
+  const [legacyObservation, nativeTask] = await Promise.all([
+    db
+      .select({ id: aiObservations.id })
+      .from(aiObservations)
+      .where(
+        and(
+          eq(aiObservations.runId, input.run_id),
+          eq(aiObservations.promptId, input.question_id),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({ id: aiNativeResults.id })
+      .from(aiNativeResults)
+      .where(
+        and(
+          eq(aiNativeResults.id, input.result_id),
+          eq(aiNativeResults.projectId, input.project_id),
+          eq(aiNativeResults.runId, input.run_id),
+          eq(aiNativeResults.clientId, input.client_id),
+          eq(aiNativeResults.questionId, input.question_id),
+          eq(aiNativeResults.questionVersion, input.question_version),
+          eq(aiNativeResults.requestedModel, input.requested_model),
+          eq(aiNativeResults.route, input.route),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null),
+  ]);
+  if (!legacyObservation && !nativeTask)
+    throw new Error(
+      "Native result identity does not match an existing client, project, run, and question.",
+    );
   if (scope.question !== input.question)
     throw new Error(
       "Native result question text does not match its saved version.",
     );
+}
+
+async function createSyntheticRun(
+  run: typeof aiRuns.$inferInsert,
+  tasks: (typeof aiNativeResults.$inferInsert)[],
+) {
+  await runBatch((tx) => [
+    tx.insert(aiRuns).values(run),
+    // Each row binds 18 values; five per statement stays under D1's
+    // 100-parameter limit while keeping the run and task rows atomic.
+    ...chunk(tasks, 5).map((rows) => tx.insert(aiNativeResults).values(rows)),
+  ]);
+}
+
+async function getSyntheticTask(input: {
+  projectId: string;
+  runId: string;
+  resultId: string;
+  organizationId: string;
+}) {
+  return (
+    (
+      await db
+        .select({
+          result: aiNativeResults,
+          question: aiPrompts.text,
+          runStatus: aiRuns.status,
+        })
+        .from(aiNativeResults)
+        .innerJoin(aiRuns, eq(aiRuns.id, aiNativeResults.runId))
+        .innerJoin(projects, eq(projects.id, aiRuns.projectId))
+        .innerJoin(aiPrompts, eq(aiPrompts.id, aiNativeResults.questionId))
+        .where(
+          and(
+            eq(aiRuns.projectId, input.projectId),
+            eq(projects.organizationId, input.organizationId),
+            eq(aiNativeResults.runId, input.runId),
+            eq(aiNativeResults.id, input.resultId),
+          ),
+        )
+        .limit(1)
+    )[0] ?? null
+  );
 }
 
 function resultRow(input: AiNativeResultInput) {
@@ -321,4 +391,9 @@ async function listByRuns(
   }));
 }
 
-export const AiNativeResultRepository = { persistResult, listByRuns };
+export const AiNativeResultRepository = {
+  createSyntheticRun,
+  getSyntheticTask,
+  persistResult,
+  listByRuns,
+};
