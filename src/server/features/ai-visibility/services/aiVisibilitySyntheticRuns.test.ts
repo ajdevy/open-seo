@@ -116,7 +116,16 @@ describe("synthetic AI visibility runs", () => {
       branded: "all",
       limit: 25,
     });
+    const resultsAgain = await loadAiResults({
+      projectId,
+      runId: created.run.id,
+      includeHistory: false,
+      competitorGap: false,
+      branded: "all",
+      limit: 25,
+    });
     expect(first).toEqual(second);
+    expect(resultsAgain).toEqual(results);
     expect(results.nativeResults).toHaveLength(2);
     expect(results.coverage).toEqual({
       expected: 2,
