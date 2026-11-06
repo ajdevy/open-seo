@@ -13,6 +13,10 @@ import { exportAiData } from "./aiVisibilityExport";
 import { loadAiTrend } from "./aiVisibilityTrend";
 import { listAiResearchKeywords, researchAiPrompts } from "./aiPromptResearch";
 import { saveAiNativeResult } from "./aiVisibilityNativeResults";
+import {
+  createAiNativeRun,
+  recordAiNativeRunResult,
+} from "./aiVisibilitySyntheticRuns";
 import type { GenerateAiPromptsInput } from "@/types/schemas/aiPromptSuggestions";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 export const AiVisibilityService = {
@@ -47,5 +51,7 @@ export const AiVisibilityService = {
   getTrend: loadAiTrend,
   getAnswer: loadAiAnswer,
   saveNativeResult: saveAiNativeResult,
+  createNativeRun: createAiNativeRun,
+  recordNativeRunResult: recordAiNativeRunResult,
   exportData: exportAiData,
 };

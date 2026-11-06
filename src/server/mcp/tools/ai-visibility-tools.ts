@@ -11,6 +11,10 @@ import {
 } from "@/types/schemas/aiPromptSuggestions";
 import { researchAiPromptsSchema } from "@/types/schemas/aiPromptResearch";
 import {
+  createAiNativeRunSchema,
+  recordAiNativeResultSchema,
+} from "@/types/schemas/ai-native-results";
+import {
   aiProjectSchema,
   saveAiTrackerSchema,
   estimateAiCostSchema,
@@ -34,6 +38,8 @@ import {
   aiExportOutput,
   aiTrendOutput,
   aiPromptResearchOutput,
+  aiNativeRunOutput,
+  aiNativeRecordOutput,
 } from "./ai-visibility-output-schemas";
 
 function runNextAction(run: {
@@ -281,6 +287,31 @@ export const getAiVisibilityRunTool = defineAiTool({
   summarize: (d) =>
     `Run ${d.id}: ${d.status}; ${d.completed}/${d.expected} complete, ${d.failed} failed, ${d.pending} pending. ${runNextAction(d)}`,
 });
+export const createAiNativeRunTool = defineAiTool({
+  name: "create_ai_visibility_native_run",
+  title: "Create synthetic AI visibility run",
+  input: createAiNativeRunSchema,
+  output: aiNativeRunOutput,
+  readOnly: false,
+  description:
+    "Create one bounded synthetic run for selected saved questions and model/route targets. This creates server-owned run and result IDs but makes no model, provider, or paid API calls. Record each returned resultId with record_ai_visibility_native_result, then use get_ai_visibility_run and get_ai_visibility_results to read progress and results. Repeated status/results reads never create another run.",
+  execute: (service, args, billing) => service.createNativeRun(args, billing),
+  summarize: (data) =>
+    `Synthetic run ${data.run.id}: ${data.run.status}, ${data.run.pending} tasks pending. ${data.tasks.length} result IDs are ready for recording.`,
+});
+export const recordAiNativeRunResultTool = defineAiTool({
+  name: "record_ai_visibility_native_result",
+  title: "Record synthetic AI visibility result",
+  input: recordAiNativeResultSchema,
+  output: aiNativeRecordOutput,
+  readOnly: false,
+  description:
+    "Record one final result for a server-created synthetic task. Supply its projectId, runId, and resultId from create_ai_visibility_native_run. The server derives client, question, model, route, and timestamp from that task, and rejects IDs outside the authorized project/run. Replaying the same final result is idempotent; a different second final result is rejected. Makes no model, provider, or paid API calls.",
+  execute: (service, args, billing) =>
+    service.recordNativeRunResult(args, billing),
+  summarize: (data) =>
+    `Recorded ${data.resultStatus} result ${data.resultId} for run ${data.runId}; run is ${data.run.status} (${data.run.completed}/${data.run.expected} complete, ${data.run.pending} pending).`,
+});
 function resultScopeNotice(branded: string): string {
   if (branded === "neutral")
     return "Scope: neutral prompts only. Branded diagnostics are excluded; these are not whole-run totals.";
@@ -299,7 +330,7 @@ export const getAiVisibilityResultsTool = defineAiTool({
     "For a normal review make one run-wide call with these top-level arguments (there is no filters object): runId null (or a manual run's runId), topic null, engines null, promptId null, cursor null, competitorGap false; never enumerate every engine or prompt. Use engines to request one or more engines in a single filtered call. Then read sources once for its returned runId and inspect 2-3 answer examples. Derive competitor gaps from returned rows or make a separate gap query; never carry competitorGap=true into overall source or branded-diagnostic reads. Read paginated prompt/engine observations and brand comparison counts over answered collections. Defaults to neutral prompts in the latest baseline/scheduled run, excluding manual checks; request branded=all to include branded diagnostics. Reuse the returned runId and filters for source analysis. No full answers or collection; use observation IDs with get_ai_visibility_answer. Supports prompt history and competitor gaps.",
   execute: (s, a) => s.getResults(a),
   summarize: (d) =>
-    `${resultScopeNotice(d.appliedFilters.branded)} ${d.appliedFilters.competitorGap ? "Gap-only results" : "Results"}: ${d.rows.length}/${d.totalCount} result rows; ${d.coverage.completed}/${d.coverage.expected} valid answers, ${d.coverage.noAnswer} no-answer collections, ${d.coverage.failed} failed.${d.nextCursor ? ` Next cursor ${d.nextCursor}.` : ""}${d.totalCount === 0 && d.coverage.completed > 0 ? " No answers matched the selected filters; this does not mean answer details are missing. Remove restrictive filters to read all retained answers." : ""}`,
+    `${resultScopeNotice(d.appliedFilters.branded)} ${d.appliedFilters.competitorGap ? "Gap-only results" : "Results"}: ${d.rows.length}/${d.totalCount} legacy observation rows and ${d.nativeResults.length} native results; ${d.coverage.completed}/${d.coverage.expected} valid answers, ${d.coverage.noAnswer} no-answer collections, ${d.coverage.failed} failed.${d.nextCursor ? ` Next cursor ${d.nextCursor}.` : ""}${d.totalCount === 0 && d.nativeResults.length === 0 && d.coverage.completed > 0 ? " No answers matched the selected filters; this does not mean answer details are missing. Remove restrictive filters to read all retained answers." : ""}`,
 });
 export const getAiVisibilityAnswerTool = defineAiTool({
   name: "get_ai_visibility_answer",

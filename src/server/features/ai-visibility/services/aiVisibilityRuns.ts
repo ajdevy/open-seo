@@ -71,6 +71,31 @@ export async function failAiRun(runId: string, error: string) {
 
 /** Fails an active run whose workflow has stopped, so it never blocks the tracker. */
 export async function reconcileAiRun(run: RunRow): Promise<RunRow> {
+  const [observations, nativeResults] = await Promise.all([
+    repo.getObservationStatuses([run.id]),
+    repo.getNativeResultStatuses([run.id]),
+  ]);
+  // Synthetic native runs have no legacy observations or Workflow instance.
+  // Their task rows are the source of truth for progress and completion.
+  if (observations.length === 0 && nativeResults.length > 0) {
+    const pending = nativeResults.some(
+      (result) => result.status !== "completed" && result.status !== "failed",
+    );
+    if (!pending && (run.status === "queued" || run.status === "running")) {
+      const completed = nativeResults.some(
+        (result) => result.status === "completed",
+      );
+      const failed = nativeResults.some((result) => result.status === "failed");
+      const status =
+        completed && failed ? "partial" : failed ? "failed" : "completed";
+      await repo.updateRun(run.id, {
+        status,
+        completedAt: new Date().toISOString(),
+      });
+      return (await repo.getRunInternal(run.id)) ?? { ...run, status };
+    }
+    return run;
+  }
   const reason = await staleRunReason(run);
   if (!reason) return run;
   // A stuck instance may still be running: stop it so it posts no more calls.
@@ -231,5 +256,9 @@ export async function getRun(input: {
       "This run is not available in the selected project.",
     );
   const run = await reconcileAiRun(found);
-  return aiRunView(run, await repo.getObservationStatuses([run.id]));
+  const [observations, nativeResults] = await Promise.all([
+    repo.getObservationStatuses([run.id]),
+    repo.getNativeResultStatuses([run.id]),
+  ]);
+  return aiRunView(run, observations, nativeResults);
 }

@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
     setSchedule: vi.fn(),
     runCheck: vi.fn(),
     getRun: vi.fn(),
+    createNativeRun: vi.fn(),
+    recordNativeRunResult: vi.fn(),
     getResults: vi.fn(),
     getAnswer: vi.fn(),
     getSources: vi.fn(),
@@ -187,6 +189,36 @@ describe("AI visibility assistant tools", () => {
         result.structuredContent,
       ).success,
     ).toBe(true);
+  });
+  it("authorizes both native run entrypoints before service calls", async () => {
+    mocks.authorize.mockResolvedValue(null);
+    const createArgs = {
+      projectId,
+      questionIds: [runId],
+      targets: [{ requestedModel: "model-a", route: "codex_cli" }],
+    };
+    await expect(
+      definitions.createAiNativeRunTool.handler(createArgs, context),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      definitions.recordAiNativeRunResultTool.handler(
+        {
+          projectId,
+          runId,
+          resultId: projectId,
+          resultStatus: "completed",
+          answer: "answer",
+          searchStatus: "completed",
+          searchEvidence: [],
+          searchSources: [],
+          sources: [],
+          eligibleForVisibility: true,
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.service.createNativeRun).not.toHaveBeenCalled();
+    expect(mocks.service.recordNativeRunResult).not.toHaveBeenCalled();
   });
   it("forwards the paid check's scope, approved cost and authorized billing", async () => {
     const args = { projectId, maxCostUsd: 0.01, promptIds: [runId] };

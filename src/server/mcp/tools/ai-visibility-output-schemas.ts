@@ -22,6 +22,25 @@ export const aiRunOutput = z.looseObject({
   completedAt: nullableText,
   pollAfterSeconds: count,
 });
+export const aiNativeRunOutput = z.looseObject({
+  run: aiRunOutput,
+  tasks: z.array(
+    z.looseObject({
+      resultId: text,
+      questionId: text,
+      question: text,
+      requestedModel: text,
+      route: text,
+      status: text,
+    }),
+  ),
+});
+export const aiNativeRecordOutput = z.looseObject({
+  runId: text,
+  resultId: text,
+  resultStatus: z.enum(["completed", "failed"]),
+  run: aiRunOutput,
+});
 export const aiTrackerOutput = z.looseObject({
   configured: flag,
   providerConfigured: flag,

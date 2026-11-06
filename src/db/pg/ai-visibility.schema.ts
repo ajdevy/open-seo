@@ -160,6 +160,8 @@ export const aiNativeResults = pgTable(
     errorCode: text("error_code"),
     turnStatus: text("turn_status"),
     collectedAt: text("collected_at").notNull(),
+    // Fences related writes to the batch that finalizes a pending result.
+    finalizationToken: text("finalization_token"),
   },
   (t) => [
     uniqueIndex("ai_native_results_run_question_version_model_route_idx").on(

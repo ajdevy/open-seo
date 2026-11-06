@@ -8,6 +8,8 @@ import {
   setAiVisibilityScheduleTool,
   runAiVisibilityCheckTool,
   getAiVisibilityRunTool,
+  createAiNativeRunTool,
+  recordAiNativeRunResultTool,
   getAiVisibilityResultsTool,
   getAiVisibilityAnswerTool,
   getAiVisibilitySourcesTool,
@@ -272,6 +274,8 @@ export function registerOpenSeoTools(
   register(setAiVisibilityScheduleTool);
   register(runAiVisibilityCheckTool);
   register(getAiVisibilityRunTool);
+  register(createAiNativeRunTool);
+  register(recordAiNativeRunResultTool);
   register(getAiVisibilityResultsTool);
   register(getAiVisibilityAnswerTool);
   register(getAiVisibilitySourcesTool);
