@@ -17,6 +17,7 @@ import type { getAiVisibilityResults } from "@/serverFunctions/ai-visibility";
 import { aiEngineSchema } from "@/types/schemas/ai-visibility";
 import { EngineLabel } from "./EngineLabel";
 import { PromptAnswers } from "./PromptAnswers";
+import { NativeModelResults } from "./NativeModelResults";
 import {
   PromptDateRange,
   PromptRange,
@@ -61,6 +62,11 @@ export function PromptAnalysis({
     executions.find(({ observation }) => observation.id === selectedId) ??
     executions.find(answered) ??
     executions[0];
+  const nativeResults = history.nativeResults.filter(
+    (result) =>
+      (!prompt || result.questionId === prompt.id) &&
+      inPromptPeriod(result.collectedAt, period),
+  );
   const summaries = summarizeAiBrands(
     executions.map(({ observation }) => observation),
   );
@@ -88,19 +94,19 @@ export function PromptAnalysis({
             onSelect={setSelectedId}
           />
         </>
-      ) : (
+      ) : nativeResults.length ? null : (
         <div className="space-y-3 rounded-lg border border-border bg-card p-8 text-center">
           <h2 className="text-sm font-medium">
-            {history.rows.length
+            {history.rows.length || history.nativeResults.length
               ? "No executions in this period"
               : "No answers yet"}
           </h2>
           <p className="text-sm text-muted-foreground">
-            {history.rows.length
+            {history.rows.length || history.nativeResults.length
               ? "Choose another date range to see this prompt’s answers."
               : "Choose Run now to collect answers, brand mentions, and citations."}
           </p>
-          {history.rows.length > 0 && (
+          {(history.rows.length > 0 || history.nativeResults.length > 0) && (
             <Button
               size="sm"
               variant="outline"
@@ -111,6 +117,7 @@ export function PromptAnalysis({
           )}
         </div>
       )}
+      <NativeModelResults results={nativeResults} />
       {history.truncated && (
         <p className="text-xs text-muted-foreground">
           History covers the latest 50 project runs. Older executions are not
