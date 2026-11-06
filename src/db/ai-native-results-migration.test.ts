@@ -10,7 +10,7 @@ afterEach(async () => {
 });
 
 describe("native result migrations", () => {
-  it("keeps legacy observations and citations readable when SQLite adds native tables", async () => {
+  it("preserves legacy data and adds a nullable finalization token to SQLite results", async () => {
     const migrations = sort(
       readdirSync("drizzle/sqlite").filter((file) => file.endsWith(".sql")),
       (a, b) => a.localeCompare(b),
@@ -50,6 +50,24 @@ describe("native result migrations", () => {
       ),
     );
 
+    await sqliteClient.execute(`
+      INSERT INTO ai_native_results (
+        id, schema_version, client_id, project_id, run_id, question_id,
+        question_version, question_snapshot, requested_model, route,
+        result_status, answer, search_status, eligible_for_visibility,
+        collected_at
+      ) VALUES (
+        'native-answer', 1, 'legacy-client', 'legacy-project', 'legacy-run',
+        'legacy-question', 1, 'Original question?', 'model-a', 'codex_cli',
+        'completed', 'Saved native answer.', 'completed', 1,
+        '2026-09-01T00:00:00.000Z'
+      )
+    `);
+
+    await sqliteClient.executeMultiple(
+      readFileSync("drizzle/sqlite/0064_clumsy_tigra.sql", "utf8"),
+    );
+
     const oldObservation = await sqliteClient.execute(
       "SELECT id, prompt_id, engine, status, answer_markdown FROM ai_observations WHERE id = 'legacy-answer'",
     );
@@ -57,7 +75,7 @@ describe("native result migrations", () => {
       "SELECT id, observation_id, url, position FROM ai_sources WHERE id = 'legacy-source'",
     );
     const nativeRows = await sqliteClient.execute(
-      "SELECT COUNT(*) AS count FROM ai_native_results",
+      "SELECT id, answer, finalization_token FROM ai_native_results",
     );
 
     expect(oldObservation.rows).toEqual([
@@ -77,7 +95,13 @@ describe("native result migrations", () => {
         position: 1,
       },
     ]);
-    expect(Number(nativeRows.rows[0]?.count)).toBe(0);
+    expect(nativeRows.rows).toEqual([
+      {
+        id: "native-answer",
+        answer: "Saved native answer.",
+        finalization_token: null,
+      },
+    ]);
   });
 
   it.each([
@@ -96,5 +120,17 @@ describe("native result migrations", () => {
     expect(sql).not.toMatch(/ALTER TABLE\s+"?ai_sources"?/i);
     expect(sql).not.toMatch(/ALTER TABLE\s+"?ai_prompts"?/i);
     expect(sql).not.toMatch(/DEFAULT .*search_status/i);
+  });
+
+  it.each([
+    ["SQLite", "drizzle/sqlite/0064_clumsy_tigra.sql"],
+    ["PostgreSQL", "drizzle/pg/0042_parched_maggott.sql"],
+  ])("adds a nullable finalization token to %s native results", (_, file) => {
+    const sql = readFileSync(file, "utf8");
+    expect(sql).toMatch(/ALTER TABLE [`"]?ai_native_results[`"]?/i);
+    expect(sql).toMatch(/finalization_token[`"]?\s+(?:text|TEXT)/i);
+    expect(sql).not.toMatch(
+      /(?:^|;--> statement-breakpoint)\s*(?:UPDATE|INSERT INTO|DELETE FROM)\b/i,
+    );
   });
 });

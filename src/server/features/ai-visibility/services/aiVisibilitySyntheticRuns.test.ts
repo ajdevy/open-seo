@@ -1,3 +1,7 @@
+import {
+  aiNativeResultSchema,
+  recordAiNativeResultSchema,
+} from "@/types/schemas/ai-native-results";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { aiNativeResults, projects } from "@/db/schema";
@@ -44,7 +48,7 @@ const resultInput = (
     { tool: "web_search", status: "completed", evidenceRef: "event-1" },
   ],
   searchSources: ["https://search.example/result"],
-  sources: ["https://openseo.so/features"],
+  sources: resultStatus === "completed" ? ["https://openseo.so/features"] : [],
   eligibleForVisibility: resultStatus === "completed",
 });
 
@@ -72,6 +76,53 @@ beforeEach(async () => {
 });
 
 describe("synthetic AI visibility runs", () => {
+  it.each([
+    ["answer", { answer: "A failed result must not contain an answer." }],
+    ["sources", { sources: ["https://openseo.so/features"] }],
+    ["visibility eligibility", { eligibleForVisibility: true }],
+  ])("rejects failed results with contradictory %s", (_name, fields) => {
+    const parsed = recordAiNativeResultSchema.safeParse({
+      projectId,
+      runId: "00000000-0000-4000-8000-000000000201",
+      resultId: "00000000-0000-4000-8000-000000000202",
+      resultStatus: "failed",
+      answer: null,
+      searchStatus: "failed",
+      searchEvidence: [],
+      searchSources: [],
+      sources: [],
+      eligibleForVisibility: false,
+      ...fields,
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects contradictory failed results in the native storage schema", () => {
+    const parsed = aiNativeResultSchema.safeParse({
+      schema_version: 1,
+      client_id: "test-organization",
+      project_id: projectId,
+      run_id: "00000000-0000-4000-8000-000000000201",
+      question_id: "00000000-0000-4000-8000-000000000203",
+      question_version: 1,
+      result_id: "00000000-0000-4000-8000-000000000202",
+      timestamp: "2026-11-06T00:00:00.000Z",
+      question: "Which SEO tools are worth evaluating?",
+      requested_model: "model-a",
+      route: "codex_cli",
+      result_status: "failed",
+      answer: "A failed result must not include an answer.",
+      search_status: "failed",
+      search_evidence: [],
+      search_sources: [],
+      sources: ["https://openseo.so/features"],
+      eligible_for_visibility: true,
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it("creates one server run, records tasks, and serves repeatable reads without a workflow", async () => {
     const config = await repo.getConfiguration(projectId);
     if (!config) throw new Error("Saved tracker is missing");
@@ -210,6 +261,80 @@ describe("synthetic AI visibility runs", () => {
     expect(await repo.listRuns(projectId)).toHaveLength(1);
     expect(workflow.create).not.toHaveBeenCalled();
     expect(workflow.get).not.toHaveBeenCalled();
+  });
+
+  it("allows only one concurrent final result to be stored", async () => {
+    const config = await repo.getConfiguration(projectId);
+    if (!config) throw new Error("Saved tracker is missing");
+    const created = await createAiNativeRun(
+      {
+        projectId,
+        questionIds: [config.prompts[0].id],
+        targets: [{ requestedModel: "model-a", route: "codex_cli" }],
+      },
+      customer,
+    );
+    const firstInput = {
+      ...resultInput(created.run.id, created.tasks[0].resultId, "completed"),
+      answer: "The first final answer.",
+      searchEvidence: [],
+      searchSources: [],
+      sources: ["https://first.example/result"],
+    };
+    const secondInput = {
+      ...resultInput(created.run.id, created.tasks[0].resultId, "completed"),
+      answer: "The competing final answer.",
+      searchEvidence: [],
+      searchSources: [],
+      sources: [],
+    };
+
+    const originalGetSyntheticTask = nativeRepo.getSyntheticTask;
+    let reads = 0;
+    let releaseReads!: () => void;
+    const bothReadsCompleted = new Promise<void>((resolve) => {
+      releaseReads = resolve;
+    });
+    const taskReadSpy = vi
+      .spyOn(nativeRepo, "getSyntheticTask")
+      .mockImplementation(async (...args) => {
+        const task = await originalGetSyntheticTask(...args);
+        reads += 1;
+        if (reads === 2) releaseReads();
+        await bothReadsCompleted;
+        return task;
+      });
+
+    try {
+      const results = await Promise.allSettled([
+        recordAiNativeRunResult(firstInput, customer),
+        recordAiNativeRunResult(secondInput, customer),
+      ]);
+      expect(
+        results.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
+      expect(
+        results.filter((result) => result.status === "rejected"),
+      ).toHaveLength(1);
+      expect(
+        results.find((result) => result.status === "rejected"),
+      ).toMatchObject({
+        status: "rejected",
+        reason: { reason: "NATIVE_RESULT_ALREADY_RECORDED" },
+      });
+      const winningInput =
+        results[0].status === "fulfilled" ? firstInput : secondInput;
+      const stored = await nativeRepo.listByRuns(projectId, [created.run.id]);
+      expect(stored).toMatchObject([
+        {
+          resultStatus: "completed",
+          answer: winningInput.answer,
+          sources: winningInput.sources,
+        },
+      ]);
+    } finally {
+      taskReadSpy.mockRestore();
+    }
   });
 
   it("does not reveal or write a task outside the billing client", async () => {

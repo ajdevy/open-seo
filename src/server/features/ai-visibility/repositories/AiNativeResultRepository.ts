@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { chunk } from "remeda";
 import { db } from "@/db";
 import { runBatch } from "@/db/runBatch";
@@ -14,6 +14,10 @@ import {
 } from "@/db/schema";
 import type { AiNativeResult } from "@/shared/ai-visibility";
 import type { AiNativeResultInput } from "@/types/schemas/ai-native-results";
+import {
+  nativeResultRow,
+  resultRelationWrites,
+} from "./aiNativeResultPersistence";
 
 type NativeResultRow = typeof aiNativeResults.$inferSelect;
 
@@ -145,29 +149,6 @@ async function getSyntheticTask(input: {
   );
 }
 
-function resultRow(input: AiNativeResultInput) {
-  return {
-    id: input.result_id,
-    schemaVersion: input.schema_version,
-    clientId: input.client_id,
-    projectId: input.project_id,
-    runId: input.run_id,
-    questionId: input.question_id,
-    questionVersion: input.question_version,
-    questionSnapshot: input.question,
-    requestedModel: input.requested_model,
-    observedModel: input.observed_model ?? null,
-    route: input.route,
-    resultStatus: input.result_status,
-    answer: input.answer,
-    searchStatus: input.search_status,
-    eligibleForVisibility: input.eligible_for_visibility,
-    errorCode: input.error_code ?? null,
-    turnStatus: input.turn_status ?? null,
-    collectedAt: input.timestamp,
-  };
-}
-
 async function persistResult(input: AiNativeResultInput) {
   await validateRunQuestion(input);
 
@@ -200,28 +181,7 @@ async function persistResult(input: AiNativeResultInput) {
     throw new Error(
       "A result for this run, question version, model, and route already exists.",
     );
-
-  const sources = input.sources.map((value, index) => ({
-    id: crypto.randomUUID(),
-    resultId: input.result_id,
-    value,
-    position: index + 1,
-  }));
-  const searchSources = input.search_sources.map((value, index) => ({
-    id: crypto.randomUUID(),
-    resultId: input.result_id,
-    value,
-    position: index + 1,
-  }));
-  const evidence = input.search_evidence.map((item, index) => ({
-    id: crypto.randomUUID(),
-    resultId: input.result_id,
-    tool: item.tool,
-    status: item.status,
-    evidenceRef: item.evidence_ref,
-    position: index + 1,
-  }));
-  const values = resultRow(input);
+  const values = nativeResultRow(input);
 
   await runBatch((tx) => [
     tx
@@ -245,27 +205,24 @@ async function persistResult(input: AiNativeResultInput) {
           errorCode: values.errorCode,
           turnStatus: values.turnStatus,
         },
-        setWhere: eq(aiNativeResults.id, input.result_id),
+        setWhere: and(
+          eq(aiNativeResults.id, input.result_id),
+          isNull(aiNativeResults.finalizationToken),
+        ),
       }),
-    tx
-      .delete(aiNativeSources)
-      .where(eq(aiNativeSources.resultId, input.result_id)),
-    tx
-      .delete(aiNativeSearchSources)
-      .where(eq(aiNativeSearchSources.resultId, input.result_id)),
-    tx
-      .delete(aiNativeSearchEvidence)
-      .where(eq(aiNativeSearchEvidence.resultId, input.result_id)),
-    ...chunk(sources, 20).map((rows) =>
-      tx.insert(aiNativeSources).values(rows),
-    ),
-    ...chunk(searchSources, 20).map((rows) =>
-      tx.insert(aiNativeSearchSources).values(rows),
-    ),
-    ...chunk(evidence, 12).map((rows) =>
-      tx.insert(aiNativeSearchEvidence).values(rows),
-    ),
+    ...resultRelationWrites(tx, input, null),
   ]);
+
+  const current =
+    (
+      await db
+        .select({ finalizationToken: aiNativeResults.finalizationToken })
+        .from(aiNativeResults)
+        .where(eq(aiNativeResults.id, input.result_id))
+        .limit(1)
+    )[0] ?? null;
+  if (current?.finalizationToken)
+    throw new Error("A synthetic result is already finalized and immutable.");
 
   const stored =
     (
@@ -287,6 +244,50 @@ async function persistResult(input: AiNativeResultInput) {
     throw new Error(
       "A result for this run, question version, model, and route already exists.",
     );
+}
+
+async function persistSyntheticResult(input: AiNativeResultInput) {
+  await validateRunQuestion(input);
+  const token = crypto.randomUUID();
+  const values = nativeResultRow(input);
+
+  // The claim and its child rows are atomic; only this token may write them.
+  await runBatch((tx) => [
+    tx
+      .update(aiNativeResults)
+      .set({
+        observedModel: values.observedModel,
+        resultStatus: values.resultStatus,
+        answer: values.answer,
+        searchStatus: values.searchStatus,
+        collectedAt: values.collectedAt,
+        eligibleForVisibility: values.eligibleForVisibility,
+        errorCode: values.errorCode,
+        turnStatus: values.turnStatus,
+        finalizationToken: token,
+      })
+      .where(
+        and(
+          eq(aiNativeResults.id, input.result_id),
+          eq(aiNativeResults.projectId, input.project_id),
+          eq(aiNativeResults.runId, input.run_id),
+          eq(aiNativeResults.clientId, input.client_id),
+          eq(aiNativeResults.resultStatus, "pending"),
+          isNull(aiNativeResults.finalizationToken),
+        ),
+      ),
+    ...resultRelationWrites(tx, input, token),
+  ]);
+
+  const current =
+    (
+      await db
+        .select({ finalizationToken: aiNativeResults.finalizationToken })
+        .from(aiNativeResults)
+        .where(eq(aiNativeResults.id, input.result_id))
+        .limit(1)
+    )[0] ?? null;
+  return current?.finalizationToken === token;
 }
 
 async function listByRuns(
@@ -395,5 +396,6 @@ export const AiNativeResultRepository = {
   createSyntheticRun,
   getSyntheticTask,
   persistResult,
+  persistSyntheticResult,
   listByRuns,
 };

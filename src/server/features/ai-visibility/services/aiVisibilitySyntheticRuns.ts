@@ -221,7 +221,24 @@ export async function recordAiNativeRunResult(
     error_code: input.errorCode ?? null,
     turn_status: input.turnStatus ?? null,
   };
-  await nativeRepo.persistResult(result);
+  const persisted = await nativeRepo.persistSyntheticResult(result);
+  if (!persisted) {
+    const stored = (
+      await nativeRepo.listByRuns(input.projectId, [input.runId])
+    ).find((candidate) => candidate.id === input.resultId);
+    if (stored && matchesRecordedResult(stored, input))
+      return {
+        runId: input.runId,
+        resultId: input.resultId,
+        resultStatus: input.resultStatus,
+        run: await getRun({ projectId: input.projectId, runId: input.runId }),
+      };
+    throw new AiVisibilityError(
+      "NATIVE_RESULT_ALREADY_RECORDED",
+      "This task already has a different final result and cannot be overwritten.",
+      input.runId,
+    );
+  }
   const run = await getRun({ projectId: input.projectId, runId: input.runId });
   return {
     runId: input.runId,

@@ -1,0 +1,1 @@
+ALTER TABLE `ai_native_results` ADD `finalization_token` text;
