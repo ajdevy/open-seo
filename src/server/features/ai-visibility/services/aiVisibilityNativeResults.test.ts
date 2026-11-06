@@ -168,6 +168,34 @@ describe("native model result storage", () => {
     });
   });
 
+  it("rejects a prompt added after the run started", async () => {
+    const [savedPrompt] = await testDb.db
+      .select({ trackerId: aiPrompts.trackerId, topic: aiPrompts.topic })
+      .from(aiPrompts)
+      .where(eq(aiPrompts.id, questionId));
+
+    await testDb.db.insert(aiPrompts).values({
+      id: "prompt-added-after-run",
+      trackerId: savedPrompt.trackerId,
+      topic: savedPrompt.topic,
+      text: "Which SEO tools were added after this run?",
+      paused: false,
+      archived: false,
+      createdAt: "2026-10-02T12:00:00.000Z",
+    });
+
+    await expect(
+      saveAiNativeResult(
+        result({
+          question_id: "prompt-added-after-run",
+          question: "Which SEO tools were added after this run?",
+        }),
+      ),
+    ).rejects.toThrow(
+      "Native result identity does not match an existing client, project, run, and question.",
+    );
+  });
+
   it("keeps the historical question snapshot when a later edit adds a new prompt", async () => {
     await saveAiNativeResult(result());
     const oldPrompt = (

@@ -7,6 +7,7 @@ import {
   aiNativeSearchEvidence,
   aiNativeSearchSources,
   aiNativeSources,
+  aiObservations,
   aiPrompts,
   aiRuns,
   projects,
@@ -45,6 +46,13 @@ async function validateRunQuestion(input: AiNativeResultInput) {
           and(
             eq(aiPrompts.id, input.question_id),
             eq(aiPrompts.trackerId, aiRuns.trackerId),
+          ),
+        )
+        .innerJoin(
+          aiObservations,
+          and(
+            eq(aiObservations.runId, aiRuns.id),
+            eq(aiObservations.promptId, aiPrompts.id),
           ),
         )
         .where(
