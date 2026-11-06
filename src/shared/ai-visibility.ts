@@ -161,6 +161,34 @@ export interface AiObservationRow {
   collectedAt: string | null;
   error: string | null;
 }
+export interface AiNativeSearchEvidence {
+  tool: string;
+  status: string;
+  evidenceRef: string;
+}
+export interface AiNativeResult {
+  id: string;
+  schemaVersion: number;
+  clientId: string;
+  projectId: string;
+  runId: string;
+  questionId: string;
+  questionVersion: number;
+  question: string;
+  requestedModel: string;
+  observedModel: string | null;
+  route: string;
+  resultStatus: string;
+  answer: string | null;
+  searchStatus: string;
+  searchEvidence: AiNativeSearchEvidence[];
+  searchSources: string[];
+  sources: string[];
+  eligibleForVisibility: boolean | null;
+  errorCode: string | null;
+  turnStatus: string | null;
+  collectedAt: string;
+}
 export interface AiBrandSummary {
   name: string;
   domain: string;
@@ -177,6 +205,7 @@ export interface AiResults {
   runId: string | null;
   run: AiRun | null;
   rows: AiObservationRow[];
+  nativeResults: AiNativeResult[];
   totalCount: number;
   nextCursor: string | null;
   summaries: AiBrandSummary[];

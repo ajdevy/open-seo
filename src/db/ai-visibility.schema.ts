@@ -6,6 +6,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { organization } from "./better-auth-schema";
 import { projects } from "./app.schema";
 
 // One tracker per project. Brand name, domain and competitors come from the
@@ -127,6 +128,114 @@ export const aiObservations = sqliteTable(
       t.engine,
     ),
     index("ai_observations_prompt_idx").on(t.promptId),
+  ],
+);
+
+// Native adapter results have a distinct model-and-route identity. Keep them
+// separate from the legacy engine observations so the legacy uniqueness rule
+// and engine enum do not collapse multiple models into one row.
+export const aiNativeResults = sqliteTable(
+  "ai_native_results",
+  {
+    id: text("id").primaryKey(),
+    schemaVersion: integer("schema_version").notNull(),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => aiRuns.id, { onDelete: "cascade" }),
+    questionId: text("question_id")
+      .notNull()
+      .references(() => aiPrompts.id, { onDelete: "cascade" }),
+    questionVersion: integer("question_version").notNull(),
+    questionSnapshot: text("question_snapshot").notNull(),
+    requestedModel: text("requested_model").notNull(),
+    observedModel: text("observed_model"),
+    route: text("route").notNull(),
+    resultStatus: text("result_status").notNull(),
+    answer: text("answer"),
+    searchStatus: text("search_status").notNull(),
+    eligibleForVisibility: integer("eligible_for_visibility", {
+      mode: "boolean",
+    }),
+    errorCode: text("error_code"),
+    turnStatus: text("turn_status"),
+    collectedAt: text("collected_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("ai_native_results_run_question_version_model_route_idx").on(
+      t.runId,
+      t.questionId,
+      t.questionVersion,
+      t.requestedModel,
+      t.route,
+    ),
+    index("ai_native_results_project_collected_idx").on(
+      t.projectId,
+      t.collectedAt,
+    ),
+  ],
+);
+
+// Cited sources and search-result sources are separate relations so their
+// roles remain explicit while preserving order and exact source values.
+export const aiNativeSources = sqliteTable(
+  "ai_native_sources",
+  {
+    id: text("id").primaryKey(),
+    resultId: text("result_id")
+      .notNull()
+      .references(() => aiNativeResults.id, { onDelete: "cascade" }),
+    value: text("value").notNull(),
+    position: integer("position").notNull(),
+  },
+  (t) => [
+    uniqueIndex("ai_native_sources_result_position_idx").on(
+      t.resultId,
+      t.position,
+    ),
+  ],
+);
+
+export const aiNativeSearchSources = sqliteTable(
+  "ai_native_search_sources",
+  {
+    id: text("id").primaryKey(),
+    resultId: text("result_id")
+      .notNull()
+      .references(() => aiNativeResults.id, { onDelete: "cascade" }),
+    value: text("value").notNull(),
+    position: integer("position").notNull(),
+  },
+  (t) => [
+    uniqueIndex("ai_native_search_sources_result_position_idx").on(
+      t.resultId,
+      t.position,
+    ),
+  ],
+);
+
+export const aiNativeSearchEvidence = sqliteTable(
+  "ai_native_search_evidence",
+  {
+    id: text("id").primaryKey(),
+    resultId: text("result_id")
+      .notNull()
+      .references(() => aiNativeResults.id, { onDelete: "cascade" }),
+    tool: text("tool").notNull(),
+    status: text("status").notNull(),
+    evidenceRef: text("evidence_ref").notNull(),
+    position: integer("position").notNull(),
+  },
+  (t) => [
+    uniqueIndex("ai_native_search_evidence_result_position_idx").on(
+      t.resultId,
+      t.position,
+    ),
   ],
 );
 

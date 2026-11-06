@@ -28,6 +28,7 @@ it.each(["neutral", "branded", "all"] as const)(
     const common = {
       runId,
       rows: [],
+      nativeResults: [],
       totalCount: 0,
       nextCursor: null,
       coverage: {

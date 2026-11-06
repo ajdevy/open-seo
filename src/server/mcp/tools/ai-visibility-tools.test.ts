@@ -270,6 +270,7 @@ describe("AI visibility assistant tools", () => {
       runId,
       run,
       rows: [],
+      nativeResults: [],
       totalCount: 0,
       nextCursor: null,
       summaries: [],

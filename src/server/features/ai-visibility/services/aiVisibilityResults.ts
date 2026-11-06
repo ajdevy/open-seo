@@ -22,6 +22,7 @@ import {
   type RunRow,
 } from "../repositories/AiVisibilityRepository";
 import type { ObservationWithPrompt } from "../repositories/AiVisibilityRepository";
+import { loadAiNativeResults } from "./aiVisibilityNativeResults";
 import { markdownToText } from "../providers/dataforseoEvidence";
 import { AiVisibilityError, publicAiAnswerError } from "./aiVisibilityErrors";
 import {
@@ -123,6 +124,12 @@ async function loadAiResultSet(
         ? [run.id]
         : [];
   const observations = await repo.getObservations(runIds, input.promptId);
+  const nativeResults = await loadAiNativeResults({
+    projectId: input.projectId,
+    runIds,
+    promptId: input.promptId,
+    topic: input.topic,
+  });
   const scoped = observations.filter(
     (o) =>
       (!input.topic || o.topic === input.topic) &&
@@ -153,6 +160,7 @@ async function loadAiResultSet(
         )
       : null,
     rows: filtered,
+    nativeResults,
     totalCount: filtered.length,
     summaries: summarizeAiBrands(filtered),
     coverage: aiAnswerCoverage(rows),
