@@ -35,10 +35,12 @@ export function PromptAnalysis({
   projectId,
   prompt,
   history,
+  identityVariants,
 }: {
   projectId: string;
   prompt: AiPrompt | undefined;
   history: Awaited<ReturnType<typeof getAiVisibilityResults>>;
+  identityVariants: string[];
 }) {
   const [period, setPeriod] = useState(() => promptPeriod());
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -73,13 +75,17 @@ export function PromptAnalysis({
   return (
     <div className="space-y-4">
       <PromptDateRange value={period} onChange={setPeriod} />
-      <PromptSummary summaries={summaries} />
+      <PromptSummary
+        summaries={summaries}
+        identityVariants={identityVariants}
+      />
       {selected ? (
         <>
           <PromptAnswers
             projectId={projectId}
             prompt={prompt}
             observation={selected.observation}
+            identityVariants={identityVariants}
             controls={
               <ExecutionSelects
                 executions={executions}

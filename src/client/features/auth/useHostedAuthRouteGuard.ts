@@ -1,11 +1,16 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useSession } from "@/lib/auth-client";
 import {
   isEmailVerificationBypassed,
   isHostedClientAuthMode,
   usesBetterAuthClient,
 } from "@/lib/auth-mode";
+import {
+  clearQueryCacheForUserChange,
+  queryCacheMatchesUser,
+} from "./userScopedQueryCache";
 import {
   getCurrentAuthRedirectFromHref,
   getSignInSearch,
@@ -14,6 +19,7 @@ import {
 
 export function useHostedAuthRouteGuard() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { data: session, isPending } = useSession();
   // The session guard runs wherever Better Auth accounts exist (hosted and the
   // standalone Docker edition); isHostedMode is kept for callers that gate
@@ -22,6 +28,19 @@ export function useHostedAuthRouteGuard() {
   const hasAccounts = usesBetterAuthClient();
   const emailVerified =
     session?.user?.emailVerified === true || isEmailVerificationBypassed();
+  const userId = hasAccounts ? (session?.user?.id ?? null) : null;
+  const [cacheUserId, setCacheUserId] = useState<string | null | undefined>(
+    undefined,
+  );
+
+  // Project query keys are scoped by project ID. Clear the in-memory cache
+  // when the authenticated user changes, before allowing the next user's UI
+  // to render, so a reused project ID cannot show the prior user's data.
+  useEffect(() => {
+    if (isPending || queryCacheMatchesUser(cacheUserId, userId)) return;
+    clearQueryCacheForUserChange(queryClient, cacheUserId, userId);
+    setCacheUserId(userId);
+  }, [cacheUserId, isPending, queryClient, userId]);
 
   useEffect(() => {
     if (isPending || !hasAccounts) {
@@ -56,7 +75,10 @@ export function useHostedAuthRouteGuard() {
   ]);
 
   const hasVerifiedSession =
-    !isPending && Boolean(session?.user?.id) && emailVerified;
+    !isPending &&
+    Boolean(session?.user?.id) &&
+    emailVerified &&
+    queryCacheMatchesUser(cacheUserId, userId);
 
   return {
     isHostedMode,

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Play } from "lucide-react";
 import { BackLink, PageHeader } from "@/client/components/PageHeader";
@@ -6,6 +6,9 @@ import { SkeletonCard } from "@/client/components/SkeletonPresets";
 import { Button } from "@/client/components/ui/button";
 import { type AiRun } from "@/shared/ai-visibility";
 import { PromptAnalysis } from "./PromptAnalysis";
+import { getProjectContext } from "@/serverFunctions/projectContext";
+import { projectContextQueryKey } from "@/client/features/projects/project-context/shared";
+import { projectBrandIdentityVariants } from "@/client/features/projects/project-context/brandIdentityVariants";
 import { prefetchRunNowCost, TrackingCostReview } from "./TrackingCostReview";
 import {
   AiQueryError,
@@ -25,6 +28,14 @@ export function PromptHistoryPage({
 }) {
   const queryClient = useQueryClient();
   const trackerQuery = useAiVisibilityTracker(projectId);
+  const contextQuery = useQuery({
+    queryKey: projectContextQueryKey(projectId),
+    queryFn: () => getProjectContext({ data: { projectId } }),
+  });
+  const identityVariants = useMemo(
+    () => projectBrandIdentityVariants(contextQuery.data?.customSections ?? []),
+    [contextQuery.data?.customSections],
+  );
   const [checking, setChecking] = useState(false);
   const [startedRun, setStartedRun] = useState<AiRun | null>(null);
   const progress = useAiRunProgress(projectId, startedRun);
@@ -86,7 +97,7 @@ export function PromptHistoryPage({
       )}
       {progress.run && <AiRunStatus run={progress.run} />}
       {progress.error && <AiQueryError error={progress.error} />}
-      {history.isPending ? (
+      {history.isPending || contextQuery.isPending ? (
         <SkeletonCard />
       ) : history.isError ? (
         <AiQueryError
@@ -95,12 +106,20 @@ export function PromptHistoryPage({
             void history.refetch();
           }}
         />
+      ) : contextQuery.isError ? (
+        <AiQueryError
+          error={contextQuery.error}
+          retry={() => {
+            void contextQuery.refetch();
+          }}
+        />
       ) : (
         <PromptAnalysis
           key={`${promptId}:${startedRun?.id ?? ""}`}
           projectId={projectId}
           prompt={prompt}
           history={history.data}
+          identityVariants={identityVariants}
         />
       )}
       {checking && state?.tracker && (

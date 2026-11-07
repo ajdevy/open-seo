@@ -17,6 +17,10 @@ import {
   getSignInSearch,
 } from "@/lib/auth-redirect";
 import { getProjectAccess } from "@/serverFunctions/projects";
+import { useSession } from "@/lib/auth-client";
+import { usesBetterAuthClient } from "@/lib/auth-mode";
+import { ProjectAccessBoundary } from "@/client/features/projects/ProjectAccessBoundary";
+import { projectAccessQueryKey } from "@/client/features/projects/projectAccess";
 
 export const Route = createFileRoute("/_app/p/$projectId")({
   // Everything under this subtree fetches its data client-side with
@@ -32,9 +36,14 @@ export const Route = createFileRoute("/_app/p/$projectId")({
 // call; nothing sensitive renders from this check.
 function useProjectAccessRedirect(projectId: string) {
   const navigate = useNavigate();
+  const { data: session, isPending: sessionPending } = useSession();
+  const hasAccounts = usesBetterAuthClient();
+  const userId = session?.user?.id ?? null;
+  const canCheckAccess = !sessionPending && (!hasAccounts || Boolean(userId));
   const access = useQuery({
-    queryKey: ["projectAccess", projectId],
+    queryKey: projectAccessQueryKey(userId, projectId),
     queryFn: () => getProjectAccess({ data: { projectId } }),
+    enabled: canCheckAccess,
     // A failed check redirects away — retrying would just delay it.
     retry: false,
     // One check per project per tab; a revoked project still dead-ends at
@@ -43,7 +52,7 @@ function useProjectAccessRedirect(projectId: string) {
   });
   const error = access.error;
   useEffect(() => {
-    if (!error) return;
+    if (!canCheckAccess || !error) return;
     if (getErrorCode(error) === "UNAUTHENTICATED") {
       void navigate({
         to: "/sign-in",
@@ -58,8 +67,8 @@ function useProjectAccessRedirect(projectId: string) {
     // would bring the user straight back here.
     if (getLastProjectId() === projectId) clearLastProjectId();
     void navigate({ to: "/", replace: true });
-  }, [error, navigate, projectId]);
-  return access.isSuccess;
+  }, [canCheckAccess, error, navigate, projectId]);
+  return canCheckAccess && access.isSuccess;
 }
 
 function ProjectLayout() {
@@ -83,5 +92,9 @@ function ProjectLayout() {
     setLastProjectId(projectId);
   }, [projectId, hasAccess, isSettingsPage]);
 
-  return <Outlet />;
+  return (
+    <ProjectAccessBoundary allowed={hasAccess}>
+      <Outlet />
+    </ProjectAccessBoundary>
+  );
 }

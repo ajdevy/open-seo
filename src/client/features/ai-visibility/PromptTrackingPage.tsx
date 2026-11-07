@@ -20,6 +20,7 @@ import {
 import type { AiTrackerPatch } from "@/types/schemas/ai-visibility";
 import type { PromptTrackingTab } from "./PromptTrackingTabs";
 import { ConfiguredTrackingPanel } from "./ConfiguredTrackingPanel";
+import { SelectedRunBoundary } from "./SelectedRunBoundary";
 import { TrackerEditor, TrackerEditorMode } from "./TrackerEditor";
 import { prefetchRunNowCost, TrackingCostReview } from "./TrackingCostReview";
 import { TrackingScheduleSummary } from "./TrackingScheduleSummary";
@@ -167,6 +168,18 @@ function PromptTrackingContent({
       }}
     />
   );
+
+  if (runId && progress.error) {
+    return (
+      <SelectedRunBoundary
+        runId={runId}
+        error={progress.error}
+        retry={() => {
+          void progress.refetch();
+        }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-4">
