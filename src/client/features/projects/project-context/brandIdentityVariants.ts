@@ -59,23 +59,5 @@ export function mentionedBrandIdentityVariants(
 }
 
 function escapeRegExp(value: string) {
-  const special = new Set([
-    "\\",
-    ".",
-    "*",
-    "+",
-    "?",
-    "^",
-    "$",
-    "{",
-    "}",
-    "(",
-    ")",
-    "|",
-    "[",
-    "]",
-  ]);
-  return [...value]
-    .map((character) => (special.has(character) ? `\\${character}` : character))
-    .join("");
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

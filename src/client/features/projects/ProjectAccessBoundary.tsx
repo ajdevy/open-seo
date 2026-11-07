@@ -6,7 +6,7 @@ export function ProjectAccessBoundary({
   children,
 }: {
   allowed: boolean;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   if (!allowed) {
     return (

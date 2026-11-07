@@ -6,10 +6,13 @@ import { ProjectAccessBoundary } from "./ProjectAccessBoundary";
 describe("project access boundary", () => {
   it("does not render project content before access succeeds", () => {
     const html = renderToStaticMarkup(
-      createElement(ProjectAccessBoundary, {
-        allowed: false,
-        children: createElement("p", null, "Private project report"),
-      }),
+      createElement(
+        ProjectAccessBoundary,
+        {
+          allowed: false,
+        },
+        createElement("p", null, "Private project report"),
+      ),
     );
 
     expect(html).toContain("Checking project access");
@@ -18,10 +21,13 @@ describe("project access boundary", () => {
 
   it("renders project content after access succeeds", () => {
     const html = renderToStaticMarkup(
-      createElement(ProjectAccessBoundary, {
-        allowed: true,
-        children: createElement("p", null, "Allowed project report"),
-      }),
+      createElement(
+        ProjectAccessBoundary,
+        {
+          allowed: true,
+        },
+        createElement("p", null, "Allowed project report"),
+      ),
     );
 
     expect(html).toContain("Allowed project report");

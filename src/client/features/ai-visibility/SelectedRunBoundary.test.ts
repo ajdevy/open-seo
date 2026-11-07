@@ -11,12 +11,15 @@ vi.mock("./shared", () => ({
 describe("selected run boundary", () => {
   it("does not fall through to report content when a selected run is unavailable", () => {
     const html = renderToStaticMarkup(
-      createElement(SelectedRunBoundary, {
-        runId: "foreign-run-id",
-        error: Object.assign(new Error("Not found"), { code: "NOT_FOUND" }),
-        retry: vi.fn(),
-        children: createElement("p", null, "Private run answer"),
-      }),
+      createElement(
+        SelectedRunBoundary,
+        {
+          runId: "foreign-run-id",
+          error: Object.assign(new Error("Not found"), { code: "NOT_FOUND" }),
+          retry: vi.fn(),
+        },
+        createElement("p", null, "Private run answer"),
+      ),
     );
 
     expect(html).not.toContain("Private run answer");

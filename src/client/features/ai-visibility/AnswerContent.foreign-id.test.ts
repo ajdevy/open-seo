@@ -2,9 +2,17 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
+import type { AiAnswer } from "@/shared/ai-visibility";
 import { AnswerContent } from "./AnswerContent";
 
-const { getAnswer } = vi.hoisted(() => ({ getAnswer: vi.fn() }));
+const { getAnswer } = vi.hoisted(() => ({
+  getAnswer:
+    vi.fn<
+      (input: {
+        data: { projectId: string; observationId: string };
+      }) => Promise<AiAnswer>
+    >(),
+}));
 
 vi.mock("@/serverFunctions/ai-visibility", () => ({
   getAiVisibilityAnswer: getAnswer,
