@@ -1,13 +1,16 @@
 import type { APIRequestContext } from "@playwright/test";
+import { z } from "zod";
 import { check } from "./checks";
 import {
   callTool,
   describeResult,
   structured,
+  type Credential,
   type McpCallResult,
   type ToolCall,
 } from "./mcp";
 import {
+  deletedCountSchema,
   reportSchema,
   reportsSchema,
   savedKeywordsSchema,
@@ -25,6 +28,31 @@ import { INTRUDER, reportHtml, type SeededData, type Tenant } from "./tenants";
 export function foreignProjectCalls(b: Tenant, seeded: SeededData): ToolCall[] {
   const projectId = b.projectId;
   return [
+    {
+      name: "get_ai_visibility_run",
+      arguments: { projectId, runId: b.ai.runId },
+    },
+    {
+      name: "get_ai_visibility_results",
+      arguments: { projectId, runId: b.ai.runId, branded: "all" },
+    },
+    {
+      name: "get_ai_visibility_answer",
+      arguments: { projectId, observationId: b.ai.answerId },
+    },
+    {
+      name: "get_ai_visibility_sources",
+      arguments: { projectId, runId: b.ai.runId, branded: "all" },
+    },
+    {
+      name: "create_ai_visibility_native_run",
+      // This synthetic run is local-only and makes no provider or paid API call.
+      arguments: {
+        projectId,
+        questionIds: [b.ai.promptId],
+        targets: [{ requestedModel: "synthetic-test", route: "codex_cli" }],
+      },
+    },
     { name: "get_project_context", arguments: { projectId } },
     {
       name: "update_project_context",
@@ -84,11 +112,28 @@ export function foreignProjectCalls(b: Tenant, seeded: SeededData): ToolCall[] {
  */
 export function foreignResourceCalls(
   a: Tenant,
+  b: Tenant,
   seeded: SeededData,
 ): ToolCall[] {
   const projectId = a.projectId;
   const { reportId, templateId } = seeded;
   return [
+    {
+      name: "get_ai_visibility_run",
+      arguments: { projectId, runId: b.ai.runId },
+    },
+    {
+      name: "get_ai_visibility_results",
+      arguments: { projectId, runId: b.ai.runId, branded: "all" },
+    },
+    {
+      name: "get_ai_visibility_answer",
+      arguments: { projectId, observationId: b.ai.answerId },
+    },
+    {
+      name: "get_ai_visibility_sources",
+      arguments: { projectId, runId: b.ai.runId, branded: "all" },
+    },
     { name: "get_report", arguments: { projectId, reportId } },
     {
       name: "set_report_sharing",
@@ -140,6 +185,40 @@ export function leaked(
   );
 }
 
+/** Foreign ids are ignored by remove_saved_keywords; verify none were deleted. */
+export async function checkForeignKeywordDeletion({
+  anon,
+  credential,
+  projectId,
+  seeded,
+  chapter,
+}: {
+  anon: APIRequestContext;
+  credential: Credential;
+  projectId: string;
+  seeded: SeededData;
+  chapter: string;
+}) {
+  const call: ToolCall = {
+    name: "remove_saved_keywords",
+    arguments: { projectId, savedKeywordIds: seeded.keywordIds },
+  };
+  const result = await callTool(anon, credential, call);
+  const count = deletedCountSchema.safeParse(result.structuredContent);
+  check({
+    chapter,
+    credential: credential.label,
+    tool: "remove_saved_keywords (A project, B ids)",
+    expectation: "deletes nothing",
+    ok:
+      result.isError === false &&
+      count.success &&
+      count.data.deletedCount === 0 &&
+      leaked(result, call, seeded).length === 0,
+    detail: describeResult(result),
+  });
+}
+
 /** As B, after A's attempts: the seeded data is intact and nothing was added. */
 export async function checkTenantBUnchanged(
   anon: APIRequestContext,
@@ -165,6 +244,119 @@ export async function checkTenantBUnchanged(
       context.text.includes(seeded.marker) &&
       !context.text.includes(INTRUDER),
     detail: describeResult(context),
+  });
+
+  const tracker = structured(
+    await read({ name: "get_ai_visibility_tracker", arguments: { projectId } }),
+    z.looseObject({
+      data: z.looseObject({
+        recentRuns: z.array(z.looseObject({ id: z.string() })),
+      }),
+    }),
+    "B reads AI tracker after A's synthetic launch attempt",
+  );
+  check({
+    chapter,
+    credential,
+    tool: "get_ai_visibility_tracker",
+    expectation: "foreign synthetic launch did not create a run",
+    ok:
+      tracker.data.recentRuns.length === 1 &&
+      tracker.data.recentRuns[0]?.id === b.ai.runId,
+    detail: tracker.data.recentRuns.map((run) => run.id).join(","),
+  });
+
+  const aiResults = structured(
+    await read({
+      name: "get_ai_visibility_results",
+      arguments: {
+        projectId,
+        runId: b.ai.runId,
+        branded: "all",
+      },
+    }),
+    z.looseObject({
+      data: z.looseObject({
+        rows: z.array(
+          z.looseObject({
+            id: z.string(),
+            runId: z.string(),
+            prompt: z.string(),
+          }),
+        ),
+      }),
+    }),
+    "B reads synthetic AI results after A's attempts",
+  );
+  const aiRow = aiResults.data.rows.find((row) => row.id === b.ai.answerId);
+  check({
+    chapter,
+    credential,
+    tool: "get_ai_visibility_results",
+    expectation: "B's synthetic answer id and prompt remain intact",
+    ok: aiRow?.runId === b.ai.runId && aiRow.prompt === b.ai.prompt,
+    detail: `answer=${aiRow?.id ?? "missing"}; run=${aiRow?.runId ?? "missing"}`,
+  });
+
+  const aiAnswer = structured(
+    await read({
+      name: "get_ai_visibility_answer",
+      arguments: { projectId, observationId: b.ai.answerId },
+    }),
+    z.looseObject({
+      data: z.looseObject({
+        observation: z.looseObject({ id: z.string() }),
+        answerText: z.string().nullable(),
+        sources: z.array(
+          z.looseObject({ url: z.string(), title: z.string().nullable() }),
+        ),
+      }),
+    }),
+    "B reads synthetic AI answer after A's attempts",
+  );
+  check({
+    chapter,
+    credential,
+    tool: "get_ai_visibility_answer",
+    expectation: "B's synthetic answer remains intact",
+    ok:
+      aiAnswer.data.observation.id === b.ai.answerId &&
+      aiAnswer.data.answerText === b.ai.answer &&
+      aiAnswer.data.sources.some(
+        (source) =>
+          source.url === b.ai.sourceUrl && source.title === b.ai.sourceTitle,
+      ),
+    detail: `answer=${aiAnswer.data.answerText ?? "missing"}; sources=${aiAnswer.data.sources.length}`,
+  });
+
+  const aiSources = structured(
+    await read({
+      name: "get_ai_visibility_sources",
+      arguments: { projectId, runId: b.ai.runId, branded: "all" },
+    }),
+    z.looseObject({
+      data: z.looseObject({
+        rows: z.array(
+          z.looseObject({
+            url: z.string().nullable(),
+            title: z.string().nullable(),
+            observationIds: z.array(z.string()),
+          }),
+        ),
+      }),
+    }),
+    "B reads synthetic AI sources after A's attempts",
+  );
+  const source = aiSources.data.rows.find((row) => row.url === b.ai.sourceUrl);
+  check({
+    chapter,
+    credential,
+    tool: "get_ai_visibility_sources",
+    expectation: "B's synthetic source remains intact",
+    ok:
+      source?.title === b.ai.sourceTitle &&
+      source.observationIds.includes(b.ai.answerId),
+    detail: `source=${source?.url ?? "missing"}; answer=${source?.observationIds.join(",") ?? "missing"}`,
   });
 
   const keywords = structured(
