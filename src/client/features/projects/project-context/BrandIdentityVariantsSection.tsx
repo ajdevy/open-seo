@@ -55,6 +55,7 @@ export function BrandIdentityVariantsSection({
           rows={4}
           maxLength={PROSE_MAX_CHARS}
           placeholder={"Acme Cloud\nAcme.io\nFormer brand name"}
+          disabled={update.isPending}
           value={value}
           onChange={(event) => setDraft(event.target.value)}
         />
