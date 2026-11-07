@@ -85,12 +85,10 @@ export const aiRunResultsQueryOptions = (
 ) =>
   queryOptions({
     queryKey: [...aiVisibilityKey(projectId), "results", "all", runId],
-    queryFn: async () => {
-      const result = await getAiVisibilityResults({
+    queryFn: () =>
+      getAiVisibilityResults({
         data: { projectId, runId, branded: "all" },
-      });
-      return result.rows;
-    },
+      }),
     enabled: Boolean(runId),
   });
 

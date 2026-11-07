@@ -38,6 +38,7 @@ export function PromptList({
 }) {
   const [search, setSearch] = useState("");
   const results = useQuery(aiRunResultsQueryOptions(projectId, currentRun?.id));
+  const rows = results.data?.rows;
   const exportMutation = useMutation({
     mutationFn: (format: "json" | "csv") =>
       exportAiVisibilityData({
@@ -102,7 +103,7 @@ export function PromptList({
       )}
       {/* Only before any prompt has results; rows gray out individually. */}
       {!collecting &&
-        !prompts.some((prompt) => promptHasResults(prompt, results.data)) && (
+        !prompts.some((prompt) => promptHasResults(prompt, rows)) && (
           <Alert variant="info" banner>
             <Info />
             <AlertDescription>
@@ -116,7 +117,7 @@ export function PromptList({
         topics={state.topics}
         search={search}
         engines={state.engines}
-        rows={results.data}
+        rows={rows}
         loading={results.isLoading}
         scheduled={Boolean(state.tracker?.enabled)}
         pending={reducePending}
