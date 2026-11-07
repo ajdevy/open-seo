@@ -1,14 +1,20 @@
 import type { ReactNode } from "react";
+import { hasConfirmedProjectAccess } from "./projectAccess";
 
 /** Keeps project pages and their cached child data off screen until access is confirmed. */
 export function ProjectAccessBoundary({
-  allowed,
+  canCheckAccess,
+  access,
   children,
 }: {
-  allowed: boolean;
+  canCheckAccess: boolean;
+  access: {
+    isSuccess: boolean;
+    isFetchedAfterMount: boolean;
+  };
   children?: ReactNode;
 }) {
-  if (!allowed) {
+  if (!canCheckAccess || !hasConfirmedProjectAccess(access)) {
     return (
       <div
         className="flex min-h-40 items-center justify-center text-sm text-muted-foreground"

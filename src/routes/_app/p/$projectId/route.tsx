@@ -20,7 +20,10 @@ import { getProjectAccess } from "@/serverFunctions/projects";
 import { useSession } from "@/lib/auth-client";
 import { usesBetterAuthClient } from "@/lib/auth-mode";
 import { ProjectAccessBoundary } from "@/client/features/projects/ProjectAccessBoundary";
-import { projectAccessQueryKey } from "@/client/features/projects/projectAccess";
+import {
+  hasConfirmedProjectAccess,
+  projectAccessQueryOptions,
+} from "@/client/features/projects/projectAccess";
 
 export const Route = createFileRoute("/_app/p/$projectId")({
   // Everything under this subtree fetches its data client-side with
@@ -39,16 +42,14 @@ function useProjectAccessRedirect(projectId: string) {
   const { data: session, isPending: sessionPending } = useSession();
   const hasAccounts = usesBetterAuthClient();
   const userId = session?.user?.id ?? null;
-  const canCheckAccess = !sessionPending && (!hasAccounts || Boolean(userId));
+  const canCheckAccess = Boolean(
+    !sessionPending && (!hasAccounts || Boolean(userId)),
+  );
   const access = useQuery({
-    queryKey: projectAccessQueryKey(userId, projectId),
-    queryFn: () => getProjectAccess({ data: { projectId } }),
+    ...projectAccessQueryOptions(userId, projectId, () =>
+      getProjectAccess({ data: { projectId } }),
+    ),
     enabled: canCheckAccess,
-    // A failed check redirects away — retrying would just delay it.
-    retry: false,
-    // One check per project per tab; a revoked project still dead-ends at
-    // every data call, so there's nothing to re-validate here.
-    staleTime: Infinity,
   });
   const error = access.error;
   useEffect(() => {
@@ -68,12 +69,13 @@ function useProjectAccessRedirect(projectId: string) {
     if (getLastProjectId() === projectId) clearLastProjectId();
     void navigate({ to: "/", replace: true });
   }, [canCheckAccess, error, navigate, projectId]);
-  return canCheckAccess && access.isSuccess;
+  return { canCheckAccess, access };
 }
 
 function ProjectLayout() {
   const { projectId } = Route.useParams();
-  const hasAccess = useProjectAccessRedirect(projectId);
+  const { canCheckAccess, access } = useProjectAccessRedirect(projectId);
+  const hasAccess = canCheckAccess && hasConfirmedProjectAccess(access);
 
   // Remember this as the last-visited project for the landing redirect, once
   // the access check confirms it's one of the org's projects.
@@ -93,7 +95,7 @@ function ProjectLayout() {
   }, [projectId, hasAccess, isSettingsPage]);
 
   return (
-    <ProjectAccessBoundary allowed={hasAccess}>
+    <ProjectAccessBoundary canCheckAccess={canCheckAccess} access={access}>
       <Outlet />
     </ProjectAccessBoundary>
   );

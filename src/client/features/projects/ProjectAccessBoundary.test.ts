@@ -9,7 +9,8 @@ describe("project access boundary", () => {
       createElement(
         ProjectAccessBoundary,
         {
-          allowed: false,
+          canCheckAccess: true,
+          access: { isSuccess: false, isFetchedAfterMount: false },
         },
         createElement("p", null, "Private project report"),
       ),
@@ -24,12 +25,29 @@ describe("project access boundary", () => {
       createElement(
         ProjectAccessBoundary,
         {
-          allowed: true,
+          canCheckAccess: true,
+          access: { isSuccess: true, isFetchedAfterMount: true },
         },
         createElement("p", null, "Allowed project report"),
       ),
     );
 
     expect(html).toContain("Allowed project report");
+  });
+
+  it("hides cached project content until this visit rechecks access", () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        ProjectAccessBoundary,
+        {
+          canCheckAccess: true,
+          access: { isSuccess: true, isFetchedAfterMount: false },
+        },
+        createElement("p", null, "Cached private project report"),
+      ),
+    );
+
+    expect(html).toContain("Checking project access");
+    expect(html).not.toContain("Cached private project report");
   });
 });
