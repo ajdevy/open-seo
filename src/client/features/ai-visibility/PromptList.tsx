@@ -13,6 +13,7 @@ import { getStandardErrorMessage } from "@/client/lib/error-messages";
 import type { AiPrompt, AiRun, AiTrackerState } from "@/shared/ai-visibility";
 import type { AiTrackerPatch } from "@/types/schemas/ai-visibility";
 import { PromptInventory, promptHasResults } from "./PromptInventory";
+import { NativeModelResults } from "./NativeModelResults";
 import { AiQueryError, aiRunResultsQueryOptions } from "./shared";
 
 export function PromptList({
@@ -111,6 +112,7 @@ export function PromptList({
             </AlertDescription>
           </Alert>
         )}
+      <NativeModelResults results={results.data?.nativeResults ?? []} />
       <PromptInventory
         projectId={projectId}
         prompts={prompts}

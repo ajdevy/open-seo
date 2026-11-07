@@ -47,4 +47,32 @@ describe("native model result display", () => {
     expect(html).toContain("Search: unknown");
     expect(html).toContain("event-1");
   });
+
+  it("shows pending tasks and failed per-model results with their task IDs", () => {
+    const html = renderToStaticMarkup(
+      createElement(NativeModelResults, {
+        results: [
+          {
+            ...result,
+            id: "pending-task",
+            resultStatus: "pending",
+            answer: null,
+          },
+          {
+            ...result,
+            id: "failed-task",
+            resultStatus: "failed",
+            answer: null,
+            errorCode: "MODEL_UNAVAILABLE",
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Waiting for a result for this model.");
+    expect(html).toContain("Task ID:");
+    expect(html).toContain("pending-task");
+    expect(html).toContain("failed-task");
+    expect(html).toContain("MODEL_UNAVAILABLE");
+  });
 });

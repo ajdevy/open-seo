@@ -22,9 +22,11 @@ export type PromptTrackingTab = (typeof PROMPT_TRACKING_TABS)[number]["value"];
 export function PromptTrackingTabs({
   projectId,
   tab,
+  runId,
 }: {
   projectId: string;
   tab: PromptTrackingTab;
+  runId: string | undefined;
 }) {
   const navigate = useNavigate();
   return (
@@ -43,6 +45,7 @@ export function PromptTrackingTabs({
               replace: true,
               search: {
                 tab: next.value === "prompts" ? undefined : next.value,
+                run_id: runId,
               },
             });
         }}

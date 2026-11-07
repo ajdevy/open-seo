@@ -46,7 +46,14 @@ export function NativeModelResults({ results }: { results: AiNativeResult[] }) {
             <p className="text-xs text-muted-foreground" data-ph-mask>
               {result.question}
             </p>
-            {result.answer ? (
+            <p className="text-xs text-muted-foreground">
+              Task ID: <code>{result.id}</code>
+            </p>
+            {result.resultStatus === "pending" ? (
+              <p className="text-sm text-muted-foreground">
+                Waiting for a result for this model.
+              </p>
+            ) : result.answer ? (
               <p className="whitespace-pre-wrap text-sm" data-ph-mask>
                 {result.answer}
               </p>
