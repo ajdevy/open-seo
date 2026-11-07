@@ -25,3 +25,10 @@ export function hasConfirmedProjectAccess(access: {
 }) {
   return access.isSuccess && access.isFetchedAfterMount;
 }
+
+export function hasFreshProjectAccessError(access: {
+  isError: boolean;
+  isFetchedAfterMount: boolean;
+}) {
+  return access.isError && access.isFetchedAfterMount;
+}

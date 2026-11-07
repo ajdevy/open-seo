@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ProjectAccessBoundary } from "./ProjectAccessBoundary";
 import {
   hasConfirmedProjectAccess,
+  hasFreshProjectAccessError,
   projectAccessQueryKey,
   projectAccessQueryOptions,
 } from "./projectAccess";
@@ -82,6 +83,106 @@ describe("project access query scope", () => {
     } finally {
       rejectAccessCheck(new Error("Test cleanup"));
       unsubscribeReselectedProject?.();
+      queryClient.clear();
+    }
+  });
+
+  it("waits for a fresh access result before redirecting a cached denial", async () => {
+    const queryClient = new QueryClient();
+    const userId = "user-a";
+    const projectId = "project-a";
+    let accessMode: "allowed" | "denied" | "restoring" = "allowed";
+    let resolveRestoredAccess!: (value: { projectId: string }) => void;
+    const getAccess = vi.fn((): Promise<{ projectId: string }> => {
+      if (accessMode === "allowed") return Promise.resolve({ projectId });
+      if (accessMode === "denied") {
+        return Promise.reject(new Error("Project access denied"));
+      }
+      return new Promise((resolve) => {
+        resolveRestoredAccess = resolve;
+      });
+    });
+    const options = projectAccessQueryOptions(userId, projectId, getAccess);
+    let unsubscribeDeniedProject: (() => void) | undefined;
+    let unsubscribeRestoredProject: (() => void) | undefined;
+
+    try {
+      await queryClient.fetchQuery(options);
+      expect(queryClient.getQueryData(options.queryKey)).toEqual({ projectId });
+
+      accessMode = "denied";
+      const deniedProject = new QueryObserver(queryClient, options);
+      const cachedDenial = new Promise<
+        ReturnType<typeof deniedProject.getCurrentResult>
+      >((resolve) => {
+        unsubscribeDeniedProject = deniedProject.subscribe((result) => {
+          if (result.isError && !result.isFetching) resolve(result);
+        });
+      });
+      const deniedAccess = await cachedDenial;
+      expect(deniedAccess.data).toEqual({ projectId });
+      expect(deniedAccess.isError).toBe(true);
+      expect(hasFreshProjectAccessError(deniedAccess)).toBe(true);
+      unsubscribeDeniedProject?.();
+      unsubscribeDeniedProject = undefined;
+
+      accessMode = "restoring";
+      const restoredProject = new QueryObserver(queryClient, options);
+      const freshSuccess = new Promise<
+        ReturnType<typeof restoredProject.getCurrentResult>
+      >((resolve) => {
+        unsubscribeRestoredProject = restoredProject.subscribe((result) => {
+          if (result.isSuccess && result.isFetchedAfterMount) resolve(result);
+        });
+      });
+
+      const cachedDenialDuringRecheck = restoredProject.getCurrentResult();
+      expect(getAccess).toHaveBeenCalledTimes(3);
+      expect(cachedDenialDuringRecheck.isError).toBe(true);
+      expect(cachedDenialDuringRecheck.isFetching).toBe(true);
+      expect(cachedDenialDuringRecheck.isFetchedAfterMount).toBe(false);
+      expect(hasFreshProjectAccessError(cachedDenialDuringRecheck)).toBe(false);
+      expect(hasConfirmedProjectAccess(cachedDenialDuringRecheck)).toBe(false);
+      expect(cachedDenialDuringRecheck.data).toEqual({ projectId });
+
+      const authorizedProjectQuery = vi.fn();
+      function PrivateProjectPage() {
+        authorizedProjectQuery();
+        return createElement("p", null, "Private project content");
+      }
+      const pendingHtml = renderToStaticMarkup(
+        createElement(
+          ProjectAccessBoundary,
+          {
+            canCheckAccess: true,
+            access: cachedDenialDuringRecheck,
+          },
+          createElement(PrivateProjectPage),
+        ),
+      );
+      expect(pendingHtml).toContain("Checking project access");
+      expect(pendingHtml).not.toContain("Private project content");
+      expect(authorizedProjectQuery).not.toHaveBeenCalled();
+
+      resolveRestoredAccess({ projectId });
+      const restoredAccess = await freshSuccess;
+      expect(restoredAccess.isSuccess).toBe(true);
+      expect(hasFreshProjectAccessError(restoredAccess)).toBe(false);
+      expect(hasConfirmedProjectAccess(restoredAccess)).toBe(true);
+
+      const authorizedHtml = renderToStaticMarkup(
+        createElement(
+          ProjectAccessBoundary,
+          { canCheckAccess: true, access: restoredAccess },
+          createElement(PrivateProjectPage),
+        ),
+      );
+      expect(authorizedHtml).toContain("Private project content");
+      expect(authorizedProjectQuery).toHaveBeenCalledTimes(1);
+    } finally {
+      resolveRestoredAccess?.({ projectId });
+      unsubscribeDeniedProject?.();
+      unsubscribeRestoredProject?.();
       queryClient.clear();
     }
   });

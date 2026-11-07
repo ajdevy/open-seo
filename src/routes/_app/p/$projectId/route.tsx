@@ -22,6 +22,7 @@ import { usesBetterAuthClient } from "@/lib/auth-mode";
 import { ProjectAccessBoundary } from "@/client/features/projects/ProjectAccessBoundary";
 import {
   hasConfirmedProjectAccess,
+  hasFreshProjectAccessError,
   projectAccessQueryOptions,
 } from "@/client/features/projects/projectAccess";
 
@@ -52,8 +53,9 @@ function useProjectAccessRedirect(projectId: string) {
     enabled: canCheckAccess,
   });
   const error = access.error;
+  const hasFreshError = hasFreshProjectAccessError(access);
   useEffect(() => {
-    if (!canCheckAccess || !error) return;
+    if (!canCheckAccess || !error || !hasFreshError) return;
     if (getErrorCode(error) === "UNAUTHENTICATED") {
       void navigate({
         to: "/sign-in",
@@ -68,7 +70,7 @@ function useProjectAccessRedirect(projectId: string) {
     // would bring the user straight back here.
     if (getLastProjectId() === projectId) clearLastProjectId();
     void navigate({ to: "/", replace: true });
-  }, [canCheckAccess, error, navigate, projectId]);
+  }, [canCheckAccess, error, hasFreshError, navigate, projectId]);
   return { canCheckAccess, access };
 }
 
