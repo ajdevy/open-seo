@@ -18,6 +18,10 @@ import {
   aiExportSchema,
   aiTrendSchema,
 } from "@/types/schemas/ai-visibility";
+import {
+  createAiNativeRunSchema,
+  recordAiNativeResultSchema,
+} from "@/types/schemas/ai-native-results";
 
 export const generateAiVisibilityPrompts = createServerFn({ method: "POST" })
   .middleware(requireProjectContext)
@@ -100,6 +104,28 @@ export const runAiVisibilityCheck = createServerFn({ method: "POST" })
   .validator(runAiCheckSchema)
   .handler(({ data, context }) =>
     AiVisibilityService.runCheck(
+      { ...data, projectId: context.projectId },
+      context,
+    ),
+  );
+
+export const createAiVisibilityNativeRun = createServerFn({ method: "POST" })
+  .middleware(requireProjectContext)
+  .validator(createAiNativeRunSchema)
+  .handler(({ data, context }) =>
+    AiVisibilityService.createNativeRun(
+      { ...data, projectId: context.projectId },
+      context,
+    ),
+  );
+
+export const recordAiVisibilityNativeRunResult = createServerFn({
+  method: "POST",
+})
+  .middleware(requireProjectContext)
+  .validator(recordAiNativeResultSchema)
+  .handler(({ data, context }) =>
+    AiVisibilityService.recordNativeRunResult(
       { ...data, projectId: context.projectId },
       context,
     ),
