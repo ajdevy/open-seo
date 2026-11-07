@@ -1,16 +1,31 @@
 import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getAiVisibilityResults } from "@/serverFunctions/ai-visibility";
+import {
+  createAiVisibilityNativeRun,
+  getAiVisibilityRun,
+  getAiVisibilityResults,
+  runAiVisibilityCheck,
+} from "@/serverFunctions/ai-visibility";
 import type { AiNativeResult } from "@/shared/ai-visibility";
-import { aiRunResultsQueryOptions } from "./shared";
+import {
+  aiRunPollingInterval,
+  aiRunQueryOptions,
+  aiRunResultsQueryOptions,
+} from "./shared";
 
-const { readResults } = vi.hoisted(() => ({ readResults: vi.fn() }));
+const { readResults, readRun } = vi.hoisted(() => ({
+  readResults: vi.fn(),
+  readRun: vi.fn(),
+}));
 vi.mock("@/serverFunctions/ai-visibility", () => ({
   getAiResearchSetup: vi.fn(),
-  getAiVisibilityRun: vi.fn(),
+  getAiVisibilityRun: readRun,
   getAiVisibilityTracker: vi.fn(),
   getAiVisibilityTrend: vi.fn(),
   getAiVisibilityResults: readResults,
+  createAiVisibilityNativeRun: vi.fn(),
+  recordAiVisibilityNativeRunResult: vi.fn(),
+  runAiVisibilityCheck: vi.fn(),
   listAiResearchKeywords: vi.fn(),
 }));
 
@@ -57,6 +72,18 @@ const page = {
   truncated: false,
   historyRuns: [],
 };
+const runningRun = {
+  id: runId,
+  status: "running" as const,
+  trigger: "manual" as const,
+  expected: 2,
+  completed: 1,
+  failed: 0,
+  pending: 1,
+  createdAt: "2026-11-06T12:00:00.000Z",
+  completedAt: null,
+  pollAfterSeconds: 7,
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -75,5 +102,48 @@ describe("AI visibility run results query", () => {
     });
     expect(result.rows).toEqual([]);
     expect(result.nativeResults).toEqual([nativeResult]);
+  });
+
+  it("re-reads the same run ID while pending and stops after a terminal status", async () => {
+    const queryClient = new QueryClient();
+    vi.mocked(getAiVisibilityResults).mockResolvedValue({
+      ...page,
+      run: runningRun,
+    });
+    const options = aiRunResultsQueryOptions(projectId, runId);
+
+    await queryClient.fetchQuery({ ...options, staleTime: 0 });
+    await queryClient.fetchQuery({ ...options, staleTime: 0 });
+
+    expect(getAiVisibilityResults).toHaveBeenNthCalledWith(1, {
+      data: { projectId, runId, branded: "all" },
+    });
+    expect(getAiVisibilityResults).toHaveBeenNthCalledWith(2, {
+      data: { projectId, runId, branded: "all" },
+    });
+    expect(aiRunPollingInterval(runningRun)).toBe(7000);
+    expect(aiRunPollingInterval({ ...runningRun, status: "partial" })).toBe(
+      false,
+    );
+    expect(createAiVisibilityNativeRun).not.toHaveBeenCalled();
+    expect(runAiVisibilityCheck).not.toHaveBeenCalled();
+  });
+
+  it("polls status by the selected run ID without creating another run", async () => {
+    const queryClient = new QueryClient();
+    vi.mocked(getAiVisibilityRun).mockResolvedValue(runningRun);
+    const options = aiRunQueryOptions(projectId, runId);
+
+    await queryClient.fetchQuery({ ...options, staleTime: 0 });
+    await queryClient.fetchQuery({ ...options, staleTime: 0 });
+
+    expect(getAiVisibilityRun).toHaveBeenNthCalledWith(1, {
+      data: { projectId, runId },
+    });
+    expect(getAiVisibilityRun).toHaveBeenNthCalledWith(2, {
+      data: { projectId, runId },
+    });
+    expect(createAiVisibilityNativeRun).not.toHaveBeenCalled();
+    expect(runAiVisibilityCheck).not.toHaveBeenCalled();
   });
 });

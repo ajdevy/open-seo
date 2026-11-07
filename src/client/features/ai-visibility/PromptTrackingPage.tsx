@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessageSquare, Play, Plus, Settings2 } from "lucide-react";
+import { MessageSquare, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { EmptyState } from "@/client/components/EmptyState";
 import { SkeletonPageContent } from "@/client/components/SkeletonPresets";
 import { PageHeader } from "@/client/components/PageHeader";
-import { Badge } from "@/client/components/ui/badge";
 import { Button } from "@/client/components/ui/button";
 import { projectsQueryOptions } from "@/client/features/projects/projectQueries";
 import {
@@ -19,17 +18,10 @@ import {
   type AiTrackerState,
 } from "@/shared/ai-visibility";
 import type { AiTrackerPatch } from "@/types/schemas/ai-visibility";
-import { PromptList } from "./PromptList";
-import { CompetitorsTab } from "./CompetitorsTab";
-import { CitationsTab } from "./CitationsTab";
-import {
-  PromptTrackingTabs,
-  type PromptTrackingTab,
-} from "./PromptTrackingTabs";
+import type { PromptTrackingTab } from "./PromptTrackingTabs";
+import { ConfiguredTrackingPanel } from "./ConfiguredTrackingPanel";
 import { TrackerEditor, TrackerEditorMode } from "./TrackerEditor";
 import { prefetchRunNowCost, TrackingCostReview } from "./TrackingCostReview";
-import { VisibilityTrend } from "./VisibilityTrend";
-import { RunStatusLine } from "./RunStatusLine";
 import { TrackingScheduleSummary } from "./TrackingScheduleSummary";
 import { PromptEditor, TrackerPatchReview } from "./TrackerPatchReview";
 import {
@@ -40,15 +32,17 @@ import {
 } from "./shared";
 import type { ProjectMarket } from "@/client/features/projects/types";
 import { DEFAULT_LOCATION_CODE } from "@/shared/keyword-locations";
-import { scheduleLabel } from "@/shared/rank-tracking";
-import { InsufficientCreditsError } from "@/client/features/billing/InsufficientCreditsError";
 
 export function PromptTrackingPage({
   projectId,
   tab,
+  runId,
+  onSelectRunId,
 }: {
   projectId: string;
   tab: PromptTrackingTab;
+  runId: string | undefined;
+  onSelectRunId: (runId: string | undefined) => void;
 }) {
   const query = useAiVisibilityTracker(projectId);
   const projects = useQuery(projectsQueryOptions());
@@ -78,6 +72,8 @@ export function PromptTrackingPage({
     <PromptTrackingContent
       projectId={projectId}
       tab={tab}
+      runId={runId}
+      onSelectRunId={onSelectRunId}
       state={query.data}
       defaultMarket={{
         locationCode: project?.locationCode ?? DEFAULT_LOCATION_CODE,
@@ -90,25 +86,30 @@ export function PromptTrackingPage({
 function PromptTrackingContent({
   projectId,
   tab,
+  runId,
+  onSelectRunId,
   state,
   defaultMarket,
 }: {
   projectId: string;
   tab: PromptTrackingTab;
+  runId: string | undefined;
+  onSelectRunId: (runId: string | undefined) => void;
   state: AiTrackerState;
   defaultMarket: ProjectMarket;
 }) {
   const queryClient = useQueryClient();
   const [editorMode, setEditorMode] = useState<TrackerEditorMode | null>(null);
   const [managingTracking, setManagingTracking] = useState(false);
-  const [selectedRun, setSelectedRun] = useState<AiRun | null>(null);
   const [costMode, setCostMode] = useState<"check" | "schedule" | null>(null);
   const [editingPrompt, setEditingPrompt] = useState<AiPrompt | null>(null);
   const [change, setChange] = useState<AiTrackerPatch | null>(null);
-  const currentRun = selectedRun ?? state.recentRuns[0] ?? null;
-  const progress = useAiRunProgress(projectId, currentRun);
+  const initialRun = runId
+    ? (state.recentRuns.find((run) => run.id === runId) ?? null)
+    : (state.recentRuns[0] ?? null);
+  const progress = useAiRunProgress(projectId, initialRun, runId);
+  const currentRun = progress.run ?? (runId ? null : initialRun);
   const tracker = state.tracker;
-  const ownBrand = state.brands.find((brand) => brand.own);
   const activePrompts = state.prompts.filter(
     (prompt) => !prompt.archived && !prompt.paused,
   );
@@ -120,7 +121,7 @@ function PromptTrackingContent({
     if (closeEditor) setEditorMode(null);
     setEditingPrompt(null);
     setChange(null);
-    if (run) setSelectedRun(run);
+    if (run) onSelectRunId(run.id);
     toast.success(run ? "Run started" : "Prompt tracking saved");
   };
   const pauseSchedule = useMutation({
@@ -147,8 +148,8 @@ function PromptTrackingContent({
   // change, so the dialog opens on the current price.
   const engines = state.engines.join();
   useEffect(() => {
-    if (tracker) prefetchRunNowCost(queryClient, projectId, tracker);
-  }, [queryClient, projectId, tracker, activePrompts.length, engines]);
+    if (tracker && !runId) prefetchRunNowCost(queryClient, projectId, tracker);
+  }, [queryClient, projectId, tracker, runId, activePrompts.length, engines]);
   const schedule = tracker && (
     <TrackingScheduleSummary
       tracker={tracker}
@@ -187,93 +188,23 @@ function PromptTrackingContent({
           }
         />
       ) : (
-        <>
-          {progress.error && <AiQueryError error={progress.error} />}
-          {/* One card, like rank tracking: tracker header, trend, then tabs. */}
-          <div className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-            <div className="space-y-3 px-4 pt-4 pb-3">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-lg font-semibold">{ownBrand?.name}</h2>
-                    <Badge variant={tracker?.enabled ? "success" : "secondary"}>
-                      {tracker?.enabled
-                        ? `${scheduleLabel(tracker.scheduleInterval)} tracking`
-                        : "Paused"}
-                    </Badge>
-                  </div>
-                </div>
-                {/* Next to the schedule badge, like Configure in rank tracking. */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setEditorMode(TrackerEditorMode.Settings)}
-                  >
-                    <Settings2 />
-                    Tracking settings
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={
-                      !state.providerConfigured ||
-                      activePrompts.length === 0 ||
-                      busy
-                    }
-                    onClick={() => setCostMode("check")}
-                  >
-                    <Play />
-                    Run now
-                  </Button>
-                </div>
-              </div>
-              <RunStatusLine run={progress.run} tracker={tracker} />
-              {tracker?.lastSkipReason === "INSUFFICIENT_CREDITS" ? (
-                <InsufficientCreditsError variant="inline" />
-              ) : (
-                tracker?.lastSkipReason && (
-                  <p className="text-xs text-warning">
-                    Most recent scheduling notice: {tracker.lastSkipReason}
-                  </p>
-                )
-              )}
-            </div>
-            <VisibilityTrend projectId={projectId} collecting={busy} />
-            <PromptTrackingTabs projectId={projectId} tab={tab} />
-            {tab === "prompts" && (
-              <PromptList
-                key={currentRun?.id ?? "new"}
-                projectId={projectId}
-                state={state}
-                currentRun={currentRun}
-                collecting={busy}
-                onSetup={() => setEditorMode(TrackerEditorMode.Prompts)}
-                onEdit={setEditingPrompt}
-                onReduce={(patch) => reduceTracking.mutate(patch)}
-                onReview={setChange}
-                reducePending={reduceTracking.isPending}
-              />
-            )}
-            {tab === "competitors" && (
-              <CompetitorsTab
-                projectId={projectId}
-                state={state}
-                runId={currentRun?.id}
-                collecting={busy}
-              />
-            )}
-            {tab === "citations" && (
-              <CitationsTab
-                key={currentRun?.id ?? "new"}
-                projectId={projectId}
-                state={state}
-                runId={currentRun?.id}
-                collecting={busy}
-              />
-            )}
-          </div>
-        </>
+        <ConfiguredTrackingPanel
+          projectId={projectId}
+          state={state}
+          tab={tab}
+          runId={runId}
+          currentRun={currentRun}
+          loadingSelectedRun={Boolean(runId && progress.isPending)}
+          progressError={progress.error ?? null}
+          reducePending={reduceTracking.isPending}
+          onSelectRunId={onSelectRunId}
+          onEditSettings={() => setEditorMode(TrackerEditorMode.Settings)}
+          onRunNow={() => setCostMode("check")}
+          onSetup={() => setEditorMode(TrackerEditorMode.Prompts)}
+          onEditPrompt={setEditingPrompt}
+          onReduce={(patch) => reduceTracking.mutate(patch)}
+          onReview={setChange}
+        />
       )}
       {editorMode && (
         <TrackerEditor
@@ -310,7 +241,7 @@ function PromptTrackingContent({
           onClose={() => setCostMode(null)}
           onStarted={(run) => {
             setCostMode(null);
-            setSelectedRun(run);
+            if (run) onSelectRunId(run.id);
             void queryClient.invalidateQueries({
               queryKey: aiVisibilityKey(projectId),
             });

@@ -90,6 +90,29 @@ export const aiRunResultsQueryOptions = (
         data: { projectId, runId, branded: "all" },
       }),
     enabled: Boolean(runId),
+    staleTime: (query) =>
+      isRunPending(query.state.data?.run) ? 0 : Number.POSITIVE_INFINITY,
+    refetchInterval: (query) => aiRunPollingInterval(query.state.data?.run),
+  });
+
+export function aiRunPollingInterval(run: AiRun | null | undefined) {
+  if (!run || (run.status !== "running" && run.status !== "queued"))
+    return false;
+  return Math.max(4, run.pollAfterSeconds) * 1000;
+}
+
+export const aiRunQueryOptions = (
+  projectId: string,
+  runId: string | undefined,
+) =>
+  queryOptions({
+    queryKey: [...aiVisibilityKey(projectId), "run", runId],
+    queryFn: () => getAiVisibilityRun({ data: { projectId, runId: runId! } }),
+    enabled: Boolean(runId),
+    retry: false,
+    staleTime: (query) =>
+      isRunPending(query.state.data) ? 0 : Number.POSITIVE_INFINITY,
+    refetchInterval: (query) => aiRunPollingInterval(query.state.data),
   });
 
 export const aiPromptHistoryQueryOptions = (
@@ -110,24 +133,20 @@ export function useAiVisibilityTracker(projectId: string) {
   return useQuery(aiTrackerQueryOptions(projectId));
 }
 
-export function useAiRunProgress(projectId: string, initialRun: AiRun | null) {
+export function useAiRunProgress(
+  projectId: string,
+  initialRun: AiRun | null,
+  selectedRunId?: string,
+) {
   const queryClient = useQueryClient();
-  const runId = initialRun?.id;
+  const runId = selectedRunId ?? initialRun?.id;
   const query = useQuery({
-    queryKey: [...aiVisibilityKey(projectId), "run", runId],
-    queryFn: () => getAiVisibilityRun({ data: { projectId, runId: runId! } }),
-    enabled: Boolean(runId),
-    initialData: initialRun ?? undefined,
-    // A finished run never changes, so only an unfinished one is read again.
-    staleTime: (current) => (isRunPending(current.state.data) ? 0 : Infinity),
-    refetchInterval: (current) => {
-      const run = current.state.data;
-      return run && isRunPending(run)
-        ? Math.max(4, run.pollAfterSeconds) * 1000
-        : false;
-    },
+    ...aiRunQueryOptions(projectId, runId),
+    initialData:
+      initialRun?.id === runId ? (initialRun ?? undefined) : undefined,
   });
-  const run = query.data ?? initialRun;
+  const latestRun = query.data ?? initialRun;
+  const run = query.isError ? null : latestRun;
   const previous = useRef(run);
   // Refresh what an unfinished run writes as its answers arrive. Once it
   // finishes, re-read the tracker, which sees the finish and refreshes the
@@ -152,7 +171,12 @@ export function useAiRunProgress(projectId: string, initialRun: AiRun | null) {
       queryKey: [...aiVisibilityKey(projectId), "sources"],
     });
   }, [projectId, queryClient, run]);
-  return { run, error: query.error };
+  return {
+    run,
+    error: query.error,
+    isPending: query.isPending,
+    refetch: query.refetch,
+  };
 }
 
 export function AiQueryError({

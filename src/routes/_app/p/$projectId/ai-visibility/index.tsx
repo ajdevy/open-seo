@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { z } from "zod";
 import { PromptTrackingPage } from "@/client/features/ai-visibility/PromptTrackingPage";
 import { PROMPT_TRACKING_TABS } from "@/client/features/ai-visibility/PromptTrackingTabs";
@@ -14,15 +14,16 @@ const tabs = PROMPT_TRACKING_TABS.map((item) => item.value);
 export const Route = createFileRoute("/_app/p/$projectId/ai-visibility/")({
   validateSearch: z.object({
     tab: z.enum(tabs).optional().catch(undefined),
+    run_id: z.string().uuid().optional().catch(undefined),
   }),
-  loader: ({ params: { projectId } }) => {
+  loaderDeps: ({ search }) => ({ runId: search.run_id }),
+  loader: ({ params: { projectId }, deps }) => {
     void queryClient.prefetchQuery(aiTrendQueryOptions(projectId, 7));
-    // The prompt table reads the latest run's answers, known from a fresh
-    // tracker: a cached one can predate the latest run.
+    // Keep a selected run's result preload on the same project-scoped run ID.
     void queryClient
       .fetchQuery({ ...aiTrackerQueryOptions(projectId), staleTime: 0 })
       .then((state) => {
-        const runId = state.recentRuns[0]?.id;
+        const runId = deps.runId ?? state.recentRuns[0]?.id;
         if (runId)
           return queryClient.prefetchQuery(
             aiRunResultsQueryOptions(projectId, runId),
@@ -35,12 +36,22 @@ export const Route = createFileRoute("/_app/p/$projectId/ai-visibility/")({
 
 function PromptTrackingRoute() {
   const { projectId } = Route.useParams();
-  const { tab } = Route.useSearch();
+  const { tab, run_id: runId } = Route.useSearch();
+  const navigate = useNavigate();
   return (
     <PromptTrackingPage
       key={projectId}
       projectId={projectId}
       tab={tab ?? "prompts"}
+      runId={runId}
+      onSelectRunId={(nextRunId) =>
+        void navigate({
+          to: "/p/$projectId/ai-visibility",
+          params: { projectId },
+          replace: true,
+          search: { tab, run_id: nextRunId },
+        })
+      }
     />
   );
 }
