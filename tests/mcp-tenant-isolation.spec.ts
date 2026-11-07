@@ -10,6 +10,7 @@ import {
 } from "./mcp-isolation/auth";
 import { check, writeReport } from "./mcp-isolation/checks";
 import {
+  checkForeignKeywordDeletion,
   checkTenantBUnchanged,
   foreignProjectCalls,
   foreignResourceCalls,
@@ -21,11 +22,8 @@ import {
   type Credential,
   type ToolCall,
 } from "./mcp-isolation/mcp";
-import {
-  deletedCountSchema,
-  projectsSchema,
-  whoamiSchema,
-} from "./mcp-isolation/schemas";
+import { revokeCredentialsInSettings } from "./mcp-isolation/settings-revocation";
+import { projectsSchema, whoamiSchema } from "./mcp-isolation/schemas";
 import {
   CLIENT_A,
   CLIENT_A_IN_B,
@@ -294,31 +292,14 @@ test("3. cross-tenant matrix: A cannot read, change, delete or export B's data",
       });
     }
 
-    await test.step(`${credential.label}: remove_saved_keywords with B's ids deletes nothing`, async () => {
-      // remove_saved_keywords ignores foreign ids by contract (no error), so
-      // the invariant is "deleted nothing" rather than isError.
-      const call: ToolCall = {
-        name: "remove_saved_keywords",
-        arguments: {
-          projectId: a.projectId,
-          savedKeywordIds: seeded.keywordIds,
-        },
-      };
-      const result = await callTool(anon, credential, call);
-      const count = deletedCountSchema.safeParse(result.structuredContent);
-      check({
+    await test.step(`${credential.label}: remove_saved_keywords with B's ids deletes nothing`, () =>
+      checkForeignKeywordDeletion({
+        anon,
+        credential,
+        projectId: a.projectId,
+        seeded,
         chapter,
-        credential: credential.label,
-        tool: "remove_saved_keywords (A project, B ids)",
-        expectation: "deletes nothing",
-        ok:
-          result.isError === false &&
-          count.success &&
-          count.data.deletedCount === 0 &&
-          leaked(result, call, seeded).length === 0,
-        detail: describeResult(result),
-      });
-    });
+      }));
   }
 
   await test.step("as B: nothing changed", () =>
@@ -467,75 +448,12 @@ test("4. membership: credentials are bound to the workspace they were created in
 test("5. revocation in Settings: disconnecting the agent and revoking the key block further calls", async ({
   browser,
 }) => {
-  const chapter = "5 revocation";
-  const readA = readProject(a.projectId);
-  const context = await browser.newContext({
-    baseURL: a.baseURL,
-    storageState: await a.api.storageState(),
+  await revokeCredentialsInSettings({
+    browser,
+    anon,
+    tenant: a,
+    oauthClientName: CLIENT_A,
+    apiKeyName: KEY_A,
+    step: (title, body) => test.step(title, body),
   });
-  const page = await context.newPage();
-  try {
-    // No onboarding redirect: A's OAuth consent and create_project call have
-    // already completed onboarding (completeOnboardingFromAgent).
-    await page.goto("/settings");
-
-    await test.step("Settings -> Connected agents -> Disconnect", async () => {
-      await expect(page.getByText("Connected agents").first()).toBeVisible();
-      // RowActionsMenu aria-label is `Actions for ${clientName}`
-      // (src/client/features/settings/McpConnectionsSettings.tsx); A has two
-      // grants (CLIENT_A and CLIENT_A_IN_B), hence exact matching.
-      const actions = page.getByRole("button", {
-        name: `Actions for ${CLIENT_A}`,
-        exact: true,
-      });
-      await actions.click();
-      await page.getByRole("menuitem", { name: "Disconnect" }).click();
-      await page
-        .getByRole("alertdialog")
-        .getByRole("button", { name: "Disconnect", exact: true })
-        .click();
-      await expect(actions).toHaveCount(0);
-
-      const result = await callTool(anon, a.oauth, readA);
-      check({
-        chapter,
-        credential: a.oauth.label,
-        tool: "get_project_context (after Disconnect)",
-        expectation: "HTTP 401 with invalid_token challenge",
-        ok:
-          result.status === 401 &&
-          /invalid_token/.test(result.headers["www-authenticate"] ?? ""),
-        detail: describeResult(result),
-      });
-    });
-
-    await test.step("Settings -> API keys -> Revoke key", async () => {
-      await expect(page.getByText("API keys").first()).toBeVisible();
-      // aria-label `Actions for ${key.name}` and the "Revoke key" item/confirm
-      // label come from ApiKeySettings.tsx.
-      const actions = page.getByRole("button", {
-        name: `Actions for ${KEY_A}`,
-        exact: true,
-      });
-      await actions.click();
-      await page.getByRole("menuitem", { name: "Revoke key" }).click();
-      await page
-        .getByRole("alertdialog")
-        .getByRole("button", { name: "Revoke key", exact: true })
-        .click();
-      await expect(actions).toHaveCount(0);
-
-      const result = await callTool(anon, a.apiKey, readA);
-      check({
-        chapter,
-        credential: a.apiKey.label,
-        tool: "get_project_context (after Revoke key)",
-        expectation: "HTTP 401 invalid_api_key",
-        ok: result.status === 401 && result.errorCode === "invalid_api_key",
-        detail: describeResult(result),
-      });
-    });
-  } finally {
-    await context.close();
-  }
 });

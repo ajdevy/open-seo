@@ -5,10 +5,12 @@ import {
   callTool,
   describeResult,
   structured,
+  type Credential,
   type McpCallResult,
   type ToolCall,
 } from "./mcp";
 import {
+  deletedCountSchema,
   reportSchema,
   reportsSchema,
   savedKeywordsSchema,
@@ -181,6 +183,40 @@ export function leaked(
       !supplied.includes(secret.toLowerCase()) &&
       body.includes(secret.toLowerCase()),
   );
+}
+
+/** Foreign ids are ignored by remove_saved_keywords; verify none were deleted. */
+export async function checkForeignKeywordDeletion({
+  anon,
+  credential,
+  projectId,
+  seeded,
+  chapter,
+}: {
+  anon: APIRequestContext;
+  credential: Credential;
+  projectId: string;
+  seeded: SeededData;
+  chapter: string;
+}) {
+  const call: ToolCall = {
+    name: "remove_saved_keywords",
+    arguments: { projectId, savedKeywordIds: seeded.keywordIds },
+  };
+  const result = await callTool(anon, credential, call);
+  const count = deletedCountSchema.safeParse(result.structuredContent);
+  check({
+    chapter,
+    credential: credential.label,
+    tool: "remove_saved_keywords (A project, B ids)",
+    expectation: "deletes nothing",
+    ok:
+      result.isError === false &&
+      count.success &&
+      count.data.deletedCount === 0 &&
+      leaked(result, call, seeded).length === 0,
+    detail: describeResult(result),
+  });
 }
 
 /** As B, after A's attempts: the seeded data is intact and nothing was added. */

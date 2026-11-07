@@ -76,6 +76,8 @@ export function reportHtml(title: string, body: string) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body><h1>${title}</h1><p>${body}</p></body></html>`;
 }
 
+const quoteSql = (value: string) => `'${value.replaceAll("'", "''")}'`;
+
 /** Seed one deterministic legacy answer in the local D1 fixture. */
 async function seedSyntheticAi(
   anon: APIRequestContext,
@@ -115,7 +117,6 @@ async function seedSyntheticAi(
   const sourceUrl = `https://${sourceDomain}/article-${RUN}`;
   const sourceTitle = `Synthetic ${label} cited source ${RUN}`;
   const createdAt = new Date().toISOString();
-  const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
   const localD1 = (sql: string) =>
     execFileSync(
       "pnpm",
@@ -128,13 +129,13 @@ async function seedSyntheticAi(
     );
 
   localD1(
-    `INSERT INTO ai_runs (id, tracker_id, project_id, trigger, status, location_code, language_code, created_at, completed_at) VALUES (${quote(runId)}, ${quote(trackerId)}, ${quote(projectId)}, 'manual', 'completed', 2840, 'en', ${quote(createdAt)}, ${quote(createdAt)})`,
+    `INSERT INTO ai_runs (id, tracker_id, project_id, trigger, status, location_code, language_code, created_at, completed_at) VALUES (${quoteSql(runId)}, ${quoteSql(trackerId)}, ${quoteSql(projectId)}, 'manual', 'completed', 2840, 'en', ${quoteSql(createdAt)}, ${quoteSql(createdAt)})`,
   );
   localD1(
-    `INSERT INTO ai_observations (id, run_id, prompt_id, engine, branded, status, collected_at, answer_markdown, error) VALUES (${quote(answerId)}, ${quote(runId)}, ${quote(promptId)}, 'chatgpt', 0, 'completed', ${quote(createdAt)}, ${quote(answer)}, NULL)`,
+    `INSERT INTO ai_observations (id, run_id, prompt_id, engine, branded, status, collected_at, answer_markdown, error) VALUES (${quoteSql(answerId)}, ${quoteSql(runId)}, ${quoteSql(promptId)}, 'chatgpt', 0, 'completed', ${quoteSql(createdAt)}, ${quoteSql(answer)}, NULL)`,
   );
   localD1(
-    `INSERT INTO ai_sources (id, observation_id, url, domain, title, position) VALUES (${quote(sourceId)}, ${quote(answerId)}, ${quote(sourceUrl)}, ${quote(sourceDomain)}, ${quote(sourceTitle)}, 1)`,
+    `INSERT INTO ai_sources (id, observation_id, url, domain, title, position) VALUES (${quoteSql(sourceId)}, ${quoteSql(answerId)}, ${quoteSql(sourceUrl)}, ${quoteSql(sourceDomain)}, ${quoteSql(sourceTitle)}, 1)`,
   );
 
   return {
