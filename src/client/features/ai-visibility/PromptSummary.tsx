@@ -17,7 +17,13 @@ import { aiRate } from "./shared";
 // Your brand plus the top three competitors.
 const VISIBLE_BRANDS = 4;
 
-export function PromptSummary({ summaries }: { summaries: AiBrandSummary[] }) {
+export function PromptSummary({
+  summaries,
+  identityVariants = [],
+}: {
+  summaries: AiBrandSummary[];
+  identityVariants?: string[];
+}) {
   const [expanded, setExpanded] = useState(false);
   // Most-mentioned competitors first, so the collapsed table shows the ones that matter.
   const ranked = sort(
@@ -55,6 +61,11 @@ export function PromptSummary({ summaries }: { summaries: AiBrandSummary[] }) {
                     </Badge>
                   )}
                 </span>
+                {brand.own && identityVariants.length > 0 && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Also known as: {identityVariants.join(", ")}
+                  </p>
+                )}
               </TableCell>
               <TableCell
                 className="tabular-nums"

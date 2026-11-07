@@ -12,11 +12,13 @@ export function PromptAnswers({
   projectId,
   prompt,
   observation,
+  identityVariants,
   controls,
 }: {
   projectId: string;
   prompt: AiPrompt | undefined;
   observation: AiObservationRow;
+  identityVariants: string[];
   /** Chooses which answer is shown. */
   controls: ReactNode;
 }) {
@@ -42,6 +44,7 @@ export function PromptAnswers({
           key={observation.id}
           projectId={projectId}
           observationId={observation.id}
+          identityVariants={identityVariants}
         />
       ) : (
         <div className="space-y-2 p-6">

@@ -25,6 +25,7 @@ import {
   type AiAnswer,
 } from "@/shared/ai-visibility";
 import { DomainFavicon } from "./DomainFavicon";
+import { mentionedBrandIdentityVariants } from "@/client/features/projects/project-context/brandIdentityVariants";
 import {
   AiLoading,
   AiMatchBadge,
@@ -36,9 +37,11 @@ import {
 export function AnswerContent({
   projectId,
   observationId,
+  identityVariants = [],
 }: {
   projectId: string;
   observationId: string;
+  identityVariants?: string[];
 }) {
   const query = useQuery({
     queryKey: [...aiVisibilityKey(projectId), "answer", observationId],
@@ -56,13 +59,25 @@ export function AnswerContent({
         }}
       />
     );
-  return <AnswerEvidence answer={query.data} />;
+  return (
+    <AnswerEvidence answer={query.data} identityVariants={identityVariants} />
+  );
 }
 
-function AnswerEvidence({ answer }: { answer: AiAnswer }) {
+function AnswerEvidence({
+  answer,
+  identityVariants,
+}: {
+  answer: AiAnswer;
+  identityVariants: string[];
+}) {
   const [view, setView] = useState("answer");
   const citations = answer.sources;
   const answered = answer.observation.answerStatus === "answered";
+  const mentionedVariants = mentionedBrandIdentityVariants(
+    answer.answerText,
+    identityVariants,
+  );
   return (
     <div>
       {answer.observation.answerStatus === "no_answer" && (
@@ -213,6 +228,12 @@ function AnswerEvidence({ answer }: { answer: AiAnswer }) {
                         <AiMatchBadge value={brand.mentioned} />
                         <AiMatchBadge value={brand.cited} positive="Cited" />
                       </div>
+                    )}
+                    {brand.own && mentionedVariants.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Saved identity variant in this answer:{" "}
+                        {mentionedVariants.join(", ")}
+                      </p>
                     )}
                     {spans.length > 0 && answer.answerText && (
                       <Accordion>

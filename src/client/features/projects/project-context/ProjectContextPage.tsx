@@ -11,6 +11,8 @@ import {
   type ProjectContextSectionKey,
 } from "@/types/schemas/projectContext";
 import { CompetitorsSection } from "./CompetitorsSection";
+import { BrandIdentityVariantsSection } from "./BrandIdentityVariantsSection";
+import { BRAND_IDENTITY_VARIANTS_SLUG } from "./brandIdentityVariants";
 import { KeyPagesSection } from "./KeyPagesSection";
 import {
   listClass,
@@ -53,6 +55,13 @@ export function ProjectContextPage({ projectId }: { projectId: string }) {
     // 5-minute staleTime would show pre-SAM-turn memory as current.
     staleTime: 0,
   });
+  const customSections = React.useMemo(
+    () =>
+      (contextQuery.data?.customSections ?? []).filter(
+        (section) => section.slug !== BRAND_IDENTITY_VARIANTS_SLUG,
+      ),
+    [contextQuery.data?.customSections],
+  );
 
   return (
     <QueryState
@@ -75,6 +84,15 @@ export function ProjectContextPage({ projectId }: { projectId: string }) {
             missingSections={context.missingSections}
           />
 
+          <BrandIdentityVariantsSection
+            projectId={projectId}
+            initialContent={
+              context.customSections.find(
+                (section) => section.slug === BRAND_IDENTITY_VARIANTS_SLUG,
+              )?.content ?? ""
+            }
+          />
+
           <CompetitorsSection
             projectId={projectId}
             competitors={context.competitors}
@@ -84,7 +102,7 @@ export function ProjectContextPage({ projectId }: { projectId: string }) {
 
           <CustomSections
             projectId={projectId}
-            customSections={context.customSections}
+            customSections={customSections}
           />
 
           <ResearchLog
