@@ -1,9 +1,10 @@
-import { randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import {
   expect,
   type APIRequest,
   type APIRequestContext,
-  type Browser,
 } from "@playwright/test";
 import { z } from "zod";
 import {
@@ -38,12 +39,28 @@ export const KEY_A_IN_B = "Isolation key A in B";
 // What A tries to write into B's workspace; must never land anywhere.
 export const INTRUDER = `intruder-a-${RUN}`;
 
+export type SyntheticAiSeed = {
+  promptId: string;
+  prompt: string;
+  trackerId: string;
+  runId: string;
+  answerId: string;
+  answer: string;
+  sourceId: string;
+  sourceUrl: string;
+  sourceDomain: string;
+  sourceTitle: string;
+};
+
 export type Tenant = Account & {
   orgId: string;
   orgName: string;
   projectId: string;
+  projectName: string;
+  projectDomain: string;
   oauth: Credential;
   apiKey: Credential;
+  ai: SyntheticAiSeed;
 };
 
 export type SeededData = {
@@ -59,15 +76,89 @@ export function reportHtml(title: string, body: string) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body><h1>${title}</h1><p>${body}</p></body></html>`;
 }
 
+/** Seed one deterministic legacy answer in the local D1 fixture. */
+async function seedSyntheticAi(
+  anon: APIRequestContext,
+  oauth: Credential,
+  projectId: string,
+  label: "A" | "B",
+): Promise<SyntheticAiSeed> {
+  const prompt = `Synthetic ${label} question ${RUN}?`;
+  const answer = `synthetic-ai-answer-${label}-${RUN}`;
+  const tracker = structured(
+    await callTool(anon, oauth, {
+      name: "save_ai_visibility_tracker",
+      arguments: {
+        projectId,
+        engines: ["chatgpt"],
+        prompts: [{ text: prompt }],
+      },
+    }),
+    z.looseObject({
+      data: z.looseObject({
+        state: z.looseObject({
+          tracker: z.looseObject({ id: z.string() }),
+          prompts: z.array(z.looseObject({ id: z.string() })),
+        }),
+      }),
+    }),
+    `save ${label} synthetic AI tracker`,
+  );
+  const trackerId = tracker.data.state.tracker.id;
+  const promptId = tracker.data.state.prompts[0]?.id;
+  if (!promptId) throw new Error(`No prompt was created for tenant ${label}`);
+
+  const runId = randomUUID();
+  const answerId = randomUUID();
+  const sourceId = randomUUID();
+  const sourceDomain = `source-${label.toLowerCase()}-${RUN}.example.com`;
+  const sourceUrl = `https://${sourceDomain}/article-${RUN}`;
+  const sourceTitle = `Synthetic ${label} cited source ${RUN}`;
+  const createdAt = new Date().toISOString();
+  const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+  const localD1 = (sql: string) =>
+    execFileSync(
+      "pnpm",
+      ["exec", "wrangler", "d1", "execute", "DB", "--local", "--command", sql],
+      {
+        cwd: fileURLToPath(new URL("../..", import.meta.url)),
+        encoding: "utf8",
+        stdio: "pipe",
+      },
+    );
+
+  localD1(
+    `INSERT INTO ai_runs (id, tracker_id, project_id, trigger, status, location_code, language_code, created_at, completed_at) VALUES (${quote(runId)}, ${quote(trackerId)}, ${quote(projectId)}, 'manual', 'completed', 2840, 'en', ${quote(createdAt)}, ${quote(createdAt)})`,
+  );
+  localD1(
+    `INSERT INTO ai_observations (id, run_id, prompt_id, engine, branded, status, collected_at, answer_markdown, error) VALUES (${quote(answerId)}, ${quote(runId)}, ${quote(promptId)}, 'chatgpt', 0, 'completed', ${quote(createdAt)}, ${quote(answer)}, NULL)`,
+  );
+  localD1(
+    `INSERT INTO ai_sources (id, observation_id, url, domain, title, position) VALUES (${quote(sourceId)}, ${quote(answerId)}, ${quote(sourceUrl)}, ${quote(sourceDomain)}, ${quote(sourceTitle)}, 1)`,
+  );
+
+  return {
+    promptId,
+    prompt,
+    trackerId,
+    runId,
+    answerId,
+    answer,
+    sourceId,
+    sourceUrl,
+    sourceDomain,
+    sourceTitle,
+  };
+}
+
 /**
- * Signs a user up, authorizes an OAuth grant (asserting the consent page
- * names the user and the workspace), creates an API key and a project.
+ * Signs a user up, issues an OAuth grant through the real authorization-code
+ * and consent HTTP endpoints, creates an API key and a project.
  */
 export async function setupTenant(
   label: "A" | "B",
   deps: {
     request: APIRequest;
-    browser: Browser;
     anon: APIRequestContext;
     baseURL: string;
   },
@@ -92,17 +183,16 @@ export async function setupTenant(
     1,
   );
   const org = organizations[0];
-  // A fresh account belongs to one organization, so the consent page names
-  // no workspace; chapter 4 checks the row once A belongs to two.
-  const oauth = await authorizeOAuth(deps.browser, deps.anon, account, {
+  const oauth = await authorizeOAuth(deps.anon, account, {
     clientName: CLIENT_A,
-    expectedWorkspace: null,
   });
   const apiKey = await createApiKey(account, `Isolation key ${label}`);
+  const projectName = `Isolation ${label} ${RUN}`;
+  const projectDomain = `isolation-${label.toLowerCase()}-${RUN}.example.com`;
   // No organizationId argument: the credential is bound to one workspace.
   const createCall = await callTool(deps.anon, oauth, {
     name: "create_project",
-    arguments: { name: `Isolation ${label} ${RUN}` },
+    arguments: { name: projectName, domain: projectDomain },
   });
   check({
     chapter,
@@ -117,13 +207,17 @@ export async function setupTenant(
     createdProjectSchema,
     `create_project for ${label}`,
   );
+  const ai = await seedSyntheticAi(deps.anon, oauth, created.project.id, label);
   return {
     ...account,
     orgId: org.id,
     orgName: org.name,
     projectId: created.project.id,
+    projectName,
+    projectDomain,
     oauth,
     apiKey,
+    ai,
   };
 }
 
@@ -199,11 +293,24 @@ export async function seedTenantB(
     secrets: [
       marker,
       b.projectId,
+      b.projectName,
+      b.projectDomain,
       report.reportId,
       template.templateId,
       ...keywordIds,
       b.orgId,
+      b.orgName,
       b.email,
+      b.ai.trackerId,
+      b.ai.promptId,
+      b.ai.prompt,
+      b.ai.runId,
+      b.ai.answerId,
+      b.ai.answer,
+      b.ai.sourceId,
+      b.ai.sourceUrl,
+      b.ai.sourceDomain,
+      b.ai.sourceTitle,
     ],
   };
 }

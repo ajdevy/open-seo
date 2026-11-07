@@ -80,6 +80,8 @@ export async function callTool(
       method: "tools/call",
       params: { name: call.name, arguments: call.arguments ?? {} },
     },
+    // The local Worker cold-compiles the MCP graph on its first call.
+    timeout: 30_000,
   });
   const body = await response.text();
   const base = { status: response.status(), headers: response.headers(), body };

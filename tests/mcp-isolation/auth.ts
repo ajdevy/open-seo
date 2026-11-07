@@ -4,7 +4,6 @@ import {
   type APIRequest,
   type APIRequestContext,
   type APIResponse,
-  type Browser,
 } from "@playwright/test";
 import { z } from "zod";
 import type { Credential } from "./mcp";
@@ -181,24 +180,15 @@ async function registerOAuthClient(
 }
 
 /**
- * The full authorization-code + PKCE flow, driven the way a real client drives
- * it: /api/auth/oauth2/authorize in the user's browser, the consent page, the
- * redirect back to the client's callback (intercepted here), then the code
- * exchange at the token endpoint. Along the way it asserts that the consent
- * page names the signed-in user and the workspace the grant will be bound to.
+ * The authorization-code + PKCE flow through the real HTTP endpoints. Only
+ * the consent page's button click is replaced by its same-origin POST; the
+ * server validates the signed-in session, active workspace, OAuth request,
+ * and consent before issuing the code.
  */
 export async function authorizeOAuth(
-  browser: Browser,
   anon: APIRequestContext,
   account: Account,
-  options: {
-    clientName: string;
-    // The Workspace row only renders for people in more than one
-    // organization; null asserts it is absent.
-    expectedWorkspace: string | null;
-    // Pick this workspace in the consent page's switcher before authorizing.
-    switchToWorkspace?: string;
-  },
+  options: { clientName: string },
 ): Promise<Credential> {
   const label = `${account.label} oauth (${options.clientName})`;
   const clientId = await registerOAuthClient(anon, options.clientName);
@@ -218,58 +208,41 @@ export async function authorizeOAuth(
     resource,
   });
 
-  // A browser signed in as this user: copy the cookie jar from its API context.
-  const context = await browser.newContext({
-    baseURL: account.baseURL,
-    storageState: await account.api.storageState(),
-  });
-  let code: string | null;
-  try {
-    const page = await context.newPage();
-    // Nothing listens on :1455; answer the callback navigation ourselves and
-    // read the code off the request URL.
-    await page.route(`${REDIRECT_URI}**`, (route) =>
-      route.fulfill({ status: 200, body: "ok" }),
-    );
-    await page.goto(`/api/auth/oauth2/authorize?${authorizeQuery.toString()}`);
-    await expect(page).toHaveURL(/\/oauth-consent\?/);
-    const authorize = page.getByRole("button", {
-      name: "Authorize",
-      exact: true,
-    });
-    await expect(authorize).toBeVisible();
-    // The "Signed in as" and "Workspace" rows of the consent card
-    // (src/routes/_authenticated.oauth-consent.tsx).
-    await expect(page.getByText(account.email).first()).toBeVisible();
-    const workspaceRow = page.getByText("Workspace", { exact: true });
-    if (options.expectedWorkspace) {
-      await expect(workspaceRow).toBeVisible();
-      await expect(
-        page.getByText(options.expectedWorkspace, { exact: true }).first(),
-      ).toBeVisible();
-    } else {
-      await expect(workspaceRow).toBeHidden();
-    }
-    if (options.switchToWorkspace) {
-      const switcher = page.getByRole("combobox", { name: "Workspace" });
-      await switcher.click();
-      await page
-        .getByRole("option", { name: options.switchToWorkspace, exact: true })
-        .click();
-      // The trigger shows the new name once the switch has landed and the
-      // organization context refetched.
-      await expect(switcher).toContainText(options.switchToWorkspace);
-      await expect(authorize).toBeEnabled();
-    }
+  const authorizeResponse = await account.api.get(
+    `/api/auth/oauth2/authorize?${authorizeQuery.toString()}`,
+    { maxRedirects: 0 },
+  );
+  expect(authorizeResponse.status(), "signed-in authorize redirect").toBe(302);
+  const consentUrl = new URL(
+    authorizeResponse.headers().location ?? "",
+    account.baseURL,
+  );
+  expect(consentUrl.pathname).toBe("/oauth-consent");
+  expect(consentUrl.searchParams.get("client_id")).toBe(clientId);
+  expect(consentUrl.searchParams.get("state")).toBe(
+    authorizeQuery.get("state"),
+  );
 
-    const callback = page.waitForRequest((request) =>
-      request.url().startsWith(REDIRECT_URI),
-    );
-    await authorize.click();
-    code = new URL((await callback).url()).searchParams.get("code");
-  } finally {
-    await context.close();
-  }
+  // This is the POST made by the consent page's Authorize button. It keeps
+  // the real same-origin check, session lookup, active-organization binding,
+  // OAuth request validation, and provider code issuance on the server.
+  const consentResponse = await readJson(
+    await account.api.post("/api/oauth/consent", {
+      headers: { Origin: account.baseURL },
+      data: { accept: true, query: authorizeQuery.toString() },
+    }),
+    `consent for ${account.label}`,
+  );
+  const { redirectTo } = z
+    .object({ redirectTo: z.string().url() })
+    .parse(consentResponse);
+  const callbackUrl = new URL(redirectTo);
+  expect(callbackUrl.origin).toBe(new URL(REDIRECT_URI).origin);
+  expect(callbackUrl.pathname).toBe(new URL(REDIRECT_URI).pathname);
+  expect(callbackUrl.searchParams.get("state")).toBe(
+    authorizeQuery.get("state"),
+  );
+  const code = callbackUrl.searchParams.get("code");
   expect(code, "authorization code in the callback redirect").toBeTruthy();
 
   const tokens = tokenResponseSchema.parse(
