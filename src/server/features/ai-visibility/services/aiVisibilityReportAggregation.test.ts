@@ -1,269 +1,268 @@
-import { describe, expect, it, vi } from "vitest";
-import type { AiResults, AiTrend } from "@/shared/ai-visibility";
-import type { loadAiPageResults } from "./aiVisibilityResults";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AiAnswer, AiResults } from "@/shared/ai-visibility";
 import { loadAiVisibilityReportAggregation } from "./aiVisibilityReportAggregation";
+import {
+  answer,
+  nativeResult,
+  ownProject,
+  projectId,
+  request,
+  result,
+  runId,
+} from "./aiVisibilityReportAggregation.fixtures";
 
 const mocks = vi.hoisted(() => ({
-  loadAiPageResults: vi.fn(),
-  loadAiTrend: vi.fn(),
+  loadAiFullAnswers: vi.fn(),
+  getProject: vi.fn(),
+  listCompetitors: vi.fn(),
 }));
+
 vi.mock("./aiVisibilityResults", () => ({
-  loadAiPageResults: mocks.loadAiPageResults,
+  loadAiFullAnswers: mocks.loadAiFullAnswers,
 }));
-vi.mock("./aiVisibilityTrend", () => ({ loadAiTrend: mocks.loadAiTrend }));
-
-type PageResults = Awaited<ReturnType<typeof loadAiPageResults>>;
-const projectId = "00000000-0000-4000-8000-000000000001";
-const request = {
-  results: {
-    projectId,
-    runId: null,
-    topic: null,
-    engines: null,
-    promptId: null,
-    includeHistory: false,
-    competitorGap: false,
-    branded: "neutral" as const,
+vi.mock("../repositories/AiVisibilityRepository", () => ({
+  AiVisibilityRepository: {
+    getProject: mocks.getProject,
+    listCompetitors: mocks.listCompetitors,
   },
-  trend: { projectId, days: 7 as const },
-};
+}));
 
-function row(
-  id: string,
-  status: "pending" | "completed" | "failed",
-  answerStatus: "answered" | "no_answer" | null,
-): AiResults["rows"][number] {
-  return {
-    id,
-    runId: "run-1",
-    promptId: `prompt-${id}`,
-    prompt: "synthetic prompt",
-    topic: "General",
-    branded: false,
-    engine: "chatgpt",
-    status,
-    answerStatus,
-    brands: [],
-    citationCount: 0,
-    collectedAt: null,
-    error: null,
-  };
+function setReport(input: {
+  result?: AiResults;
+  answers?: AiAnswer[];
+  project?: { name: string; domain: string };
+  competitors?: { name: string | null; domain: string }[];
+}) {
+  mocks.loadAiFullAnswers.mockResolvedValue({
+    result: input.result ?? result(),
+    answers: input.answers ?? [],
+  });
+  mocks.getProject.mockResolvedValue(input.project ?? ownProject);
+  mocks.listCompetitors.mockResolvedValue(input.competitors ?? []);
 }
 
-function nativeResult(
-  id: string,
-  resultStatus: string,
-  eligibleForVisibility: boolean | null,
-  answer: string | null,
-): AiResults["nativeResults"][number] {
-  return {
-    id,
-    schemaVersion: 1,
-    clientId: "client-1",
-    projectId,
-    runId: "run-1",
-    questionId: `prompt-${id}`,
-    questionVersion: 1,
-    question: "synthetic prompt",
-    requestedModel: "synthetic/model",
-    observedModel: null,
-    route: "synthetic-route",
-    resultStatus,
-    answer,
-    searchStatus: "unknown",
-    searchEvidence: [],
-    searchSources: [],
-    sources: [],
-    eligibleForVisibility,
-    errorCode: null,
-    turnStatus: null,
-    collectedAt: "2026-10-01T12:00:00.000Z",
-  };
-}
-
-function pageResults(overrides: Partial<PageResults> = {}): PageResults {
-  const defaults: PageResults = {
-    runId: "run-1",
-    run: null,
-    rows: [],
-    nativeResults: [],
-    totalCount: 0,
-    nextCursor: null,
-    summaries: [],
-    coverage: {
-      expected: 0,
-      completed: 0,
-      noAnswer: 0,
-      failed: 0,
-      pending: 0,
-    },
-    appliedFilters: {
-      topic: undefined,
-      engines: undefined,
-      competitorGap: false,
-      branded: "neutral",
-    },
-    truncated: false,
-    historyRuns: [],
-  };
-  return { ...defaults, ...overrides };
-}
-
-function trend(): AiTrend {
-  const metric = {
-    current: null,
-    previous: null,
-    change: null,
-    matchedCells: 0,
-    currentCells: 0,
-    previousCells: 0,
-  };
-  const period = {
-    start: "2026-09-17T12:00:00.000Z",
-    end: "2026-10-01T12:00:00.000Z",
-    coverage: { runs: 0, expected: 0, answered: 0, noAnswer: 0, failed: 0 },
-  };
-  return {
-    days: 7,
-    comparison: "no_data",
-    current: period,
-    previous: period,
-    mentions: metric,
-    citations: metric,
-    engines: [],
-    runs: [],
-  };
-}
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe("loadAiVisibilityReportAggregation", () => {
-  it("aggregates planned and finalized outcomes while excluding unconfirmed negatives", async () => {
-    const results = pageResults({
-      rows: [
-        row("answered", "completed", "answered"),
-        row("no-answer", "completed", "no_answer"),
-        row("failed", "failed", null),
-        row("pending", "pending", null),
-      ],
-      nativeResults: [
-        nativeResult("eligible", "completed", true, "confirmed result"),
-        nativeResult("unconfirmed", "completed", false, "no search evidence"),
-        nativeResult("native-failed", "failed", null, null),
-        nativeResult("native-pending", "pending", null, null),
-        nativeResult("partial", "partial", null, "incomplete result"),
-      ],
-      totalCount: 4,
-      summaries: [
-        {
-          name: "Acme",
-          domain: "acme.example",
-          own: true,
-          answers: 1,
-          mentions: 0,
-          citations: 0,
-          positionTotal: 0,
-          positionCount: 0,
+  it("uses confirmed search answers as the visibility denominator", async () => {
+    const nativeResults = [
+      ...Array.from({ length: 6 }, (_, index) =>
+        nativeResult({
+          id: `confirmed-${index + 1}`,
+          eligible: true,
+          searchStatus: "completed",
+          answer:
+            index < 2
+              ? `Acme makes a suitable product for question ${index + 1}.`
+              : `The answer for question ${index + 1} names another option.`,
+          model: "vendor/model-latest",
+        }),
+      ),
+      ...Array.from({ length: 2 }, (_, index) =>
+        nativeResult({
+          id: `unconfirmed-${index + 1}`,
+          eligible: false,
+          searchStatus: "unknown",
+          answer: "Acme is not confirmed by a search-enabled answer.",
+          model: "vendor/model-latest",
+        }),
+      ),
+      nativeResult({
+        id: "pending-1",
+        status: "pending",
+        searchStatus: "pending",
+        model: "vendor/model-latest",
+      }),
+      nativeResult({
+        id: "pending-2",
+        status: "pending",
+        searchStatus: "pending",
+        model: "vendor/model-latest",
+      }),
+    ];
+    setReport({
+      result: result({
+        nativeResults,
+        coverage: {
+          expected: 10,
+          completed: 8,
+          noAnswer: 0,
+          failed: 0,
+          pending: 2,
         },
-      ],
-      coverage: {
-        expected: 9,
-        completed: 3,
-        noAnswer: 1,
-        failed: 2,
-        pending: 3,
-      },
+      }),
     });
-    const currentTrend = trend();
-    mocks.loadAiPageResults.mockResolvedValue(results);
-    mocks.loadAiTrend.mockResolvedValue(currentTrend);
 
     const actual = await loadAiVisibilityReportAggregation(request);
 
-    expect(actual.coverage).toEqual({
-      planned: 9,
-      received: 6,
-      evaluable: 2,
-      failed: 2,
-      pending: 3,
+    expect(actual.coverage).toMatchObject({
+      planned: 10,
+      received: 8,
+      evaluable: 6,
+      failed: 0,
+      pending: 2,
       unevaluable: 2,
-      receivedCoverage: { numerator: 6, denominator: 9, percentage: 66.7 },
-      evaluableCoverage: { numerator: 2, denominator: 9, percentage: 22.2 },
-      evaluationRate: { numerator: 2, denominator: 6, percentage: 33.3 },
+      unassignedPending: 0,
+      receivedCoverage: { numerator: 8, denominator: 10, percentage: 80 },
+      evaluableCoverage: { numerator: 6, denominator: 10, percentage: 60 },
+      evaluationRate: { numerator: 6, denominator: 8, percentage: 75 },
     });
-    expect(actual.findings).toEqual([
-      {
-        name: "Acme",
-        domain: "acme.example",
-        own: true,
-        evaluableAnswers: 1,
-        mentions: {
-          present: { numerator: 0, denominator: 1, percentage: 0 },
-          absent: { numerator: 1, denominator: 1, percentage: 100 },
-        },
-        citations: {
-          present: { numerator: 0, denominator: 1, percentage: 0 },
-          absent: { numerator: 1, denominator: 1, percentage: 100 },
-        },
-      },
-    ]);
-    expect(actual.trend).toBe(currentTrend);
-    expect(mocks.loadAiPageResults).toHaveBeenCalledWith({
-      ...request.results,
-      limit: undefined,
+    expect(actual.findings[0].mentions.present).toEqual({
+      numerator: 2,
+      denominator: 6,
+      percentage: 33.3,
     });
-    expect(mocks.loadAiTrend).toHaveBeenCalledWith(request.trend);
+    expect(actual.findings[0].mentions.absent).toEqual({
+      numerator: 4,
+      denominator: 6,
+      percentage: 66.7,
+    });
+    expect(actual.search).toEqual({
+      confirmed: 6,
+      unconfirmed: 2,
+      failed: 0,
+      pending: 2,
+      notReported: 0,
+      states: [
+        { status: "completed", count: 6 },
+        { status: "pending", count: 2 },
+        { status: "unknown", count: 2 },
+      ],
+    });
+    expect(actual.models[0].coverage).toMatchObject({
+      planned: 10,
+      received: 8,
+      evaluable: 6,
+      failed: 0,
+      pending: 2,
+    });
+    expect(actual.answers.native).toHaveLength(10);
   });
 
-  it("returns null percentages when no tasks provide a denominator", async () => {
-    mocks.loadAiPageResults.mockResolvedValue(
-      pageResults({
-        summaries: [
-          {
-            name: "Acme",
-            domain: "acme.example",
-            own: true,
-            answers: 0,
-            mentions: 0,
-            citations: 0,
-            positionTotal: 0,
-            positionCount: 0,
-          },
+  it("keeps zero denominators null and keeps failures separate from findings", async () => {
+    setReport({
+      result: result({
+        nativeResults: [
+          nativeResult({
+            id: "failed",
+            status: "failed",
+            errorCode: "PROVIDER_ERROR",
+          }),
+          nativeResult({ id: "pending", status: "pending" }),
         ],
+        coverage: {
+          expected: 2,
+          completed: 0,
+          noAnswer: 0,
+          failed: 1,
+          pending: 1,
+        },
       }),
-    );
-    mocks.loadAiTrend.mockResolvedValue(trend());
+    });
 
     const actual = await loadAiVisibilityReportAggregation(request);
 
-    expect(actual.coverage.receivedCoverage).toEqual({
-      numerator: 0,
-      denominator: 0,
-      percentage: null,
-    });
-    expect(actual.coverage.evaluableCoverage.percentage).toBeNull();
-    expect(actual.coverage.evaluationRate.percentage).toBeNull();
+    expect(actual.coverage.receivedCoverage.percentage).toBe(50);
+    expect(actual.coverage.evaluableCoverage.percentage).toBe(0);
+    expect(actual.coverage.evaluationRate.percentage).toBe(0);
+    expect(actual.coverage.failed).toBe(1);
+    expect(actual.errors).toEqual([
+      expect.objectContaining({
+        kind: "native",
+        questionId: "question-failed",
+        status: "failed",
+        code: "PROVIDER_ERROR",
+      }),
+    ]);
+    expect(actual.findings[0].mentions.present.percentage).toBeNull();
     expect(actual.findings[0].mentions.absent.percentage).toBeNull();
-    expect(actual.findings[0].citations.absent.percentage).toBeNull();
+
+    setReport({ result: result() });
+    const empty = await loadAiVisibilityReportAggregation(request);
+    expect(empty.coverage.receivedCoverage.percentage).toBeNull();
+    expect(empty.coverage.evaluableCoverage.percentage).toBeNull();
+    expect(empty.coverage.evaluationRate.percentage).toBeNull();
+    expect(empty.findings[0].mentions.absent.percentage).toBeNull();
   });
 
-  it("rejects cross-project inputs before reading report data", async () => {
-    await expect(
-      loadAiVisibilityReportAggregation({
-        ...request,
-        trend: {
-          ...request.trend,
-          projectId: "00000000-0000-4000-8000-000000000002",
+  it("deduplicates question/model attempts and reports same-name identities as ambiguous", async () => {
+    const nativeResults = [
+      nativeResult({
+        id: "primary",
+        questionId: "shared-question",
+        eligible: true,
+        searchStatus: "completed",
+        answer: "Mercury announced a new product.",
+        model: "vendor/model-a",
+        sources: ["https://shop.mercury.example/product"],
+      }),
+      nativeResult({
+        id: "duplicate-attempt",
+        questionId: "shared-question",
+        eligible: false,
+        searchStatus: "unknown",
+        answer: "A later unconfirmed attempt.",
+        model: "vendor/model-a",
+      }),
+      nativeResult({
+        id: "failed-retry",
+        questionId: "shared-question",
+        status: "failed",
+        errorCode: "RETRY_FAILED",
+        model: "vendor/model-a",
+      }),
+    ];
+    setReport({
+      result: result({
+        nativeResults,
+        coverage: {
+          expected: 3,
+          completed: 2,
+          noAnswer: 0,
+          failed: 1,
+          pending: 0,
         },
       }),
-    ).rejects.toThrow("same project");
-    expect(mocks.loadAiPageResults).not.toHaveBeenCalled();
-    expect(mocks.loadAiTrend).not.toHaveBeenCalled();
+      project: { name: "Mercury", domain: "mercury.example" },
+      competitors: [{ name: "Mercury", domain: "shop.mercury.example" }],
+    });
+
+    const actual = await loadAiVisibilityReportAggregation(request);
+
+    expect(actual.coverage.planned).toBe(1);
+    expect(actual.coverage.evaluable).toBe(1);
+    expect(actual.coverage.failed).toBe(0);
+    expect(actual.answers.native).toHaveLength(1);
+    expect(actual.errors).toEqual([
+      expect.objectContaining({ code: "RETRY_FAILED", status: "failed" }),
+    ]);
+    expect(actual.findings).toHaveLength(2);
+    for (const finding of actual.findings) {
+      expect(finding.mentions.ambiguous).toEqual({
+        numerator: 1,
+        denominator: 1,
+        percentage: 100,
+      });
+      expect(finding.mentions.present.percentage).toBeNull();
+      expect(finding.mentions.absent.percentage).toBeNull();
+      expect(finding.citations.ambiguous.percentage).toBe(100);
+    }
   });
 
-  it("rejects partial data instead of publishing partial negatives", async () => {
-    mocks.loadAiPageResults.mockResolvedValue(
-      pageResults({
-        rows: [row("one-of-two", "completed", "answered")],
-        totalCount: 2,
+  it("excludes a same-name homonym when its source domain identifies another brand", async () => {
+    setReport({
+      result: result({
+        nativeResults: [
+          nativeResult({
+            id: "homonym",
+            eligible: true,
+            searchStatus: "completed",
+            answer: "Mercury is a good option.",
+            sources: ["https://mercury-shop.example/pricing"],
+          }),
+        ],
         coverage: {
           expected: 1,
           completed: 1,
@@ -272,30 +271,109 @@ describe("loadAiVisibilityReportAggregation", () => {
           pending: 0,
         },
       }),
-    );
-    mocks.loadAiTrend.mockResolvedValue(trend());
+      project: { name: "Mercury", domain: "mercury.example" },
+      competitors: [{ name: "Mercury", domain: "mercury-shop.example" }],
+    });
 
-    await expect(loadAiVisibilityReportAggregation(request)).rejects.toThrow(
-      "complete, non-gap result set",
-    );
+    const actual = await loadAiVisibilityReportAggregation(request);
+    const own = actual.findings.find((finding) => finding.own)!;
+    const competitor = actual.findings.find((finding) => !finding.own)!;
+
+    expect(own.mentions.absent).toEqual({
+      numerator: 1,
+      denominator: 1,
+      percentage: 100,
+    });
+    expect(competitor.mentions.present).toEqual({
+      numerator: 1,
+      denominator: 1,
+      percentage: 100,
+    });
+    expect(own.citations.absent.percentage).toBe(100);
+    expect(competitor.citations.present.percentage).toBe(100);
   });
 
-  it("rejects gap-filtered data instead of publishing partial negatives", async () => {
-    mocks.loadAiPageResults.mockResolvedValue(
-      pageResults({
-        totalCount: 1,
-        appliedFilters: {
-          topic: undefined,
-          engines: undefined,
-          competitorGap: true,
-          branded: "neutral",
+  it("preserves full legacy answers, question IDs, routes, sources, and errors", async () => {
+    const fullAnswer = answer({
+      id: "legacy-1",
+      text: "Acme offers a product.",
+      sources: [
+        {
+          url: "https://acme.example/pricing",
+          domain: "acme.example",
+          title: "Pricing",
+          position: 1,
+        },
+      ],
+    });
+    setReport({
+      result: result({
+        rows: [],
+        coverage: {
+          expected: 1,
+          completed: 1,
+          noAnswer: 0,
+          failed: 0,
+          pending: 0,
         },
       }),
-    );
-    mocks.loadAiTrend.mockResolvedValue(trend());
+      answers: [fullAnswer],
+    });
 
-    await expect(loadAiVisibilityReportAggregation(request)).rejects.toThrow(
-      "complete, non-gap result set",
-    );
+    const actual = await loadAiVisibilityReportAggregation(request);
+
+    expect(actual.answers.legacy[0]).toEqual(fullAnswer);
+    expect(actual.models[0]).toMatchObject({
+      kind: "legacy",
+      route: "dataforseo-ai-search",
+      coverage: { planned: 1, evaluable: 1 },
+    });
+    expect(actual.findings[0].mentions.present.percentage).toBe(100);
+    expect(actual.findings[0].citations.present.percentage).toBe(100);
+  });
+
+  it("does not infer search eligibility for legacy model API answers", async () => {
+    setReport({
+      result: result({
+        coverage: {
+          expected: 1,
+          completed: 1,
+          noAnswer: 0,
+          failed: 0,
+          pending: 0,
+        },
+      }),
+      answers: [
+        answer({ id: "claude-1", engine: "claude", text: "Acme is absent." }),
+      ],
+    });
+
+    const actual = await loadAiVisibilityReportAggregation(request);
+
+    expect(actual.coverage.received).toBe(1);
+    expect(actual.coverage.evaluable).toBe(0);
+    expect(actual.search.notReported).toBe(1);
+    expect(actual.findings[0].mentions.present.percentage).toBeNull();
+    expect(actual.models[0].route).toBe("dataforseo-model-api");
+  });
+
+  it("loads only the requested run with all saved results and no paid collection", async () => {
+    setReport({ result: result() });
+
+    await loadAiVisibilityReportAggregation(request);
+
+    expect(mocks.loadAiFullAnswers).toHaveBeenCalledWith({
+      projectId,
+      runId,
+      limit: 25,
+      topic: null,
+      engines: null,
+      promptId: null,
+      includeHistory: false,
+      competitorGap: false,
+      branded: "all",
+    });
+    expect(mocks.getProject).toHaveBeenCalledWith(projectId);
+    expect(mocks.listCompetitors).toHaveBeenCalledWith(projectId);
   });
 });
