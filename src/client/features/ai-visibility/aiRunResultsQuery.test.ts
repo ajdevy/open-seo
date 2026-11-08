@@ -2,23 +2,31 @@ import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createAiVisibilityNativeRun,
+  getAiVisibilityReportAggregation,
   getAiVisibilityRun,
   getAiVisibilityResults,
   runAiVisibilityCheck,
 } from "@/serverFunctions/ai-visibility";
-import type { AiNativeResult } from "@/shared/ai-visibility";
+import type {
+  AiNativeResult,
+  AiRun,
+  AiVisibilityReportAggregation,
+} from "@/shared/ai-visibility";
 import {
   aiRunPollingInterval,
+  aiRunReportQueryOptions,
   aiRunQueryOptions,
   aiRunResultsQueryOptions,
 } from "./shared";
 
-const { readResults, readRun } = vi.hoisted(() => ({
+const { readResults, readReport, readRun } = vi.hoisted(() => ({
   readResults: vi.fn(),
+  readReport: vi.fn(),
   readRun: vi.fn(),
 }));
 vi.mock("@/serverFunctions/ai-visibility", () => ({
   getAiResearchSetup: vi.fn(),
+  getAiVisibilityReportAggregation: readReport,
   getAiVisibilityRun: readRun,
   getAiVisibilityTracker: vi.fn(),
   getAiVisibilityTrend: vi.fn(),
@@ -85,6 +93,37 @@ const runningRun = {
   pollAfterSeconds: 7,
 };
 
+function report(run: AiRun): AiVisibilityReportAggregation {
+  const emptyRate = { numerator: 0, denominator: 0, percentage: null };
+  return {
+    run,
+    coverage: {
+      planned: 0,
+      received: 0,
+      evaluable: 0,
+      failed: 0,
+      pending: 0,
+      unevaluable: 0,
+      unassignedPending: 0,
+      receivedCoverage: emptyRate,
+      evaluableCoverage: emptyRate,
+      evaluationRate: emptyRate,
+    },
+    search: {
+      confirmed: 0,
+      unconfirmed: 0,
+      failed: 0,
+      pending: 0,
+      notReported: 0,
+      states: [],
+    },
+    findings: [],
+    models: [],
+    errors: [],
+    answers: { legacy: [], native: [] },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAiVisibilityResults).mockResolvedValue(page);
@@ -145,5 +184,26 @@ describe("AI visibility run results query", () => {
     });
     expect(createAiVisibilityNativeRun).not.toHaveBeenCalled();
     expect(runAiVisibilityCheck).not.toHaveBeenCalled();
+  });
+
+  it("polls an open report while queued or running and stops at terminal status", () => {
+    const queryClient = new QueryClient();
+    const options = aiRunReportQueryOptions(projectId, runId);
+    const interval = options.refetchInterval;
+    expect(typeof interval).toBe("function");
+    if (typeof interval !== "function")
+      throw new Error("Expected report polling.");
+    const query = queryClient.getQueryCache().build(queryClient, options);
+
+    query.setData(report(runningRun));
+    expect(interval(query)).toBe(7000);
+    query.setData(report({ ...runningRun, status: "queued" }));
+    expect(interval(query)).toBe(7000);
+
+    for (const status of ["completed", "partial", "failed"] as const) {
+      query.setData(report({ ...runningRun, status }));
+      expect(interval(query)).toBe(false);
+    }
+    expect(getAiVisibilityReportAggregation).not.toHaveBeenCalled();
   });
 });

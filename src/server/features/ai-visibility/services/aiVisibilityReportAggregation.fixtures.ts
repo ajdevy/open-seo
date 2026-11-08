@@ -32,6 +32,8 @@ export function nativeResult(input: {
   answer?: string | null;
   model?: string;
   questionId?: string;
+  questionVersion?: number;
+  route?: string;
   searchStatus?: string;
   sources?: string[];
   errorCode?: string | null;
@@ -43,11 +45,11 @@ export function nativeResult(input: {
     projectId,
     runId,
     questionId: input.questionId ?? `question-${input.id}`,
-    questionVersion: 1,
+    questionVersion: input.questionVersion ?? 1,
     question: `Question ${input.id}`,
     requestedModel: input.model ?? "synthetic/model",
     observedModel: null,
-    route: "synthetic-route",
+    route: input.route ?? "synthetic-route",
     resultStatus: input.status ?? "completed",
     answer: input.answer ?? null,
     searchStatus: input.searchStatus ?? "unknown",

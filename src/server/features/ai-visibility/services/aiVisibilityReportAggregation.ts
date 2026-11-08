@@ -126,7 +126,14 @@ function legacyEntry(answer: AiAnswer): LegacyEntry {
 function nativeEntry(result: AiNativeResult): NativeEntry {
   return {
     kind: "native",
-    key: `native\u0000${result.runId}\u0000${result.questionId}\u0000${result.requestedModel.toLocaleLowerCase()}`,
+    key: JSON.stringify([
+      "native",
+      result.runId,
+      result.questionId,
+      result.questionVersion,
+      result.requestedModel,
+      result.route,
+    ]),
     model: result.requestedModel,
     route: result.route,
     status: result.resultStatus,

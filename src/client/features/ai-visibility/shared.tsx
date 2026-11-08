@@ -109,6 +109,7 @@ export const aiRunReportQueryOptions = (
     enabled: Boolean(runId),
     staleTime: (query) =>
       isRunPending(query.state.data?.run) ? 0 : Number.POSITIVE_INFINITY,
+    refetchInterval: (query) => aiRunPollingInterval(query.state.data?.run),
   });
 
 export function aiRunPollingInterval(run: AiRun | null | undefined) {
