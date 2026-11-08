@@ -13,6 +13,7 @@ import {
 import { SyntheticRunPanel } from "./SyntheticRunPanel";
 import { RunStatusLine } from "./RunStatusLine";
 import { VisibilityTrend } from "./VisibilityTrend";
+import { AiRunReport } from "./AiRunReport";
 import { AiQueryError, AiRunStatus } from "./shared";
 import { InsufficientCreditsError } from "@/client/features/billing/InsufficientCreditsError";
 import { scheduleLabel } from "@/shared/rank-tracking";
@@ -123,6 +124,7 @@ export function ConfiguredTrackingPanel({
           )}
         </div>
         <VisibilityTrend projectId={projectId} collecting={busy} />
+        <AiRunReport projectId={projectId} runId={runId ?? currentRun?.id} />
         <PromptTrackingTabs projectId={projectId} tab={tab} runId={runId} />
         {tab === "prompts" && (
           <PromptList

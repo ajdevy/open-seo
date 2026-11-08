@@ -236,7 +236,10 @@ export async function loadAiPageResults(input: AiPageResultsInput) {
   const { result, runs } = await loadAiResultSet(input);
   return {
     ...result,
-    rows: result.rows.slice(0, input.limit),
+    rows:
+      input.limit === undefined
+        ? result.rows
+        : result.rows.slice(0, input.limit),
     historyRuns: input.includeHistory
       ? runs.map(({ id, createdAt, trigger }) => ({ id, createdAt, trigger }))
       : [],

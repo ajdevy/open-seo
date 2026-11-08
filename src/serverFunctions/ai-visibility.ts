@@ -17,6 +17,7 @@ import {
   aiAnswerSchema,
   aiExportSchema,
   aiTrendSchema,
+  aiVisibilityReportAggregationSchema,
 } from "@/types/schemas/ai-visibility";
 import {
   createAiNativeRunSchema,
@@ -160,6 +161,18 @@ export const getAiVisibilityTrend = createServerFn({ method: "POST" })
   .validator(aiTrendSchema)
   .handler(({ data, context }) =>
     AiVisibilityService.getTrend({ ...data, projectId: context.projectId }),
+  );
+
+export const getAiVisibilityReportAggregation = createServerFn({
+  method: "POST",
+})
+  .middleware(requireProjectContext)
+  .validator(aiVisibilityReportAggregationSchema)
+  .handler(({ data, context }) =>
+    AiVisibilityService.getReportAggregation({
+      ...data,
+      projectId: context.projectId,
+    }),
   );
 
 export const getAiVisibilityAnswer = createServerFn({ method: "POST" })

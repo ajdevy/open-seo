@@ -187,3 +187,15 @@ export type AiPageResultsInput = z.infer<typeof aiPageResultsSchema>;
 export type AiSourcesInput = z.infer<typeof aiSourcesSchema>;
 export type AiExportInput = z.infer<typeof aiExportSchema>;
 export type AiTrendInput = z.infer<typeof aiTrendSchema>;
+export const aiVisibilityReportAggregationSchema = aiProjectSchema.extend({
+  runId: z
+    .string()
+    .uuid()
+    .nullish()
+    .describe(
+      "The run to report. Omit or null to use the latest scheduled run.",
+    ),
+});
+export type AiVisibilityReportAggregationInput = z.infer<
+  typeof aiVisibilityReportAggregationSchema
+>;

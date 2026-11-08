@@ -12,6 +12,7 @@ import {
   getAiVisibilityRun,
   getAiVisibilityTracker,
   getAiVisibilityTrend,
+  getAiVisibilityReportAggregation,
   getAiVisibilityResults,
   listAiResearchKeywords,
 } from "@/serverFunctions/ai-visibility";
@@ -88,6 +89,22 @@ export const aiRunResultsQueryOptions = (
     queryFn: () =>
       getAiVisibilityResults({
         data: { projectId, runId, branded: "all" },
+      }),
+    enabled: Boolean(runId),
+    staleTime: (query) =>
+      isRunPending(query.state.data?.run) ? 0 : Number.POSITIVE_INFINITY,
+    refetchInterval: (query) => aiRunPollingInterval(query.state.data?.run),
+  });
+
+export const aiRunReportQueryOptions = (
+  projectId: string,
+  runId: string | undefined,
+) =>
+  queryOptions({
+    queryKey: [...aiVisibilityKey(projectId), "results", "report", runId],
+    queryFn: () =>
+      getAiVisibilityReportAggregation({
+        data: { projectId, runId },
       }),
     enabled: Boolean(runId),
     staleTime: (query) =>

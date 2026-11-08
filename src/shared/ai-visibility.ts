@@ -323,6 +323,17 @@ export interface AiTrend {
   }[];
 }
 
+export type {
+  AiReportBrandFinding,
+  AiReportBrandMeasure,
+  AiReportCoverage,
+  AiReportError,
+  AiReportModel,
+  AiReportRate,
+  AiReportSearchCoverage,
+  AiVisibilityReportAggregation,
+} from "./ai-visibility-report";
+
 /**
  * Countries from the shared market list that DataForSEO cannot collect for an
  * engine. Keep in sync with each engine's DataForSEO locations endpoint.
