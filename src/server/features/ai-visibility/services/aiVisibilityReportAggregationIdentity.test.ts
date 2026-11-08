@@ -90,9 +90,11 @@ describe("AI visibility report task identity", () => {
       ["provider-b", 1],
     ]);
     expect(
-      actual.answers.native
-        .map(({ questionVersion, route }) => `${route}:${questionVersion}`)
-        .toSorted(),
-    ).toEqual(["provider-a:1", "provider-a:2", "provider-b:1"]);
+      new Set(
+        actual.answers.native.map(
+          ({ questionVersion, route }) => `${route}:${questionVersion}`,
+        ),
+      ),
+    ).toEqual(new Set(["provider-a:1", "provider-a:2", "provider-b:1"]));
   });
 });

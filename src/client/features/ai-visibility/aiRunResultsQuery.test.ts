@@ -193,7 +193,10 @@ describe("AI visibility run results query", () => {
     expect(typeof interval).toBe("function");
     if (typeof interval !== "function")
       throw new Error("Expected report polling.");
-    const query = queryClient.getQueryCache().build(queryClient, options);
+    const query = queryClient.getQueryCache().build(queryClient, {
+      queryKey: [...options.queryKey],
+      queryFn: options.queryFn,
+    });
 
     query.setData(report(runningRun));
     expect(interval(query)).toBe(7000);
