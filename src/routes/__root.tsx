@@ -17,6 +17,7 @@ import { themePreferenceInitScript } from "@/client/lib/theme";
 import { runtimeAuthModeScript } from "@/lib/auth-mode";
 import { NotFound } from "@/client/components/NotFound";
 import { PrivacyBootstrap } from "@/client/components/PrivacyChoices";
+import { PageLoading } from "@/client/components/Spinner";
 import { TooltipProvider } from "@/client/components/ui/tooltip";
 import appCss from "@/client/styles/app.css?url";
 import { Toaster } from "sonner";
@@ -105,7 +106,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <HeadContent />
       </head>
       <body>
-        <ClientOnly>
+        <ClientOnly fallback={<PageLoading />}>
           <QueryClientProvider client={queryClient}>
             <TooltipProvider>
               <PrivacyBootstrap />
