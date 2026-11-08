@@ -32,6 +32,9 @@ export function AuthenticatedAppLayout({
   banner?: React.ReactNode;
 }) {
   const location = useLocation();
+  const isSettingsPage =
+    location.pathname === "/settings" ||
+    location.pathname.startsWith("/settings/");
   const [showMissingSeoApiKeyModal, setShowMissingSeoApiKeyModal] =
     React.useState(false);
   // On non-project pages (e.g. /settings) there's no projectId in the URL, so
@@ -63,9 +66,11 @@ export function AuthenticatedAppLayout({
   // (a first visit to a page without a project in the URL).
   const sidebarProjectPending =
     sidebarProjectId === null && projectsQuery.isPending;
-  // The setup guide is where the modal and banners send the user, so it shows
-  // neither: a banner there would link to the page the user is already on.
+  // Keep onboarding prompts off Settings, where they would block account
+  // controls. The setup guide is where the DataForSEO prompt links, so it
+  // shows neither a banner nor a modal either.
   const shouldCheckSeoApiKeyStatus =
+    !isSettingsPage &&
     location.pathname !== BILLING_ROUTE &&
     location.pathname !== dataforseoHelpLinkOptions.to;
   const seoApiKeyStatusQuery = useQuery({
@@ -132,7 +137,7 @@ export function AuthenticatedAppLayout({
       {ready ? (
         <GscReEngagementModal
           projectId={sidebarProjectId}
-          suppressed={showMissingSeoApiKeyModal}
+          suppressed={showMissingSeoApiKeyModal || isSettingsPage}
         />
       ) : null}
     </SidebarProvider>

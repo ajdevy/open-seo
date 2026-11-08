@@ -34,10 +34,23 @@ export async function revokeCredentialsInSettings({
   const page = await context.newPage();
   try {
     // No onboarding redirect: OAuth consent and create_project completed it.
-    await page.goto("/settings");
+    const response = await page.goto("/settings");
+    expect(response?.status()).toBe(200);
+    expect(await response?.text()).toContain('aria-label="Loading"');
 
     await step("Settings -> Connected agents -> Disconnect", async () => {
-      await expect(page.getByText("Connected agents").first()).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "Settings", exact: true }),
+      ).toBeVisible({ timeout: 60_000 });
+      await expect(
+        page.getByRole("heading", { name: "Connected agents", exact: true }),
+      ).toBeVisible({ timeout: 60_000 });
+      await expect(
+        page.getByRole("dialog", { name: "One quick setup step" }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole("dialog", { name: "Connect Google Search Console" }),
+      ).toHaveCount(0);
       // RowActionsMenu uses `Actions for ${clientName}`; A has two grants.
       const actions = page.getByRole("button", {
         name: `Actions for ${oauthClientName}`,
