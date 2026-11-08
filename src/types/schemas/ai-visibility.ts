@@ -187,3 +187,7 @@ export type AiPageResultsInput = z.infer<typeof aiPageResultsSchema>;
 export type AiSourcesInput = z.infer<typeof aiSourcesSchema>;
 export type AiExportInput = z.infer<typeof aiExportSchema>;
 export type AiTrendInput = z.infer<typeof aiTrendSchema>;
+export type AiVisibilityReportAggregationInput = {
+  results: AiPageResultsInput;
+  trend: AiTrendInput;
+};

@@ -11,6 +11,7 @@ import {
 } from "./aiVisibilityResults";
 import { exportAiData } from "./aiVisibilityExport";
 import { loadAiTrend } from "./aiVisibilityTrend";
+import { loadAiVisibilityReportAggregation } from "./aiVisibilityReportAggregation";
 import { listAiResearchKeywords, researchAiPrompts } from "./aiPromptResearch";
 import { saveAiNativeResult } from "./aiVisibilityNativeResults";
 import {
@@ -49,6 +50,7 @@ export const AiVisibilityService = {
   getPageResults: loadAiPageResults,
   getSources: loadAiSources,
   getTrend: loadAiTrend,
+  getReportAggregation: loadAiVisibilityReportAggregation,
   getAnswer: loadAiAnswer,
   saveNativeResult: saveAiNativeResult,
   createNativeRun: createAiNativeRun,

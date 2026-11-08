@@ -323,6 +323,40 @@ export interface AiTrend {
   }[];
 }
 
+export interface AiReportRate {
+  numerator: number;
+  denominator: number;
+  percentage: number | null;
+}
+
+export interface AiReportBrandFinding {
+  name: string;
+  domain: string;
+  own: boolean;
+  /** Denominator is matched, evaluable legacy answers only. */
+  evaluableAnswers: number;
+  mentions: { present: AiReportRate; absent: AiReportRate };
+  citations: { present: AiReportRate; absent: AiReportRate };
+}
+
+/** Server aggregation prepared from existing AI result and trend data. */
+export interface AiVisibilityReportAggregation {
+  coverage: {
+    planned: number;
+    received: number;
+    evaluable: number;
+    failed: number;
+    pending: number;
+    unevaluable: number;
+    receivedCoverage: AiReportRate;
+    evaluableCoverage: AiReportRate;
+    evaluationRate: AiReportRate;
+  };
+  /** Findings use existing matched legacy summaries; native identity matching is separate work. */
+  findings: AiReportBrandFinding[];
+  trend: AiTrend;
+}
+
 /**
  * Countries from the shared market list that DataForSEO cannot collect for an
  * engine. Keep in sync with each engine's DataForSEO locations endpoint.
