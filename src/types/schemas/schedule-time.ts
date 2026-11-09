@@ -14,8 +14,9 @@ export const timeZoneSchema = z
   .string()
   .refine(isTimeZone, "Unknown IANA timezone");
 
-// A user-chosen wall-clock slot for scheduled checks. When supplied, the IANA
-// timezone keeps recurring runs at this local time across DST transitions.
+// A user-chosen slot. Recurrence is defined by the owning schedule service;
+// AI Visibility weekly schedules currently preserve local wall-clock time
+// across DST.
 export const scheduleTimeSchema = z.object({
   weekday: z
     .number()
