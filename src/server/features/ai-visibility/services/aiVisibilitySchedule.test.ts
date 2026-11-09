@@ -68,6 +68,30 @@ it("persists and returns an explicit IANA weekly slot, and preserves it on pause
   });
 });
 
+it("rejects a weekly timezone schedule without a weekday before saving", async () => {
+  const input = {
+    projectId: "project",
+    enabled: true,
+    scheduleInterval: "weekly" as const,
+    scheduleTime: {
+      hour: 9,
+      minute: 15,
+      timeZone: "America/New_York",
+    },
+  };
+
+  expect(setAiScheduleSchema.safeParse(input).success).toBe(false);
+  const before = await repo.getTracker("project");
+  if (!before) throw new Error("Tracker fixture was not saved.");
+
+  await expect(setSchedule(input, customer)).rejects.toMatchObject({
+    reason: "INVALID_SCHEDULE_TIME",
+  });
+
+  expect(await repo.getTracker("project")).toEqual(before);
+  expect(startRun).not.toHaveBeenCalled();
+});
+
 it("clears weekly wall-clock settings when rescheduling another cadence", async () => {
   const saved = await repo.getTracker("project");
   if (!saved) throw new Error("Tracker fixture was not saved.");
