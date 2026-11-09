@@ -5,6 +5,10 @@ import { AiVisibilityError } from "./aiVisibilityErrors";
 import { activeAiPrompts, trackerEngines } from "./aiVisibilityConfiguration";
 import { startRun } from "./aiVisibilityRuns";
 import { computeNextCheckAt } from "@/shared/rank-tracking";
+import {
+  computeNextAiWallClockCheckAt,
+  ScheduleTimeResolutionError,
+} from "@/shared/ai-visibility-schedule";
 
 // Answers admitted per tick. Like rank tracking's task-unit budget, it keeps
 // task_get polling under DataForSEO's 2,000 requests a minute; the first start
@@ -43,10 +47,26 @@ export async function runScheduledAiVisibility() {
         trackerId: tracker.id,
         observedNextCheckAt,
         values: {
-          nextCheckAt: computeNextCheckAt(
-            tracker.scheduleInterval,
-            observedNextCheckAt,
-          ),
+          nextCheckAt:
+            tracker.scheduleTimeZone &&
+            tracker.scheduleHour !== null &&
+            tracker.scheduleMinute !== null &&
+            (tracker.scheduleInterval !== "weekly" ||
+              tracker.scheduleWeekday !== null)
+              ? computeNextAiWallClockCheckAt(
+                  tracker.scheduleInterval,
+                  {
+                    weekday: tracker.scheduleWeekday,
+                    hour: tracker.scheduleHour,
+                    minute: tracker.scheduleMinute,
+                    timeZone: tracker.scheduleTimeZone,
+                  },
+                  observedNextCheckAt,
+                )
+              : computeNextCheckAt(
+                  tracker.scheduleInterval,
+                  observedNextCheckAt,
+                ),
           lastSkipReason: null,
         },
       });
@@ -75,7 +95,9 @@ export async function runScheduledAiVisibility() {
           lastSkipReason:
             error instanceof AiVisibilityError
               ? error.message
-              : "The scheduled check could not start.",
+              : error instanceof ScheduleTimeResolutionError
+                ? error.message
+                : "The scheduled check could not start.",
         })
         .catch(() => undefined);
     }

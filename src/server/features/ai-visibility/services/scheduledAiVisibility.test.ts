@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { projects } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { runScheduledAiVisibility } from "./scheduledAiVisibility";
@@ -34,7 +34,18 @@ vi.mock("@/server/email/onboarding-drip", () => ({
 vi.mock("./aiVisibilityRetention", () => ({ pruneAiVisibility: vi.fn() }));
 
 const due = "2026-09-01T06:00:00.000Z";
-async function dueTracker(projectId: string, paused: boolean) {
+async function dueTracker(
+  projectId: string,
+  paused: boolean,
+  schedule: {
+    scheduleInterval?: "daily" | "weekly" | "monthly";
+    nextCheckAt?: string;
+    scheduleWeekday?: number | null;
+    scheduleHour?: number | null;
+    scheduleMinute?: number | null;
+    scheduleTimeZone?: string | null;
+  } = {},
+) {
   const rows = configuration(
     { engines: ["chatgpt"], prompts: [{ text: "Which SEO tools?", paused }] },
     projectId,
@@ -43,6 +54,7 @@ async function dueTracker(projectId: string, paused: boolean) {
   await repo.updateTracker(rows.tracker.id, {
     enabled: true,
     nextCheckAt: due,
+    ...schedule,
   });
 }
 
@@ -56,6 +68,8 @@ beforeEach(async () => {
     domain: "paused.example",
   });
 });
+
+afterEach(() => vi.useRealTimers());
 
 it("moves every due tracker on, including one whose check cannot start", async () => {
   await dueTracker("paused-project", true);
@@ -82,4 +96,64 @@ it("records a skipped check for credits on the tracker without starting it", asy
     "INSUFFICIENT_CREDITS",
   );
   expect(await repo.listRuns("project")).toEqual([]);
+});
+
+it("advances a saved weekly wall-clock slot across spring DST", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-01T14:01:00.000Z"));
+  const observed = "2026-03-01T14:00:00.000Z";
+  await dueTracker("project", false, {
+    scheduleInterval: "weekly",
+    nextCheckAt: observed,
+    scheduleWeekday: 0,
+    scheduleHour: 9,
+    scheduleMinute: 0,
+    scheduleTimeZone: "America/New_York",
+  });
+
+  await runScheduledAiVisibility();
+
+  expect((await repo.getTracker("project"))?.nextCheckAt).toBe(
+    "2026-03-08T13:00:00.000Z",
+  );
+  expect(await repo.listRuns("project")).toMatchObject([
+    { trigger: "scheduled", status: "queued" },
+  ]);
+});
+
+it("does not claim a schedule whose next wall time is ambiguous", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-25T05:31:00.000Z"));
+  const observed = "2026-10-25T05:30:00.000Z";
+  await dueTracker("project", false, {
+    scheduleInterval: "weekly",
+    nextCheckAt: observed,
+    scheduleWeekday: 0,
+    scheduleHour: 1,
+    scheduleMinute: 30,
+    scheduleTimeZone: "America/New_York",
+  });
+
+  await runScheduledAiVisibility();
+
+  const tracker = await repo.getTracker("project");
+  expect(tracker?.nextCheckAt).toBe(observed);
+  expect(tracker?.lastSkipReason).toMatch(/occurs twice.*2026-11-01/);
+  expect(await repo.listRuns("project")).toEqual([]);
+  expect(workflow.create).not.toHaveBeenCalled();
+});
+
+it("keeps legacy trackers on the fixed UTC-anchor recurrence", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-01T14:01:00.000Z"));
+  await dueTracker("project", false, {
+    scheduleInterval: "weekly",
+    nextCheckAt: "2026-03-01T14:00:00.000Z",
+  });
+
+  await runScheduledAiVisibility();
+
+  expect((await repo.getTracker("project"))?.nextCheckAt).toBe(
+    "2026-03-08T14:00:00.000Z",
+  );
 });

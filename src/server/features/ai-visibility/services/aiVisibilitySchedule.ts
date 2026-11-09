@@ -6,6 +6,10 @@ import type { BillingCustomerContext } from "@/server/billing/subscription";
 import type { AiRun } from "@/shared/ai-visibility";
 import type { SetAiScheduleInput } from "@/types/schemas/ai-visibility";
 import { computeNextCheckAt } from "@/shared/rank-tracking";
+import {
+  computeNextAiWallClockCheckAt,
+  ScheduleTimeResolutionError,
+} from "@/shared/ai-visibility-schedule";
 import { requireConfiguration } from "./aiVisibilityMutation";
 import { getTracker } from "./aiVisibilityState";
 import { startRun } from "./aiVisibilityRuns";
@@ -39,16 +43,47 @@ export async function setSchedule(
       "Configure DataForSEO before enabling collection. Setup remains available.",
     );
   const scheduleInterval = input.scheduleInterval ?? tracker.scheduleInterval;
+  const explicitWallClock =
+    input.scheduleTime?.timeZone &&
+    (scheduleInterval !== "weekly" || input.scheduleTime.weekday !== undefined)
+      ? {
+          weekday: input.scheduleTime.weekday ?? null,
+          hour: input.scheduleTime.hour,
+          minute: input.scheduleTime.minute,
+          timeZone: input.scheduleTime.timeZone,
+        }
+      : null;
   // The stored next check is the chosen slot. An unchanged schedule keeps it.
-  const nextCheckAt =
+  let nextCheckAt = tracker.nextCheckAt;
+  if (
     input.scheduleTime ||
     scheduleInterval !== tracker.scheduleInterval ||
     !tracker.nextCheckAt
-      ? computeNextCheckAt(scheduleInterval, null, input.scheduleTime)
-      : tracker.nextCheckAt;
+  ) {
+    try {
+      nextCheckAt = explicitWallClock
+        ? computeNextAiWallClockCheckAt(scheduleInterval, explicitWallClock)
+        : computeNextCheckAt(scheduleInterval, null, input.scheduleTime);
+    } catch (error) {
+      if (error instanceof ScheduleTimeResolutionError)
+        throw new AiVisibilityError("INVALID_SCHEDULE_TIME", error.message);
+      throw error;
+    }
+  }
+  const scheduleSettingsChanged =
+    input.scheduleTime !== undefined ||
+    scheduleInterval !== tracker.scheduleInterval;
   await repo.updateTracker(tracker.id, {
     enabled: true,
     scheduleInterval,
+    ...(scheduleSettingsChanged
+      ? {
+          scheduleWeekday: explicitWallClock?.weekday ?? null,
+          scheduleHour: explicitWallClock?.hour ?? null,
+          scheduleMinute: explicitWallClock?.minute ?? null,
+          scheduleTimeZone: explicitWallClock?.timeZone ?? null,
+        }
+      : {}),
     nextCheckAt,
     lastSkipReason: null,
   });
