@@ -32,6 +32,16 @@ export async function setSchedule(
     await repo.updateTracker(tracker.id, { enabled: false });
     return { state: await getTracker(input), run: null };
   }
+  const scheduleInterval = input.scheduleInterval ?? tracker.scheduleInterval;
+  if (
+    scheduleInterval === "weekly" &&
+    input.scheduleTime?.timeZone !== undefined &&
+    input.scheduleTime.weekday === undefined
+  )
+    throw new AiVisibilityError(
+      "INVALID_SCHEDULE_TIME",
+      "A weekday is required for a weekly schedule with a timezone.",
+    );
   if (!activeAiPrompts(config).length)
     throw new AiVisibilityError(
       "NO_ACTIVE_PROMPTS",
@@ -42,7 +52,6 @@ export async function setSchedule(
       "PROVIDER_NOT_CONFIGURED",
       "Configure DataForSEO before enabling collection. Setup remains available.",
     );
-  const scheduleInterval = input.scheduleInterval ?? tracker.scheduleInterval;
   const explicitWallClock =
     scheduleInterval === "weekly" &&
     input.scheduleTime?.timeZone &&
