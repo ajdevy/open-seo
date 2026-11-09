@@ -56,6 +56,8 @@ export interface AiBrand {
   name: string;
   domain: string;
   own: boolean;
+  /** User-saved names considered when matching the project's own brand. */
+  identityVariants?: string[];
 }
 export interface AiTracker {
   id: string;

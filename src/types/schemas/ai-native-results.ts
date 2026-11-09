@@ -112,6 +112,34 @@ export const recordAiNativeResultSchema = z
       eligible_for_visibility: value.eligibleForVisibility,
     }))
       ctx.addIssue({ code: "custom", ...issue });
+
+    if (value.eligibleForVisibility === true) {
+      if (value.resultStatus !== "completed")
+        ctx.addIssue({
+          code: "custom",
+          path: ["resultStatus"],
+          message: "Only a completed result can be eligible for visibility.",
+        });
+      if (!value.answer?.trim())
+        ctx.addIssue({
+          code: "custom",
+          path: ["answer"],
+          message: "A visibility-eligible result must include an answer.",
+        });
+      if (value.searchStatus !== "completed")
+        ctx.addIssue({
+          code: "custom",
+          path: ["searchStatus"],
+          message: "A visibility-eligible result requires completed search.",
+        });
+      if (!value.searchEvidence.some((event) => event.status === "completed"))
+        ctx.addIssue({
+          code: "custom",
+          path: ["searchEvidence"],
+          message:
+            "A visibility-eligible result requires completed search evidence.",
+        });
+    }
   });
 
 export type CreateAiNativeRunInput = z.infer<typeof createAiNativeRunSchema>;

@@ -98,6 +98,30 @@ describe("synthetic AI visibility runs", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it.each([
+    ["unknown search status", { searchStatus: "unknown" }],
+    ["missing successful search evidence", { searchEvidence: [] }],
+    [
+      "evidence without a successful event",
+      {
+        searchEvidence: [
+          { tool: "web_search", status: "unknown", evidenceRef: "event-1" },
+        ],
+      },
+    ],
+  ])("rejects visibility-eligible results with %s", (_name, fields) => {
+    const parsed = recordAiNativeResultSchema.safeParse({
+      ...resultInput(
+        "00000000-0000-4000-8000-000000000201",
+        "00000000-0000-4000-8000-000000000202",
+        "completed",
+      ),
+      ...fields,
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it("rejects contradictory failed results in the native storage schema", () => {
     const parsed = aiNativeResultSchema.safeParse({
       schema_version: 1,
@@ -277,14 +301,12 @@ describe("synthetic AI visibility runs", () => {
     const firstInput = {
       ...resultInput(created.run.id, created.tasks[0].resultId, "completed"),
       answer: "The first final answer.",
-      searchEvidence: [],
       searchSources: [],
       sources: ["https://first.example/result"],
     };
     const secondInput = {
       ...resultInput(created.run.id, created.tasks[0].resultId, "completed"),
       answer: "The competing final answer.",
-      searchEvidence: [],
       searchSources: [],
       sources: [],
     };

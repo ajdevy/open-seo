@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   loadAiFullAnswers: vi.fn(),
   getProject: vi.fn(),
   listCompetitors: vi.fn(),
+  listSections: vi.fn(),
 }));
 
 vi.mock("./aiVisibilityResults", () => ({
@@ -26,6 +27,12 @@ vi.mock("../repositories/AiVisibilityRepository", () => ({
     listCompetitors: mocks.listCompetitors,
   },
 }));
+vi.mock(
+  "@/server/features/project-context/repositories/ProjectContextRepository",
+  () => ({
+    ProjectContextRepository: { listSections: mocks.listSections },
+  }),
+);
 
 function setReport(input: {
   result?: AiResults;
@@ -43,6 +50,7 @@ function setReport(input: {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.listSections.mockResolvedValue([]);
 });
 
 describe("loadAiVisibilityReportAggregation", () => {

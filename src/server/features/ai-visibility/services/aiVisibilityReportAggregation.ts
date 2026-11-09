@@ -4,6 +4,7 @@ import { aiBrands } from "./aiVisibilityConfiguration";
 import { AiVisibilityError } from "./aiVisibilityErrors";
 import { loadAiFullAnswers } from "./aiVisibilityResults";
 import { findingsFor } from "./aiVisibilityReportMatching";
+import { ProjectContextRepository } from "@/server/features/project-context/repositories/ProjectContextRepository";
 import {
   aiEngineUsesModelApi,
   AI_ENGINE_LABELS,
@@ -20,6 +21,11 @@ import {
 } from "@/shared/ai-visibility";
 import type { AiVisibilityReportAggregationInput } from "@/types/schemas/ai-visibility";
 import { aiResultsSchema } from "@/types/schemas/ai-visibility";
+import { CUSTOM_SECTION_KEY_PREFIX } from "@/types/schemas/projectContext";
+import {
+  BRAND_IDENTITY_VARIANTS_SLUG,
+  parseBrandIdentityVariants,
+} from "@/shared/project-context/brandIdentityVariants";
 
 type ReportResultSet = Awaited<ReturnType<typeof loadAiFullAnswers>>["result"];
 type LegacyEntry = {
@@ -124,6 +130,10 @@ function legacyEntry(answer: AiAnswer): LegacyEntry {
 }
 
 function nativeEntry(result: AiNativeResult): NativeEntry {
+  const hasCompletedSearchEvidence =
+    result.searchStatus === "completed" &&
+    result.searchEvidence.some((event) => event.status === "completed");
+
   return {
     kind: "native",
     key: JSON.stringify([
@@ -141,7 +151,8 @@ function nativeEntry(result: AiNativeResult): NativeEntry {
     evaluable:
       result.resultStatus === "completed" &&
       result.eligibleForVisibility === true &&
-      !!result.answer?.trim(),
+      !!result.answer?.trim() &&
+      hasCompletedSearchEvidence,
     result,
   };
 }
@@ -188,7 +199,10 @@ function searchCoverage(entries: ReportEntry[]): AiReportSearchCoverage {
     if (entry.status === "failed") failed++;
     else if (entry.status !== "completed") pending++;
     else if (entry.searchStatus === "not_reported") notReported++;
-    else if (entry.evaluable || entry.searchStatus === "provider_completed")
+    else if (
+      entry.evaluable ||
+      (entry.kind === "legacy" && entry.searchStatus === "provider_completed")
+    )
       confirmed++;
     else unconfirmed++;
   }
@@ -343,13 +357,23 @@ export async function loadAiVisibilityReportAggregation(
     competitorGap: false,
     branded: "all",
   });
-  const [full, project, competitors] = await Promise.all([
+  const [full, project, competitors, contextSections] = await Promise.all([
     loadAiFullAnswers(resultInput),
     repo.getProject(input.projectId),
     repo.listCompetitors(input.projectId),
+    ProjectContextRepository.listSections(input.projectId),
   ]);
   // Current project identities are the fallback for native results, which do
   // not yet persist a separate brand-identity snapshot.
+  const identityContent = contextSections.find(
+    (section) =>
+      section.key ===
+      `${CUSTOM_SECTION_KEY_PREFIX}${BRAND_IDENTITY_VARIANTS_SLUG}`,
+  )?.content;
+  const identityVariants = parseBrandIdentityVariants(identityContent ?? "");
   const configuredBrands = project ? aiBrands(project, competitors) : [];
-  return aggregate(full.result, full.answers, configuredBrands);
+  const reportBrands = configuredBrands.map((brand) =>
+    brand.own ? { ...brand, identityVariants } : brand,
+  );
+  return aggregate(full.result, full.answers, reportBrands);
 }
