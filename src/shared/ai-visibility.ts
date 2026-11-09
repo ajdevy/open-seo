@@ -168,6 +168,15 @@ export interface AiNativeSearchEvidence {
   status: string;
   evidenceRef: string;
 }
+/** Canonical tool names accepted as proof that a web search actually ran. */
+export const AI_NATIVE_SEARCH_EVIDENCE_TOOLS = ["web_search"] as const;
+export type AiNativeSearchEvidenceTool =
+  (typeof AI_NATIVE_SEARCH_EVIDENCE_TOOLS)[number];
+export function isAiNativeSearchEvidenceTool(
+  tool: string,
+): tool is AiNativeSearchEvidenceTool {
+  return (AI_NATIVE_SEARCH_EVIDENCE_TOOLS as readonly string[]).includes(tool);
+}
 export interface AiNativeResult {
   id: string;
   schemaVersion: number;

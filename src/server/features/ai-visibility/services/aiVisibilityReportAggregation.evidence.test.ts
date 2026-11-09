@@ -104,4 +104,53 @@ describe("AI visibility report search evidence", () => {
     expect(actual.findings[0].mentions.present.percentage).toBeNull();
     expect(actual.findings[0].mentions.absent.percentage).toBeNull();
   });
+
+  it("does not treat completed non-search tool events as search evidence", async () => {
+    mocks.loadAiFullAnswers.mockResolvedValue({
+      result: result({
+        nativeResults: [
+          nativeResult({
+            id: "completed-page-open",
+            eligible: true,
+            searchStatus: "completed",
+            searchEvidence: [
+              {
+                tool: "open_url",
+                status: "completed",
+                evidenceRef: "event-2",
+              },
+            ],
+            answer: "Acme appears in this answer, but no search was recorded.",
+          }),
+        ],
+        coverage: {
+          expected: 1,
+          completed: 1,
+          noAnswer: 0,
+          failed: 0,
+          pending: 0,
+        },
+      }),
+      answers: [],
+    });
+
+    const actual = await loadAiVisibilityReportAggregation(request);
+
+    expect(actual.coverage).toMatchObject({
+      planned: 1,
+      received: 1,
+      evaluable: 0,
+      unevaluable: 1,
+    });
+    expect(actual.search).toEqual({
+      confirmed: 0,
+      unconfirmed: 1,
+      failed: 0,
+      pending: 0,
+      notReported: 0,
+      states: [{ status: "completed", count: 1 }],
+    });
+    expect(actual.findings[0].mentions.present.percentage).toBeNull();
+    expect(actual.findings[0].mentions.absent.percentage).toBeNull();
+  });
 });

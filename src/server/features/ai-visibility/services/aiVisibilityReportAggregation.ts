@@ -18,6 +18,7 @@ import {
   type AiVisibilityReportAggregation,
   type AiEngine,
   type AiAnswer,
+  isAiNativeSearchEvidenceTool,
 } from "@/shared/ai-visibility";
 import type { AiVisibilityReportAggregationInput } from "@/types/schemas/ai-visibility";
 import { aiResultsSchema } from "@/types/schemas/ai-visibility";
@@ -132,7 +133,11 @@ function legacyEntry(answer: AiAnswer): LegacyEntry {
 function nativeEntry(result: AiNativeResult): NativeEntry {
   const hasCompletedSearchEvidence =
     result.searchStatus === "completed" &&
-    result.searchEvidence.some((event) => event.status === "completed");
+    result.searchEvidence.some(
+      (event) =>
+        isAiNativeSearchEvidenceTool(event.tool) &&
+        event.status === "completed",
+    );
 
   return {
     kind: "native",

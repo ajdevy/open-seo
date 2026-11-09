@@ -1,4 +1,9 @@
 import { z } from "zod";
+import { AI_NATIVE_SEARCH_EVIDENCE_TOOLS } from "@/shared/ai-visibility";
+
+const aiNativeSearchEvidenceToolSchema = z.enum(
+  AI_NATIVE_SEARCH_EVIDENCE_TOOLS,
+);
 
 export const aiNativeSearchEvidenceSchema = z.object({
   tool: z.string().min(1),
@@ -92,7 +97,7 @@ export const recordAiNativeResultSchema = z
     searchEvidence: z
       .array(
         z.object({
-          tool: z.string().min(1).max(100),
+          tool: aiNativeSearchEvidenceToolSchema,
           status: z.string().min(1).max(100),
           evidenceRef: z.string().min(1).max(2000),
         }),

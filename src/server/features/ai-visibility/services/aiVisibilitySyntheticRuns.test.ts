@@ -122,6 +122,22 @@ describe("synthetic AI visibility runs", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it("rejects unsupported search-evidence tools in the write schema", () => {
+    const parsed = recordAiNativeResultSchema.safeParse({
+      ...resultInput(
+        "00000000-0000-4000-8000-000000000201",
+        "00000000-0000-4000-8000-000000000202",
+        "completed",
+      ),
+      eligibleForVisibility: false,
+      searchEvidence: [
+        { tool: "open_url", status: "completed", evidenceRef: "event-1" },
+      ],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it("rejects contradictory failed results in the native storage schema", () => {
     const parsed = aiNativeResultSchema.safeParse({
       schema_version: 1,

@@ -109,7 +109,11 @@ describe("AI visibility native run server functions", () => {
       answer: "A synthetic answer.",
       searchStatus: "completed",
       searchEvidence: [
-        { tool: "web_search", status: "completed", evidenceRef: "event-1" },
+        {
+          tool: "web_search" as const,
+          status: "completed",
+          evidenceRef: "event-1",
+        },
       ],
       searchSources: [],
       sources: [],
