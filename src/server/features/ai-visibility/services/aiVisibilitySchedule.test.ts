@@ -68,7 +68,7 @@ it("persists and returns an explicit IANA weekly slot, and preserves it on pause
   });
 });
 
-it("replaces explicit recurrence settings on reschedule", async () => {
+it("clears weekly wall-clock settings when rescheduling another cadence", async () => {
   const saved = await repo.getTracker("project");
   if (!saved) throw new Error("Tracker fixture was not saved.");
   await repo.updateTracker(saved.id, {
@@ -85,7 +85,7 @@ it("replaces explicit recurrence settings on reschedule", async () => {
     {
       projectId: "project",
       enabled: true,
-      scheduleInterval: "daily",
+      scheduleInterval: "monthly",
       scheduleTime: {
         hour: 10,
         minute: 30,
@@ -96,11 +96,11 @@ it("replaces explicit recurrence settings on reschedule", async () => {
   );
 
   expect(result.state.tracker).toMatchObject({
-    scheduleInterval: "daily",
+    scheduleInterval: "monthly",
     scheduleWeekday: null,
-    scheduleHour: 10,
-    scheduleMinute: 30,
-    scheduleTimeZone: "Europe/Berlin",
+    scheduleHour: null,
+    scheduleMinute: null,
+    scheduleTimeZone: null,
   });
 });
 

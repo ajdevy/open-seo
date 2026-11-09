@@ -44,10 +44,11 @@ export async function setSchedule(
     );
   const scheduleInterval = input.scheduleInterval ?? tracker.scheduleInterval;
   const explicitWallClock =
+    scheduleInterval === "weekly" &&
     input.scheduleTime?.timeZone &&
-    (scheduleInterval !== "weekly" || input.scheduleTime.weekday !== undefined)
+    input.scheduleTime.weekday !== undefined
       ? {
-          weekday: input.scheduleTime.weekday ?? null,
+          weekday: input.scheduleTime.weekday,
           hour: input.scheduleTime.hour,
           minute: input.scheduleTime.minute,
           timeZone: input.scheduleTime.timeZone,
@@ -62,7 +63,7 @@ export async function setSchedule(
   ) {
     try {
       nextCheckAt = explicitWallClock
-        ? computeNextAiWallClockCheckAt(scheduleInterval, explicitWallClock)
+        ? computeNextAiWallClockCheckAt(explicitWallClock)
         : computeNextCheckAt(scheduleInterval, null, input.scheduleTime);
     } catch (error) {
       if (error instanceof ScheduleTimeResolutionError)

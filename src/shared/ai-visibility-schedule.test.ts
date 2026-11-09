@@ -46,7 +46,7 @@ describe("IANA wall-clock AI schedules", () => {
       vi.setSystemTime(new Date(now));
 
       expect(
-        computeNextAiWallClockCheckAt("weekly", sundayAtNine, previous),
+        computeNextAiWallClockCheckAt(sundayAtNine, previous),
       ).toBe(expected);
     },
   );
@@ -55,7 +55,7 @@ describe("IANA wall-clock AI schedules", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-01T12:00:00.000Z"));
 
-    expect(computeNextAiWallClockCheckAt("weekly", sundayAtNine)).toBe(
+    expect(computeNextAiWallClockCheckAt(sundayAtNine)).toBe(
       "2026-03-01T14:00:00.000Z",
     );
   });
@@ -80,7 +80,7 @@ describe("IANA wall-clock AI schedules", () => {
       vi.setSystemTime(new Date(now));
 
       const compute = () =>
-        computeNextAiWallClockCheckAt("weekly", time, previous);
+        computeNextAiWallClockCheckAt(time, previous);
       expect(compute).toThrow(ScheduleTimeResolutionError);
       expect(compute).toThrow(message);
     },
