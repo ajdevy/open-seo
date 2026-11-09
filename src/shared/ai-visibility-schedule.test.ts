@@ -45,9 +45,9 @@ describe("IANA wall-clock AI schedules", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(now));
 
-      expect(
-        computeNextAiWallClockCheckAt(sundayAtNine, previous),
-      ).toBe(expected);
+      expect(computeNextAiWallClockCheckAt(sundayAtNine, previous)).toBe(
+        expected,
+      );
     },
   );
 
@@ -79,8 +79,7 @@ describe("IANA wall-clock AI schedules", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(now));
 
-      const compute = () =>
-        computeNextAiWallClockCheckAt(time, previous);
+      const compute = () => computeNextAiWallClockCheckAt(time, previous);
       expect(compute).toThrow(ScheduleTimeResolutionError);
       expect(compute).toThrow(message);
     },
