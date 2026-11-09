@@ -48,13 +48,12 @@ export async function runScheduledAiVisibility() {
         observedNextCheckAt,
         values: {
           nextCheckAt:
+            tracker.scheduleInterval === "weekly" &&
             tracker.scheduleTimeZone &&
             tracker.scheduleHour !== null &&
             tracker.scheduleMinute !== null &&
-            (tracker.scheduleInterval !== "weekly" ||
-              tracker.scheduleWeekday !== null)
+            tracker.scheduleWeekday !== null
               ? computeNextAiWallClockCheckAt(
-                  tracker.scheduleInterval,
                   {
                     weekday: tracker.scheduleWeekday,
                     hour: tracker.scheduleHour,

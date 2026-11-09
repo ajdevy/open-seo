@@ -121,6 +121,29 @@ it("advances a saved weekly wall-clock slot across spring DST", async () => {
   ]);
 });
 
+it("advances a due monthly schedule after its month-end occurrence", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-04-01T12:01:00.000Z"));
+  const observed = "2026-03-31T08:00:00.000Z";
+  await dueTracker("project", false, {
+    scheduleInterval: "monthly",
+    nextCheckAt: observed,
+    scheduleWeekday: null,
+    scheduleHour: 4,
+    scheduleMinute: 0,
+    scheduleTimeZone: "America/New_York",
+  });
+
+  await runScheduledAiVisibility();
+
+  expect((await repo.getTracker("project"))?.nextCheckAt).toBe(
+    "2026-04-30T08:00:00.000Z",
+  );
+  expect(await repo.listRuns("project")).toMatchObject([
+    { trigger: "scheduled", status: "queued" },
+  ]);
+});
+
 it("does not claim a schedule whose next wall time is ambiguous", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-25T05:31:00.000Z"));
