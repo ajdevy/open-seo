@@ -1,0 +1,203 @@
+import type { AiScheduleInterval } from "./ai-visibility";
+import { sort } from "remeda";
+
+export interface AiWallClockSchedule {
+  weekday: number | null;
+  hour: number;
+  minute: number;
+  timeZone: string;
+}
+
+export class ScheduleTimeResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScheduleTimeResolutionError";
+  }
+}
+
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+function formatter(timeZone: string) {
+  let result = formatters.get(timeZone);
+  if (!result) {
+    result = new Intl.DateTimeFormat("en-US", {
+      calendar: "gregory",
+      numberingSystem: "latn",
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+    formatters.set(timeZone, result);
+  }
+  return result;
+}
+
+function localParts(instant: number, timeZone: string) {
+  const parts = formatter(timeZone).formatToParts(instant);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value);
+  return {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: value("hour"),
+    minute: value("minute"),
+    second: value("second"),
+  };
+}
+
+function utcTimestamp(parts: {
+  year: number;
+  month: number;
+  day: number;
+  hour?: number;
+  minute?: number;
+  second?: number;
+}) {
+  const date = new Date(0);
+  date.setUTCFullYear(parts.year, parts.month - 1, parts.day);
+  date.setUTCHours(parts.hour ?? 0, parts.minute ?? 0, parts.second ?? 0, 0);
+  return date.getTime();
+}
+
+function sameWallTime(
+  parts: ReturnType<typeof localParts>,
+  date: { year: number; month: number; day: number },
+  time: { hour: number; minute: number },
+) {
+  return (
+    parts.year === date.year &&
+    parts.month === date.month &&
+    parts.day === date.day &&
+    parts.hour === time.hour &&
+    parts.minute === time.minute &&
+    parts.second === 0
+  );
+}
+
+/**
+ * Resolve a local wall time without picking a policy for DST gaps or folds.
+ * A local time with no matching instant or multiple matching instants is
+ * rejected until product policy defines which instant to use.
+ */
+function resolveWallTime(
+  date: { year: number; month: number; day: number },
+  time: { hour: number; minute: number },
+  timeZone: string,
+) {
+  const wallTimestamp = utcTimestamp({ ...date, ...time });
+  const offsets = new Set<number>();
+
+  // Sample both sides of any nearby offset change so a repeated wall time
+  // yields both candidate instants and a skipped wall time yields none.
+  for (let hours = -48; hours <= 48; hours += 6) {
+    const instant = wallTimestamp + hours * 3_600_000;
+    const local = localParts(instant, timeZone);
+    offsets.add((utcTimestamp(local) - instant) / 60_000);
+  }
+
+  const matches = sort(
+    [...offsets]
+      .map((offset) => wallTimestamp - offset * 60_000)
+      .filter((instant) =>
+        sameWallTime(localParts(instant, timeZone), date, time),
+      ),
+    (a, b) => a - b,
+  );
+
+  return matches;
+}
+
+function nextLocalDate(
+  interval: AiScheduleInterval,
+  schedule: AiWallClockSchedule,
+  after: number,
+) {
+  const local = localParts(after, schedule.timeZone);
+  const date = new Date(utcTimestamp(local));
+  if (interval === "weekly") {
+    // A weekly wall-clock schedule is only persisted when its weekday was
+    // explicitly supplied, so this fallback is unreachable for saved data.
+    if (schedule.weekday === null)
+      throw new ScheduleTimeResolutionError(
+        "A weekly local-time schedule requires an explicitly selected weekday.",
+      );
+    const daysAhead = (schedule.weekday - date.getUTCDay() + 7) % 7;
+    date.setUTCDate(date.getUTCDate() + daysAhead);
+  } else if (interval === "monthly") {
+    date.setUTCMonth(date.getUTCMonth() + 1, 0);
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const dateParts = {
+      year: date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate(),
+    };
+    const matches = resolveWallTime(dateParts, schedule, schedule.timeZone);
+    const upcoming = matches.filter((instant) => instant > after);
+    if (matches.length === 1 && upcoming.length === 1) return upcoming[0];
+
+    const sameLocalDate =
+      dateParts.year === local.year &&
+      dateParts.month === local.month &&
+      dateParts.day === local.day;
+    const wallTimeAlreadyPassed =
+      schedule.hour < local.hour ||
+      (schedule.hour === local.hour &&
+        (schedule.minute < local.minute ||
+          (schedule.minute === local.minute && local.second > 0)));
+    const nonexistentTimeAlreadyPassed =
+      matches.length === 0 && sameLocalDate && wallTimeAlreadyPassed;
+    const ambiguousTimeAlreadyPassed =
+      matches.length > 1 && upcoming.length === 0;
+    if (matches.length === 0 && !nonexistentTimeAlreadyPassed)
+      throw new ScheduleTimeResolutionError(
+        `The selected local time does not exist in ${schedule.timeZone} on ${dateParts.year}-${String(dateParts.month).padStart(2, "0")}-${String(dateParts.day).padStart(2, "0")}; choose another schedule time.`,
+      );
+    if (matches.length > 1 && !ambiguousTimeAlreadyPassed)
+      throw new ScheduleTimeResolutionError(
+        `The selected local time occurs twice in ${schedule.timeZone} on ${dateParts.year}-${String(dateParts.month).padStart(2, "0")}-${String(dateParts.day).padStart(2, "0")}; choose another schedule time.`,
+      );
+
+    if (interval === "daily") date.setUTCDate(date.getUTCDate() + 1);
+    else if (interval === "weekly") date.setUTCDate(date.getUTCDate() + 7);
+    else {
+      date.setUTCDate(1);
+      date.setUTCMonth(date.getUTCMonth() + 1);
+      date.setUTCDate(0);
+    }
+  }
+  throw new ScheduleTimeResolutionError(
+    "Could not resolve the next scheduled local-time occurrence.",
+  );
+}
+
+/**
+ * Compute the next explicit IANA wall-clock occurrence. Legacy schedules
+ * continue using computeNextCheckAt and its fixed UTC-anchor semantics.
+ */
+export function computeNextAiWallClockCheckAt(
+  interval: AiScheduleInterval,
+  schedule: AiWallClockSchedule,
+  previousNextCheckAt?: string | null,
+): string {
+  const now = Date.now();
+  const previous = previousNextCheckAt
+    ? new Date(previousNextCheckAt).getTime()
+    : Number.NEGATIVE_INFINITY;
+  if (
+    !Number.isFinite(now) ||
+    (!Number.isFinite(previous) && previous !== Number.NEGATIVE_INFINITY)
+  )
+    throw new ScheduleTimeResolutionError(
+      "The saved schedule anchor is not a valid timestamp.",
+    );
+  const after = Math.max(now, previous);
+  return new Date(nextLocalDate(interval, schedule, after)).toISOString();
+}

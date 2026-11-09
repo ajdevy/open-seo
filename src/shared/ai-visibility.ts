@@ -64,6 +64,10 @@ export interface AiTracker {
   locationCode: number;
   languageCode: string;
   scheduleInterval: AiScheduleInterval;
+  scheduleWeekday: number | null;
+  scheduleHour: number | null;
+  scheduleMinute: number | null;
+  scheduleTimeZone: string | null;
   nextCheckAt: string | null;
   lastSkipReason: string | null;
   createdAt: string;
