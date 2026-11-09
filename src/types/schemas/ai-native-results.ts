@@ -6,7 +6,7 @@ const aiNativeSearchEvidenceToolSchema = z.enum(
 );
 
 export const aiNativeSearchEvidenceSchema = z.object({
-  tool: z.string().min(1),
+  tool: aiNativeSearchEvidenceToolSchema,
   status: z.string().min(1),
   evidence_ref: z.string().min(1),
 });
