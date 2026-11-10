@@ -115,6 +115,7 @@ function nextLocalDate(
   schedule: AiWeeklyWallClockSchedule,
   after: number,
   unresolvedOccurrencePolicy: "reject" | "skip" = "reject",
+  previousDueAt?: number,
 ) {
   const local = localParts(after, schedule.timeZone);
   const date = new Date(utcTimestamp(local));
@@ -152,9 +153,14 @@ function nextLocalDate(
         (schedule.minute < local.minute ||
           (schedule.minute === local.minute && local.second > 0)));
     const nonexistentTimeAlreadyPassed =
-      matches.length === 0 && sameLocalDate && wallTimeAlreadyPassed;
+      previousDueAt === undefined &&
+      matches.length === 0 &&
+      sameLocalDate &&
+      wallTimeAlreadyPassed;
     const ambiguousTimeAlreadyPassed =
-      matches.length > 1 && upcoming.length === 0;
+      previousDueAt === undefined &&
+      matches.length > 1 &&
+      upcoming.length === 0;
     const unresolvedOccurrence =
       (matches.length === 0 && !nonexistentTimeAlreadyPassed) ||
       (matches.length > 1 && !ambiguousTimeAlreadyPassed);
@@ -188,7 +194,7 @@ export function computeNextAiWallClockCheckAt(
   schedule: AiWeeklyWallClockSchedule,
   previousNextCheckAt?: string | null,
 ): string {
-  const after = scheduleAnchor(previousNextCheckAt);
+  const { after } = scheduleAnchor(previousNextCheckAt);
   return new Date(nextLocalDate(schedule, after).instant).toISOString();
 }
 
@@ -200,10 +206,12 @@ export function computeNextAiWallClockCheckAtSkippingUnresolved(
   schedule: AiWeeklyWallClockSchedule,
   previousNextCheckAt?: string | null,
 ): { nextCheckAt: string; skippedLocalDates: string[] } {
+  const { after, previousDueAt } = scheduleAnchor(previousNextCheckAt);
   const { instant, skippedLocalDates } = nextLocalDate(
     schedule,
-    scheduleAnchor(previousNextCheckAt),
+    after,
     "skip",
+    previousDueAt,
   );
   return {
     nextCheckAt: new Date(instant).toISOString(),
@@ -213,15 +221,18 @@ export function computeNextAiWallClockCheckAtSkippingUnresolved(
 
 function scheduleAnchor(previousNextCheckAt?: string | null) {
   const now = Date.now();
-  const previous = previousNextCheckAt
+  const previousDueAt = previousNextCheckAt
     ? new Date(previousNextCheckAt).getTime()
-    : Number.NEGATIVE_INFINITY;
+    : undefined;
   if (
     !Number.isFinite(now) ||
-    (!Number.isFinite(previous) && previous !== Number.NEGATIVE_INFINITY)
+    (previousDueAt !== undefined && !Number.isFinite(previousDueAt))
   )
     throw new ScheduleTimeResolutionError(
       "The saved schedule anchor is not a valid timestamp.",
     );
-  return Math.max(now, previous);
+  return {
+    after: Math.max(now, previousDueAt ?? Number.NEGATIVE_INFINITY),
+    previousDueAt,
+  };
 }

@@ -221,6 +221,54 @@ it("runs the due occurrence and reports a skipped nonexistent spring slot", asyn
   ]);
 });
 
+it.each([
+  {
+    label: "spring gap",
+    dueAt: "2026-03-01T07:30:00.000Z",
+    now: "2026-03-08T07:01:00.000Z",
+    hour: 2,
+    minute: 30,
+    expectedNext: "2026-03-15T06:30:00.000Z",
+    skippedDate: "2026-03-08",
+  },
+  {
+    label: "fall fold after the repeated hour",
+    dueAt: "2026-10-25T05:30:00.000Z",
+    now: "2026-11-01T06:31:00.000Z",
+    hour: 1,
+    minute: 30,
+    expectedNext: "2026-11-08T06:30:00.000Z",
+    skippedDate: "2026-11-01",
+  },
+])(
+  "reports an unresolved weekly slot when processing resumes after the $label",
+  async ({ dueAt, now, hour, minute, expectedNext, skippedDate }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+    await dueTracker("project", false, {
+      scheduleInterval: "weekly",
+      nextCheckAt: dueAt,
+      scheduleWeekday: 0,
+      scheduleHour: hour,
+      scheduleMinute: minute,
+      scheduleTimeZone: "America/New_York",
+    });
+
+    await runScheduledAiVisibility();
+
+    const tracker = await repo.getTracker("project");
+    expect(tracker?.nextCheckAt).toBe(expectedNext);
+    expect(tracker?.lastSkipReason ?? "").toMatch(
+      new RegExp(
+        `Skipped unresolved weekly local-time occurrence\\(s\\): ${skippedDate}`,
+      ),
+    );
+    expect(await repo.listRuns("project")).toMatchObject([
+      { trigger: "scheduled", status: "queued" },
+    ]);
+  },
+);
+
 it("pauses an incomplete saved weekly local-time schedule instead of retrying it forever", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-03-01T14:01:00.000Z"));
