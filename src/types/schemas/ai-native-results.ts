@@ -1,7 +1,12 @@
 import { z } from "zod";
+import { AI_NATIVE_SEARCH_EVIDENCE_TOOLS } from "@/shared/ai-visibility";
+
+const aiNativeSearchEvidenceToolSchema = z.enum(
+  AI_NATIVE_SEARCH_EVIDENCE_TOOLS,
+);
 
 export const aiNativeSearchEvidenceSchema = z.object({
-  tool: z.string().min(1),
+  tool: aiNativeSearchEvidenceToolSchema,
   status: z.string().min(1),
   evidence_ref: z.string().min(1),
 });
@@ -92,7 +97,7 @@ export const recordAiNativeResultSchema = z
     searchEvidence: z
       .array(
         z.object({
-          tool: z.string().min(1).max(100),
+          tool: aiNativeSearchEvidenceToolSchema,
           status: z.string().min(1).max(100),
           evidenceRef: z.string().min(1).max(2000),
         }),
@@ -112,6 +117,34 @@ export const recordAiNativeResultSchema = z
       eligible_for_visibility: value.eligibleForVisibility,
     }))
       ctx.addIssue({ code: "custom", ...issue });
+
+    if (value.eligibleForVisibility === true) {
+      if (value.resultStatus !== "completed")
+        ctx.addIssue({
+          code: "custom",
+          path: ["resultStatus"],
+          message: "Only a completed result can be eligible for visibility.",
+        });
+      if (!value.answer?.trim())
+        ctx.addIssue({
+          code: "custom",
+          path: ["answer"],
+          message: "A visibility-eligible result must include an answer.",
+        });
+      if (value.searchStatus !== "completed")
+        ctx.addIssue({
+          code: "custom",
+          path: ["searchStatus"],
+          message: "A visibility-eligible result requires completed search.",
+        });
+      if (!value.searchEvidence.some((event) => event.status === "completed"))
+        ctx.addIssue({
+          code: "custom",
+          path: ["searchEvidence"],
+          message:
+            "A visibility-eligible result requires completed search evidence.",
+        });
+    }
   });
 
 export type CreateAiNativeRunInput = z.infer<typeof createAiNativeRunSchema>;

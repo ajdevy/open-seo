@@ -10,6 +10,7 @@ import type {
   AiReportBrandFinding,
   AiReportRate,
 } from "@/shared/ai-visibility";
+import { mentionedBrandIdentityVariants } from "@/shared/project-context/brandIdentityVariants";
 
 type MatchStatus = "present" | "absent" | "ambiguous";
 type ReportEntry =
@@ -44,10 +45,33 @@ function sourceHost(value: string): string | null {
 
 function normalizedName(value: string): string {
   return value
+    .normalize("NFKC")
     .normalize("NFD")
     .replace(/\p{M}/gu, "")
     .trim()
     .toLocaleLowerCase();
+}
+
+function identityNames(brand: AiBrand): string[] {
+  return [...aiBrandNames(brand), ...(brand.identityVariants ?? [])];
+}
+
+function matchedIdentityName(text: string, brand: AiBrand): string | null {
+  const savedNames = mentionedBrandIdentityVariants(
+    text,
+    brand.identityVariants ?? [],
+  );
+  const names = [
+    ...identityNames(brand).filter(
+      (name) => aiMentionSpans(text, [name]).length > 0,
+    ),
+    ...savedNames,
+  ];
+  return names.reduce<string | null>(
+    (longest, name) =>
+      longest === null || name.length > longest.length ? name : longest,
+    null,
+  );
 }
 
 function mentionStatus(
@@ -68,13 +92,16 @@ function mentionStatus(
     );
   if (domainMentioned) return "present";
 
-  const nameMentioned = aiMentionSpans(text, [brand.name]).length > 0;
-  if (!nameMentioned) return "absent";
+  const matchedName = matchedIdentityName(text, brand);
+  if (!matchedName) return "absent";
+  const normalizedMatchedName = normalizedName(matchedName);
 
   const sameName = brands.filter(
     (candidate) =>
-      normalizedName(candidate.name) === normalizedName(brand.name) &&
-      normalizedName(candidate.domain) !== normalizedName(brand.domain),
+      normalizedName(candidate.domain) !== normalizedName(brand.domain) &&
+      identityNames(candidate).some(
+        (name) => normalizedName(name) === normalizedMatchedName,
+      ),
   );
   if (!sameName.length) return "present";
 
@@ -83,8 +110,9 @@ function mentionStatus(
     .filter((host): host is string => !!host);
   const sourceMatchedNames = brands.filter(
     (candidate) =>
-      normalizedName(candidate.name) === normalizedName(brand.name) &&
-      sourceHosts.some((host) => ownedAiDomain(host, candidate.domain)),
+      identityNames(candidate).some(
+        (name) => normalizedName(name) === normalizedMatchedName,
+      ) && sourceHosts.some((host) => ownedAiDomain(host, candidate.domain)),
   );
   if (sourceMatchedNames.length === 1) {
     return normalizedName(sourceMatchedNames[0].domain) ===

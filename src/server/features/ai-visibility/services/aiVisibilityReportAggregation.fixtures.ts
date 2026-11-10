@@ -35,6 +35,7 @@ export function nativeResult(input: {
   questionVersion?: number;
   route?: string;
   searchStatus?: string;
+  searchEvidence?: AiNativeResult["searchEvidence"];
   sources?: string[];
   errorCode?: string | null;
 }): AiNativeResult {
@@ -53,7 +54,12 @@ export function nativeResult(input: {
     resultStatus: input.status ?? "completed",
     answer: input.answer ?? null,
     searchStatus: input.searchStatus ?? "unknown",
-    searchEvidence: [],
+    searchEvidence:
+      input.searchEvidence ??
+      (input.eligible === true &&
+      (input.searchStatus ?? "unknown") === "completed"
+        ? [{ tool: "web_search", status: "completed", evidenceRef: "event-1" }]
+        : []),
     searchSources: [],
     sources: input.sources ?? [],
     eligibleForVisibility: input.eligible ?? null,

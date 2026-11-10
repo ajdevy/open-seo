@@ -93,6 +93,23 @@ beforeEach(async () => {
 });
 
 describe("native model result storage", () => {
+  it("rejects unsupported search-evidence tools at the persistence boundary", async () => {
+    await expect(
+      saveAiNativeResult(
+        result({
+          search_evidence: [
+            { tool: "open_url", status: "completed", evidence_ref: "event-1" },
+          ],
+        }),
+      ),
+    ).rejects.toThrow(/web_search/);
+
+    expect(await testDb.db.select().from(aiNativeResults)).toHaveLength(0);
+    expect(await testDb.db.select().from(aiNativeSearchEvidence)).toHaveLength(
+      0,
+    );
+  });
+
   it("keeps models and routes separate and reads normalized evidence with the run", async () => {
     await saveAiNativeResult(result());
     await saveAiNativeResult(

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   loadAiFullAnswers: vi.fn(),
   getProject: vi.fn(),
   listCompetitors: vi.fn(),
+  listSections: vi.fn(),
 }));
 
 vi.mock("./aiVisibilityResults", () => ({
@@ -22,12 +23,19 @@ vi.mock("../repositories/AiVisibilityRepository", () => ({
     listCompetitors: mocks.listCompetitors,
   },
 }));
+vi.mock(
+  "@/server/features/project-context/repositories/ProjectContextRepository",
+  () => ({
+    ProjectContextRepository: { listSections: mocks.listSections },
+  }),
+);
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.loadAiFullAnswers.mockResolvedValue({ result: result(), answers: [] });
   mocks.getProject.mockResolvedValue(ownProject);
   mocks.listCompetitors.mockResolvedValue([]);
+  mocks.listSections.mockResolvedValue([]);
 });
 
 describe("AI visibility report task identity", () => {
@@ -96,5 +104,52 @@ describe("AI visibility report task identity", () => {
         ),
       ),
     ).toEqual(new Set(["provider-a:1", "provider-a:2", "provider-b:1"]));
+  });
+
+  it("uses saved identity variants and keeps homonymous names ambiguous", async () => {
+    mocks.listSections.mockResolvedValue([
+      { key: "custom:brand-identity-variants", content: "AcmeSaaS" },
+    ]);
+    mocks.listCompetitors.mockResolvedValue([
+      { name: "AcmeSaaS", domain: "shop.example" },
+    ]);
+    mocks.loadAiFullAnswers.mockResolvedValue({
+      result: result({
+        nativeResults: [
+          nativeResult({
+            id: "identity-variant",
+            eligible: true,
+            searchStatus: "completed",
+            answer: "AcmeSaaS was recommended for this use case.",
+          }),
+        ],
+        coverage: {
+          expected: 1,
+          completed: 1,
+          noAnswer: 0,
+          failed: 0,
+          pending: 0,
+        },
+      }),
+      answers: [],
+    });
+
+    const actual = await loadAiVisibilityReportAggregation(request);
+    const own = actual.findings.find((finding) => finding.own)!;
+    const competitor = actual.findings.find((finding) => !finding.own)!;
+
+    expect(mocks.listSections).toHaveBeenCalledWith(request.projectId);
+    expect(own.mentions.ambiguous).toEqual({
+      numerator: 1,
+      denominator: 1,
+      percentage: 100,
+    });
+    expect(own.mentions.present.percentage).toBeNull();
+    expect(own.mentions.absent.percentage).toBeNull();
+    expect(competitor.mentions.ambiguous).toEqual({
+      numerator: 1,
+      denominator: 1,
+      percentage: 100,
+    });
   });
 });
