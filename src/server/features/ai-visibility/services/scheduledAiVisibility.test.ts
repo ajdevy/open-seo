@@ -77,6 +77,8 @@ beforeEach(async () => {
 afterEach(() => vi.useRealTimers());
 
 it("moves every due tracker on, including one whose check cannot start", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
   await dueTracker("paused-project", true);
   await dueTracker("project", false);
 
@@ -92,6 +94,8 @@ it("moves every due tracker on, including one whose check cannot start", async (
 });
 
 it("records a skipped check for credits on the tracker without starting it", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
   hosted.mockResolvedValue(true);
   await dueTracker("project", false);
 
@@ -142,12 +146,14 @@ it("advances a saved weekly wall-clock slot across spring DST", async () => {
   expect((await repo.getTracker("project"))?.nextCheckAt).toBe(
     "2026-03-08T13:00:00.000Z",
   );
+  expect((await repo.getTracker("project"))?.lastSkipReason).toBeNull();
   expect(await repo.listRuns("project")).toMatchObject([
     { trigger: "scheduled", status: "queued" },
   ]);
+  expect(workflow.create).toHaveBeenCalledTimes(1);
 });
 
-it("keeps a valid weekly wall-clock schedule when resuming days late", async () => {
+it("skips missed weekly occurrences and keeps the next future wall-clock slot", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-03-11T12:01:00.000Z"));
   await dueTracker("project", false, {
@@ -163,10 +169,14 @@ it("keeps a valid weekly wall-clock schedule when resuming days late", async () 
 
   const tracker = await repo.getTracker("project");
   expect(tracker?.nextCheckAt).toBe("2026-03-15T13:00:00.000Z");
-  expect(tracker?.lastSkipReason).toBeNull();
-  expect(await repo.listRuns("project")).toMatchObject([
-    { trigger: "scheduled", status: "queued" },
-  ]);
+  expect(tracker?.lastSkipReason).toContain(
+    "Skipped missed weekly check slot(s): 2026-03-01 at 09:00 America/New_York; 2026-03-08 at 09:00 America/New_York.",
+  );
+  expect(tracker?.lastSkipReason).toContain(
+    "No automatic catch-up check was started.",
+  );
+  expect(await repo.listRuns("project")).toEqual([]);
+  expect(workflow.create).not.toHaveBeenCalled();
 });
 
 it("advances a due monthly schedule after its month-end occurrence", async () => {
@@ -247,11 +257,12 @@ it.each([
   {
     label: "spring gap after a later day",
     dueAt: "2026-03-01T07:30:00.000Z",
-    now: "2026-03-10T07:31:00.000Z",
+    now: "2026-03-11T07:31:00.000Z",
     hour: 2,
     minute: 30,
     expectedNext: "2026-03-15T06:30:00.000Z",
     skippedDate: "2026-03-08",
+    skippedExplanation: "did not exist because of the daylight-saving gap",
   },
   {
     label: "fall fold after a later day",
@@ -261,10 +272,19 @@ it.each([
     minute: 30,
     expectedNext: "2026-11-08T06:30:00.000Z",
     skippedDate: "2026-11-01",
+    skippedExplanation: "occurred twice because of the daylight-saving fold",
   },
 ])(
-  "reports an unresolved weekly slot when processing resumes after the $label",
-  async ({ dueAt, now, hour, minute, expectedNext, skippedDate }) => {
+  "skips overdue weekly slots when processing resumes after the $label",
+  async ({
+    dueAt,
+    now,
+    hour,
+    minute,
+    expectedNext,
+    skippedDate,
+    skippedExplanation,
+  }) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(now));
     await dueTracker("project", false, {
@@ -280,14 +300,13 @@ it.each([
 
     const tracker = await repo.getTracker("project");
     expect(tracker?.nextCheckAt).toBe(expectedNext);
-    expect(tracker?.lastSkipReason ?? "").toMatch(
-      new RegExp(
-        `Skipped unresolved weekly local-time occurrence\\(s\\): ${skippedDate}`,
-      ),
+    expect(tracker?.lastSkipReason).toContain(skippedDate);
+    expect(tracker?.lastSkipReason).toContain(skippedExplanation);
+    expect(tracker?.lastSkipReason).toContain(
+      "No automatic catch-up check was started.",
     );
-    expect(await repo.listRuns("project")).toMatchObject([
-      { trigger: "scheduled", status: "queued" },
-    ]);
+    expect(await repo.listRuns("project")).toEqual([]);
+    expect(workflow.create).not.toHaveBeenCalled();
   },
 );
 
