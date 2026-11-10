@@ -7,6 +7,11 @@ export interface AiWeeklyWallClockSchedule {
   timeZone: string;
 }
 
+export interface MissedAiWeeklyWallClockSlot {
+  localDate: string;
+  resolution: "valid" | "nonexistent" | "ambiguous";
+}
+
 export class ScheduleTimeResolutionError extends Error {
   constructor(message: string) {
     super(message);
@@ -15,6 +20,7 @@ export class ScheduleTimeResolutionError extends Error {
 }
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
+const WEEK_MS = 7 * 24 * 60 * 60_000;
 
 function formatter(timeZone: string) {
   let result = formatters.get(timeZone);
@@ -216,17 +222,83 @@ function skippedLocalDatesSinceDue(
 
   const today = new Date(utcTimestamp(localParts(now, schedule.timeZone)));
   const skippedLocalDates: string[] = [];
-  while (date < today) {
+  for (
+    let localDateAt = date.getTime();
+    localDateAt < today.getTime();
+    localDateAt += WEEK_MS
+  ) {
+    const localDate = new Date(localDateAt);
     const dateParts = {
-      year: date.getUTCFullYear(),
-      month: date.getUTCMonth() + 1,
-      day: date.getUTCDate(),
+      year: localDate.getUTCFullYear(),
+      month: localDate.getUTCMonth() + 1,
+      day: localDate.getUTCDate(),
     };
     if (resolveWallTime(dateParts, schedule, schedule.timeZone).length !== 1)
       skippedLocalDates.push(localDateLabel(dateParts));
-    date.setUTCDate(date.getUTCDate() + 7);
   }
   return skippedLocalDates;
+}
+
+/**
+ * List each weekly wall-clock slot at or after the saved due date that has
+ * passed. DST gaps and folds stay in the list with their resolution so the
+ * scheduler can explain why those dates were skipped to the user.
+ */
+export function listMissedAiWeeklyWallClockSlots(
+  schedule: AiWeeklyWallClockSchedule,
+  previousNextCheckAt: string,
+): MissedAiWeeklyWallClockSlot[] {
+  const { now, previousDueAt } = scheduleAnchor(previousNextCheckAt);
+  if (previousDueAt === undefined || previousDueAt > now) return [];
+
+  const dueLocal = localParts(previousDueAt, schedule.timeZone);
+  const dueDate = new Date(utcTimestamp(dueLocal));
+  const dueDateLabel = localDateLabel(dueLocal);
+  const daysAhead = daysUntilScheduledWeekday(schedule, dueDate);
+  dueDate.setUTCDate(dueDate.getUTCDate() + daysAhead);
+
+  const nowLocal = localParts(now, schedule.timeZone);
+  const lastLocalDate = new Date(utcTimestamp(nowLocal));
+  const lastLocalDateAt = lastLocalDate.getTime();
+  const wallClockTimePassed =
+    nowLocal.hour > schedule.hour ||
+    (nowLocal.hour === schedule.hour && nowLocal.minute >= schedule.minute);
+  const missed: MissedAiWeeklyWallClockSlot[] = [];
+
+  for (
+    let localDateAt = dueDate.getTime();
+    localDateAt <= lastLocalDateAt;
+    localDateAt += WEEK_MS
+  ) {
+    const localDateObject = new Date(localDateAt);
+    const date = {
+      year: localDateObject.getUTCFullYear(),
+      month: localDateObject.getUTCMonth() + 1,
+      day: localDateObject.getUTCDate(),
+    };
+    const localDate = localDateLabel(date);
+    const matches = resolveWallTime(date, schedule, schedule.timeZone);
+    const isSavedDueDate = localDate === dueDateLabel;
+    const hasPassed =
+      isSavedDueDate ||
+      (matches.length === 0
+        ? localDateAt < lastLocalDateAt || wallClockTimePassed
+        : matches.some((instant) => instant <= now));
+
+    if (hasPassed) {
+      missed.push({
+        localDate,
+        resolution:
+          matches.length === 0
+            ? "nonexistent"
+            : matches.length > 1
+              ? "ambiguous"
+              : "valid",
+      });
+    }
+  }
+
+  return missed;
 }
 
 /**
@@ -243,7 +315,8 @@ export function computeNextAiWallClockCheckAt(
 
 /**
  * Scheduler recurrence policy: skip and report nonexistent or repeated future
- * wall-clock slots, while still starting the currently due occurrence.
+ * wall-clock slots. The caller decides whether the saved due slot is still
+ * within its start grace period.
  */
 export function computeNextAiWallClockCheckAtSkippingUnresolved(
   schedule: AiWeeklyWallClockSchedule,
@@ -262,7 +335,7 @@ export function computeNextAiWallClockCheckAtSkippingUnresolved(
   ]);
   return {
     nextCheckAt: new Date(instant).toISOString(),
-    skippedLocalDates: [...skippedDates].sort(),
+    skippedLocalDates: sort([...skippedDates], (a, b) => a.localeCompare(b)),
   };
 }
 
