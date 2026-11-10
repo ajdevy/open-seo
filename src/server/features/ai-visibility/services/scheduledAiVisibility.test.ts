@@ -147,6 +147,28 @@ it("advances a saved weekly wall-clock slot across spring DST", async () => {
   ]);
 });
 
+it("keeps a valid weekly wall-clock schedule when resuming days late", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-11T12:01:00.000Z"));
+  await dueTracker("project", false, {
+    scheduleInterval: "weekly",
+    nextCheckAt: "2026-03-01T14:00:00.000Z",
+    scheduleWeekday: 0,
+    scheduleHour: 9,
+    scheduleMinute: 0,
+    scheduleTimeZone: "America/New_York",
+  });
+
+  await runScheduledAiVisibility();
+
+  const tracker = await repo.getTracker("project");
+  expect(tracker?.nextCheckAt).toBe("2026-03-15T13:00:00.000Z");
+  expect(tracker?.lastSkipReason).toBeNull();
+  expect(await repo.listRuns("project")).toMatchObject([
+    { trigger: "scheduled", status: "queued" },
+  ]);
+});
+
 it("advances a due monthly schedule after its month-end occurrence", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-04-01T12:01:00.000Z"));
@@ -223,18 +245,18 @@ it("runs the due occurrence and reports a skipped nonexistent spring slot", asyn
 
 it.each([
   {
-    label: "spring gap",
+    label: "spring gap after a later day",
     dueAt: "2026-03-01T07:30:00.000Z",
-    now: "2026-03-08T07:01:00.000Z",
+    now: "2026-03-10T07:31:00.000Z",
     hour: 2,
     minute: 30,
     expectedNext: "2026-03-15T06:30:00.000Z",
     skippedDate: "2026-03-08",
   },
   {
-    label: "fall fold after the repeated hour",
+    label: "fall fold after a later day",
     dueAt: "2026-10-25T05:30:00.000Z",
-    now: "2026-11-01T06:31:00.000Z",
+    now: "2026-11-03T06:31:00.000Z",
     hour: 1,
     minute: 30,
     expectedNext: "2026-11-08T06:30:00.000Z",

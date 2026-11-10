@@ -79,6 +79,29 @@ function sameWallTime(
   );
 }
 
+function daysUntilScheduledWeekday(
+  schedule: AiWeeklyWallClockSchedule,
+  date: Date,
+) {
+  if (
+    !Number.isInteger(schedule.weekday) ||
+    schedule.weekday < 0 ||
+    schedule.weekday > 6
+  )
+    throw new ScheduleTimeResolutionError(
+      "A weekly local-time schedule requires an explicitly selected weekday.",
+    );
+  return (schedule.weekday - date.getUTCDay() + 7) % 7;
+}
+
+function localDateLabel(date: { year: number; month: number; day: number }) {
+  return [
+    date.year,
+    String(date.month).padStart(2, "0"),
+    String(date.day).padStart(2, "0"),
+  ].join("-");
+}
+
 /**
  * Resolve a local wall time, rejecting DST gaps/folds by default. Scheduled
  * recurrence may instead skip and report an unresolved future occurrence.
@@ -119,15 +142,7 @@ function nextLocalDate(
 ) {
   const local = localParts(after, schedule.timeZone);
   const date = new Date(utcTimestamp(local));
-  if (
-    !Number.isInteger(schedule.weekday) ||
-    schedule.weekday < 0 ||
-    schedule.weekday > 6
-  )
-    throw new ScheduleTimeResolutionError(
-      "A weekly local-time schedule requires an explicitly selected weekday.",
-    );
-  const daysAhead = (schedule.weekday - date.getUTCDay() + 7) % 7;
+  const daysAhead = daysUntilScheduledWeekday(schedule, date);
   date.setUTCDate(date.getUTCDate() + daysAhead);
 
   const skippedLocalDates: string[] = [];
@@ -165,11 +180,7 @@ function nextLocalDate(
       (matches.length === 0 && !nonexistentTimeAlreadyPassed) ||
       (matches.length > 1 && !ambiguousTimeAlreadyPassed);
     if (unresolvedOccurrence) {
-      const dateLabel = [
-        dateParts.year,
-        String(dateParts.month).padStart(2, "0"),
-        String(dateParts.day).padStart(2, "0"),
-      ].join("-");
+      const dateLabel = localDateLabel(dateParts);
       const message =
         matches.length === 0
           ? `The selected local time does not exist in ${schedule.timeZone} on ${dateLabel}; choose another schedule time.`
@@ -184,6 +195,38 @@ function nextLocalDate(
   throw new ScheduleTimeResolutionError(
     "Could not resolve the next scheduled local-time occurrence.",
   );
+}
+
+function skippedLocalDatesSinceDue(
+  schedule: AiWeeklyWallClockSchedule,
+  previousDueAt: number | undefined,
+  now: number,
+) {
+  if (previousDueAt === undefined || previousDueAt >= now) return [];
+
+  const dueLocal = localParts(previousDueAt, schedule.timeZone);
+  const date = new Date(utcTimestamp(dueLocal));
+  const daysAhead = daysUntilScheduledWeekday(schedule, date);
+  date.setUTCDate(date.getUTCDate() + daysAhead);
+  const scheduledTimeIsAfterDueTime =
+    schedule.hour > dueLocal.hour ||
+    (schedule.hour === dueLocal.hour && schedule.minute > dueLocal.minute);
+  if (daysAhead === 0 && !scheduledTimeIsAfterDueTime)
+    date.setUTCDate(date.getUTCDate() + 7);
+
+  const today = new Date(utcTimestamp(localParts(now, schedule.timeZone)));
+  const skippedLocalDates: string[] = [];
+  while (date < today) {
+    const dateParts = {
+      year: date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate(),
+    };
+    if (resolveWallTime(dateParts, schedule, schedule.timeZone).length !== 1)
+      skippedLocalDates.push(localDateLabel(dateParts));
+    date.setUTCDate(date.getUTCDate() + 7);
+  }
+  return skippedLocalDates;
 }
 
 /**
@@ -206,16 +249,20 @@ export function computeNextAiWallClockCheckAtSkippingUnresolved(
   schedule: AiWeeklyWallClockSchedule,
   previousNextCheckAt?: string | null,
 ): { nextCheckAt: string; skippedLocalDates: string[] } {
-  const { after, previousDueAt } = scheduleAnchor(previousNextCheckAt);
+  const { now, after, previousDueAt } = scheduleAnchor(previousNextCheckAt);
   const { instant, skippedLocalDates } = nextLocalDate(
     schedule,
     after,
     "skip",
     previousDueAt,
   );
+  const skippedDates = new Set([
+    ...skippedLocalDatesSinceDue(schedule, previousDueAt, now),
+    ...skippedLocalDates,
+  ]);
   return {
     nextCheckAt: new Date(instant).toISOString(),
-    skippedLocalDates,
+    skippedLocalDates: [...skippedDates].sort(),
   };
 }
 
@@ -232,6 +279,7 @@ function scheduleAnchor(previousNextCheckAt?: string | null) {
       "The saved schedule anchor is not a valid timestamp.",
     );
   return {
+    now,
     after: Math.max(now, previousDueAt ?? Number.NEGATIVE_INFINITY),
     previousDueAt,
   };
