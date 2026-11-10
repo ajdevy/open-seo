@@ -8,7 +8,12 @@ const { testDb, workflow, hosted } = await vi.hoisted(async () => {
   const { createAiVisibilityTestDb } = await import("../aiVisibilityTestDb");
   return {
     testDb: await createAiVisibilityTestDb(),
-    workflow: { create: vi.fn(), get: vi.fn() },
+    workflow: {
+      create: vi.fn(),
+      get: vi.fn(async () => ({
+        status: async () => ({ status: "queued" }),
+      })),
+    },
     hosted: vi.fn(),
   };
 });
@@ -98,6 +103,27 @@ it("records a skipped check for credits on the tracker without starting it", asy
   expect(await repo.listRuns("project")).toEqual([]);
 });
 
+it("keeps both the skipped DST slot and insufficient-credit notices", async () => {
+  hosted.mockResolvedValue(true);
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-25T05:31:00.000Z"));
+  await dueTracker("project", false, {
+    scheduleInterval: "weekly",
+    nextCheckAt: "2026-10-25T05:30:00.000Z",
+    scheduleWeekday: 0,
+    scheduleHour: 1,
+    scheduleMinute: 30,
+    scheduleTimeZone: "America/New_York",
+  });
+
+  await runScheduledAiVisibility();
+
+  expect((await repo.getTracker("project"))?.lastSkipReason).toMatch(
+    /^INSUFFICIENT_CREDITS; Skipped unresolved weekly local-time occurrence\(s\): 2026-11-01\./,
+  );
+  expect(await repo.listRuns("project")).toEqual([]);
+});
+
 it("advances a saved weekly wall-clock slot across spring DST", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-03-01T14:01:00.000Z"));
@@ -144,7 +170,7 @@ it("advances a due monthly schedule after its month-end occurrence", async () =>
   ]);
 });
 
-it("does not claim a schedule whose next wall time is ambiguous", async () => {
+it("runs the due occurrence and reports a skipped ambiguous next week", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-25T05:31:00.000Z"));
   const observed = "2026-10-25T05:30:00.000Z";
@@ -160,10 +186,58 @@ it("does not claim a schedule whose next wall time is ambiguous", async () => {
   await runScheduledAiVisibility();
 
   const tracker = await repo.getTracker("project");
-  expect(tracker?.nextCheckAt).toBe(observed);
-  expect(tracker?.lastSkipReason).toMatch(/occurs twice.*2026-11-01/);
+  expect(tracker?.nextCheckAt).toBe("2026-11-08T06:30:00.000Z");
+  expect(tracker?.lastSkipReason).toMatch(
+    /Skipped unresolved weekly local-time occurrence\(s\): 2026-11-01/,
+  );
+  expect(await repo.listRuns("project")).toMatchObject([
+    { trigger: "scheduled", status: "queued" },
+  ]);
+  expect(workflow.create).toHaveBeenCalledTimes(1);
+});
+
+it("runs the due occurrence and reports a skipped nonexistent spring slot", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-01T07:31:00.000Z"));
+  const observed = "2026-03-01T07:30:00.000Z";
+  await dueTracker("project", false, {
+    scheduleInterval: "weekly",
+    nextCheckAt: observed,
+    scheduleWeekday: 0,
+    scheduleHour: 2,
+    scheduleMinute: 30,
+    scheduleTimeZone: "America/New_York",
+  });
+
+  await runScheduledAiVisibility();
+
+  const tracker = await repo.getTracker("project");
+  expect(tracker?.nextCheckAt).toBe("2026-03-15T06:30:00.000Z");
+  expect(tracker?.lastSkipReason).toMatch(
+    /Skipped unresolved weekly local-time occurrence\(s\): 2026-03-08/,
+  );
+  expect(await repo.listRuns("project")).toMatchObject([
+    { trigger: "scheduled", status: "queued" },
+  ]);
+});
+
+it("pauses an incomplete saved weekly local-time schedule instead of retrying it forever", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-01T14:01:00.000Z"));
+  await dueTracker("project", false, {
+    scheduleInterval: "weekly",
+    nextCheckAt: "2026-03-01T14:00:00.000Z",
+    scheduleHour: 9,
+    scheduleTimeZone: "America/New_York",
+  });
+
+  await runScheduledAiVisibility();
+
+  const tracker = await repo.getTracker("project");
+  expect(tracker?.enabled).toBe(false);
+  expect(tracker?.nextCheckAt).toBe("2026-03-01T14:00:00.000Z");
+  expect(tracker?.lastSkipReason).toMatch(/schedule is incomplete/i);
   expect(await repo.listRuns("project")).toEqual([]);
-  expect(workflow.create).not.toHaveBeenCalled();
 });
 
 it("keeps legacy trackers on the fixed UTC-anchor recurrence", async () => {

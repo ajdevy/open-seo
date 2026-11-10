@@ -80,9 +80,8 @@ function sameWallTime(
 }
 
 /**
- * Resolve a local wall time without picking a policy for DST gaps or folds.
- * A local time with no matching instant or multiple matching instants is
- * rejected until product policy defines which instant to use.
+ * Resolve a local wall time, rejecting DST gaps/folds by default. Scheduled
+ * recurrence may instead skip and report an unresolved future occurrence.
  */
 function resolveWallTime(
   date: { year: number; month: number; day: number },
@@ -112,7 +111,11 @@ function resolveWallTime(
   return matches;
 }
 
-function nextLocalDate(schedule: AiWeeklyWallClockSchedule, after: number) {
+function nextLocalDate(
+  schedule: AiWeeklyWallClockSchedule,
+  after: number,
+  unresolvedOccurrencePolicy: "reject" | "skip" = "reject",
+) {
   const local = localParts(after, schedule.timeZone);
   const date = new Date(utcTimestamp(local));
   if (
@@ -126,7 +129,9 @@ function nextLocalDate(schedule: AiWeeklyWallClockSchedule, after: number) {
   const daysAhead = (schedule.weekday - date.getUTCDay() + 7) % 7;
   date.setUTCDate(date.getUTCDate() + daysAhead);
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const skippedLocalDates: string[] = [];
+  const maxAttempts = unresolvedOccurrencePolicy === "skip" ? 8 : 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const dateParts = {
       year: date.getUTCFullYear(),
       month: date.getUTCMonth() + 1,
@@ -134,7 +139,8 @@ function nextLocalDate(schedule: AiWeeklyWallClockSchedule, after: number) {
     };
     const matches = resolveWallTime(dateParts, schedule, schedule.timeZone);
     const upcoming = matches.filter((instant) => instant > after);
-    if (matches.length === 1 && upcoming.length === 1) return upcoming[0];
+    if (matches.length === 1 && upcoming.length === 1)
+      return { instant: upcoming[0], skippedLocalDates };
 
     const sameLocalDate =
       dateParts.year === local.year &&
@@ -149,14 +155,23 @@ function nextLocalDate(schedule: AiWeeklyWallClockSchedule, after: number) {
       matches.length === 0 && sameLocalDate && wallTimeAlreadyPassed;
     const ambiguousTimeAlreadyPassed =
       matches.length > 1 && upcoming.length === 0;
-    if (matches.length === 0 && !nonexistentTimeAlreadyPassed)
-      throw new ScheduleTimeResolutionError(
-        `The selected local time does not exist in ${schedule.timeZone} on ${dateParts.year}-${String(dateParts.month).padStart(2, "0")}-${String(dateParts.day).padStart(2, "0")}; choose another schedule time.`,
-      );
-    if (matches.length > 1 && !ambiguousTimeAlreadyPassed)
-      throw new ScheduleTimeResolutionError(
-        `The selected local time occurs twice in ${schedule.timeZone} on ${dateParts.year}-${String(dateParts.month).padStart(2, "0")}-${String(dateParts.day).padStart(2, "0")}; choose another schedule time.`,
-      );
+    const unresolvedOccurrence =
+      (matches.length === 0 && !nonexistentTimeAlreadyPassed) ||
+      (matches.length > 1 && !ambiguousTimeAlreadyPassed);
+    if (unresolvedOccurrence) {
+      const dateLabel = [
+        dateParts.year,
+        String(dateParts.month).padStart(2, "0"),
+        String(dateParts.day).padStart(2, "0"),
+      ].join("-");
+      const message =
+        matches.length === 0
+          ? `The selected local time does not exist in ${schedule.timeZone} on ${dateLabel}; choose another schedule time.`
+          : `The selected local time occurs twice in ${schedule.timeZone} on ${dateLabel}; choose another schedule time.`;
+      if (unresolvedOccurrencePolicy === "reject")
+        throw new ScheduleTimeResolutionError(message);
+      skippedLocalDates.push(dateLabel);
+    }
 
     date.setUTCDate(date.getUTCDate() + 7);
   }
@@ -173,6 +188,30 @@ export function computeNextAiWallClockCheckAt(
   schedule: AiWeeklyWallClockSchedule,
   previousNextCheckAt?: string | null,
 ): string {
+  const after = scheduleAnchor(previousNextCheckAt);
+  return new Date(nextLocalDate(schedule, after).instant).toISOString();
+}
+
+/**
+ * Scheduler recurrence policy: skip and report nonexistent or repeated future
+ * wall-clock slots, while still starting the currently due occurrence.
+ */
+export function computeNextAiWallClockCheckAtSkippingUnresolved(
+  schedule: AiWeeklyWallClockSchedule,
+  previousNextCheckAt?: string | null,
+): { nextCheckAt: string; skippedLocalDates: string[] } {
+  const { instant, skippedLocalDates } = nextLocalDate(
+    schedule,
+    scheduleAnchor(previousNextCheckAt),
+    "skip",
+  );
+  return {
+    nextCheckAt: new Date(instant).toISOString(),
+    skippedLocalDates,
+  };
+}
+
+function scheduleAnchor(previousNextCheckAt?: string | null) {
   const now = Date.now();
   const previous = previousNextCheckAt
     ? new Date(previousNextCheckAt).getTime()
@@ -184,6 +223,5 @@ export function computeNextAiWallClockCheckAt(
     throw new ScheduleTimeResolutionError(
       "The saved schedule anchor is not a valid timestamp.",
     );
-  const after = Math.max(now, previous);
-  return new Date(nextLocalDate(schedule, after)).toISOString();
+  return Math.max(now, previous);
 }
