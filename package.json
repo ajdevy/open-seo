@@ -49,6 +49,8 @@
     "test:watch": "vitest",
     "test:ci": "vitest run --reporter=dot",
     "test:standalone:gateway": "node --test scripts/celld/runtime/crawl-gateway.test.mjs",
+    "test:standalone:backup": "node --test scripts/celld/backup-manifest.test.mjs",
+    "test:standalone:client-restore": "node --test scripts/celld/runtime/client-restore.test.mjs",
     "test:standalone:runtime": "sh scripts/celld/conformance/conformance.sh",
     "test:e2e": "playwright test -c tests/playwright.config.ts",
     "test:e2e:free-tools": "playwright test -c tests/playwright.free-tools.config.ts",
@@ -66,6 +68,7 @@
     "seed:projects": "tsx scripts/seed-projects.ts",
     "standalone:admin": "docker compose -f deploy/standalone/compose.yaml exec -T runtime node /opt/standalone/admin.mjs",
     "selfhost:admin": "node --env-file=.env.selfhost scripts/celld/runtime/admin.mjs",
+    "selfhost:client-restore": "node scripts/celld/runtime/client-restore.mjs",
     "ci:check": "prettier --check . && knip && tsc --noEmit && tsc --noEmit -p tests/badseo/tsconfig.json && tsc --noEmit -p tsconfig.report-widgets.json && oxlint . --type-aware && pnpm sync-plugin-skills && test -z \"$(git status --porcelain -- plugins/openseo/skills)\""
   },
   "cloudflare": {
