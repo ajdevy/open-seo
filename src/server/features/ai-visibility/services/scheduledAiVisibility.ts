@@ -6,7 +6,7 @@ import { activeAiPrompts, trackerEngines } from "./aiVisibilityConfiguration";
 import { startRun } from "./aiVisibilityRuns";
 import { computeNextCheckAt } from "@/shared/rank-tracking";
 import {
-  computeNextAiWallClockCheckAt,
+  computeNextAiWallClockCheckAtSkippingUnresolved,
   ScheduleTimeResolutionError,
 } from "@/shared/ai-visibility-schedule";
 
@@ -34,9 +34,86 @@ export async function runScheduledAiVisibility() {
     // Unreachable: the due query only returns trackers with a next check.
     if (!tracker.nextCheckAt) continue;
     const observedNextCheckAt = tracker.nextCheckAt;
+    let nextCheckAt: string;
+    let scheduleSkipReason: string | null = null;
+    try {
+      const wallClockFields = [
+        tracker.scheduleWeekday,
+        tracker.scheduleHour,
+        tracker.scheduleMinute,
+        tracker.scheduleTimeZone,
+      ];
+      const hasWallClockSchedule = wallClockFields.some(
+        (value) => value !== null,
+      );
+      const hasCompleteWallClockSchedule = wallClockFields.every(
+        (value) => value !== null,
+      );
+      const explicitWallClock =
+        tracker.scheduleWeekday !== null &&
+        tracker.scheduleHour !== null &&
+        tracker.scheduleMinute !== null &&
+        tracker.scheduleTimeZone !== null
+          ? {
+              weekday: tracker.scheduleWeekday,
+              hour: tracker.scheduleHour,
+              minute: tracker.scheduleMinute,
+              timeZone: tracker.scheduleTimeZone,
+            }
+          : null;
+      if (
+        tracker.scheduleInterval === "weekly" &&
+        hasWallClockSchedule &&
+        !hasCompleteWallClockSchedule
+      )
+        throw new ScheduleTimeResolutionError(
+          "The saved weekly schedule is incomplete. Re-save the schedule to resume tracking.",
+        );
+
+      if (tracker.scheduleInterval === "weekly" && explicitWallClock) {
+        const result = computeNextAiWallClockCheckAtSkippingUnresolved(
+          explicitWallClock,
+          observedNextCheckAt,
+        );
+        nextCheckAt = result.nextCheckAt;
+        if (result.skippedLocalDates.length)
+          scheduleSkipReason = `Skipped unresolved weekly local-time occurrence(s): ${result.skippedLocalDates.join(", ")}.`;
+      } else {
+        nextCheckAt = computeNextCheckAt(
+          tracker.scheduleInterval,
+          observedNextCheckAt,
+        );
+      }
+    } catch (error) {
+      const reason =
+        error instanceof ScheduleTimeResolutionError
+          ? error.message
+          : "The saved weekly schedule could not be resolved. Re-save it to resume tracking.";
+      await repo.claimDueTracker({
+        trackerId: tracker.id,
+        observedNextCheckAt,
+        values: { enabled: false, lastSkipReason: reason },
+      });
+      console.error("[ai-visibility] invalid saved schedule paused", {
+        trackerId: tracker.id,
+        error: describeError(error),
+      });
+      continue;
+    }
     try {
       const config = await repo.getConfiguration(tracker.projectId);
-      if (!config) continue;
+      if (!config) {
+        await repo.claimDueTracker({
+          trackerId: tracker.id,
+          observedNextCheckAt,
+          values: {
+            enabled: false,
+            lastSkipReason:
+              "The tracking configuration is unavailable. Re-save it to resume tracking.",
+          },
+        });
+        continue;
+      }
       const answers =
         activeAiPrompts(config).length * trackerEngines(tracker).length;
       if (started > 0 && answersStarted + answers > SCHEDULED_ANSWER_BUDGET)
@@ -47,26 +124,8 @@ export async function runScheduledAiVisibility() {
         trackerId: tracker.id,
         observedNextCheckAt,
         values: {
-          nextCheckAt:
-            tracker.scheduleInterval === "weekly" &&
-            tracker.scheduleTimeZone &&
-            tracker.scheduleHour !== null &&
-            tracker.scheduleMinute !== null &&
-            tracker.scheduleWeekday !== null
-              ? computeNextAiWallClockCheckAt(
-                  {
-                    weekday: tracker.scheduleWeekday,
-                    hour: tracker.scheduleHour,
-                    minute: tracker.scheduleMinute,
-                    timeZone: tracker.scheduleTimeZone,
-                  },
-                  observedNextCheckAt,
-                )
-              : computeNextCheckAt(
-                  tracker.scheduleInterval,
-                  observedNextCheckAt,
-                ),
-          lastSkipReason: null,
+          nextCheckAt,
+          lastSkipReason: scheduleSkipReason,
         },
       });
       if (!claimed) continue;
@@ -82,8 +141,15 @@ export async function runScheduledAiVisibility() {
       answersStarted += answers;
     } catch (error) {
       // startRun records a credits skip on the tracker.
-      if (error instanceof AppError && error.code === "INSUFFICIENT_CREDITS")
+      if (error instanceof AppError && error.code === "INSUFFICIENT_CREDITS") {
+        if (scheduleSkipReason)
+          await repo
+            .updateTracker(tracker.id, {
+              lastSkipReason: `INSUFFICIENT_CREDITS; ${scheduleSkipReason}`,
+            })
+            .catch(() => undefined);
         continue;
+      }
       if (!(error instanceof AiVisibilityError))
         console.error("[ai-visibility] scheduled check failed to start", {
           trackerId: tracker.id,
@@ -94,9 +160,7 @@ export async function runScheduledAiVisibility() {
           lastSkipReason:
             error instanceof AiVisibilityError
               ? error.message
-              : error instanceof ScheduleTimeResolutionError
-                ? error.message
-                : "The scheduled check could not start.",
+              : "The scheduled check could not start.",
         })
         .catch(() => undefined);
     }

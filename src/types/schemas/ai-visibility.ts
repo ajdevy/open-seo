@@ -92,11 +92,12 @@ export const setAiScheduleSchema = aiProjectSchema
     scheduleTime: scheduleTimeSchema
       .optional()
       .describe(
-        "Run time when enabling. Omit to keep the current next check when the cadence is unchanged, or to pick a time between 04:00 and 10:00 UTC.",
+        "Run time when enabling. For weekly schedules with a timezone, hour and minute are local time. Daily and monthly schedules use a UTC anchor. Omit to keep the current next check when the cadence is unchanged.",
       ),
   })
   .superRefine((input, ctx) => {
     if (
+      input.enabled &&
       input.scheduleInterval === "weekly" &&
       input.scheduleTime?.timeZone !== undefined &&
       input.scheduleTime.weekday === undefined

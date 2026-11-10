@@ -92,6 +92,39 @@ it("rejects a weekly timezone schedule without a weekday before saving", async (
   expect(startRun).not.toHaveBeenCalled();
 });
 
+it("ignores weekly-only fields when pausing a schedule", async () => {
+  const before = await repo.getTracker("project");
+  if (!before) throw new Error("Tracker fixture was not saved.");
+  const input = {
+    projectId: "project",
+    enabled: false,
+    scheduleInterval: "weekly" as const,
+    scheduleTime: {
+      hour: 9,
+      minute: 15,
+      timeZone: "America/New_York",
+    },
+  };
+
+  expect(
+    setAiScheduleSchema.safeParse({
+      ...input,
+      projectId: "00000000-0000-4000-8000-000000000001",
+    }).success,
+  ).toBe(true);
+  await setSchedule(input, customer);
+
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: false,
+    scheduleInterval: before.scheduleInterval,
+    scheduleWeekday: before.scheduleWeekday,
+    scheduleHour: before.scheduleHour,
+    scheduleMinute: before.scheduleMinute,
+    scheduleTimeZone: before.scheduleTimeZone,
+  });
+  expect(startRun).not.toHaveBeenCalled();
+});
+
 it("clears weekly wall-clock settings when rescheduling another cadence", async () => {
   const saved = await repo.getTracker("project");
   if (!saved) throw new Error("Tracker fixture was not saved.");

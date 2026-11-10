@@ -32,6 +32,6 @@ export const scheduleTimeSchema = z.object({
   timeZone: timeZoneSchema
     .optional()
     .describe(
-      'IANA timezone the weekday, hour, and minute are in, e.g. "America/New_York". Omission keeps legacy UTC-anchor behavior.',
+        'Optional IANA timezone, e.g. "America/New_York". How it affects the first run and recurrence depends on the schedule service.',
     ),
 });
