@@ -116,9 +116,22 @@ node scripts/celld/backup.mjs restore ./backups/2026-10-19
 docker compose up -d
 ```
 
-Restore refuses a non-empty volume and verifies the checksums. To test a restore beside a live installation, use a different `COMPOSE_PROJECT_NAME` and `PORT`.
+Restore refuses a non-empty volume, verifies both checksums, and requires the exact immutable image digest recorded by the backup. To test a restore beside a live installation, use a different `COMPOSE_PROJECT_NAME` and `PORT`.
 
 The `config` volume holds the secrets generated at the first start. Keep it in your backups; nothing secret is built into the image.
+
+### Selective project and GEO restore
+
+The operator-only client restore tool copies project settings, project context, competitors, question versions, confirmed AI answers, and their sources into an existing target organization. It does not copy users, memberships, OAuth connections, crawler credentials, billing, or other secrets. The target organization's existing access rights stay in place. This is a selective project/GEO restore, not a replacement for the full system backup above.
+
+The archive is encrypted with AES-256-GCM before it is written. Inject `OPENSEO_OPERATOR_SECRET` and a base64-encoded 32-byte `OPENSEO_CLIENT_RESTORE_KEY` through Keynv for the command; do not save either value in `.env`, shell history, or the archive folder. Remote connections require HTTPS. Use a new output path because export refuses to overwrite an existing file:
+
+```sh
+pnpm selfhost:client-restore export SOURCE_ORGANIZATION_ID ./client-a.opsc
+pnpm selfhost:client-restore import TARGET_ORGANIZATION_ID ./client-a.opsc
+```
+
+Import remaps the copied row IDs into the selected target organization, verifies the SHA-256 digest, then reads every imported row back and compares it with the archive. Repeating the same archive is idempotent. It never overwrites existing rows. An incomplete import reports failure; rerun the same archive and verify it before any cutover. Runs that were still active and answers with unknown outcomes are marked failed with `restore_unknown_not_replayed`; they are not presented as restored answers and are never replayed automatically. Inspect the returned per-table counts and recovery counts before switching users.
 
 ## Move from the old Docker image
 
