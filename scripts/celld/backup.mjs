@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
+import { validateBackupManifest } from "./backup-manifest.mjs";
 
 const [command, directory] = process.argv.slice(2);
 if (!["backup", "restore"].includes(command) || !directory)
@@ -121,8 +122,7 @@ if (command === "backup") {
   }
 } else {
   const manifest = JSON.parse(await readFile(`${root}/manifest.json`, "utf8"));
-  if (manifest.format !== 1 || manifest.celld !== "0.5.1")
-    throw new Error("Unsupported backup version");
+  validateBackupManifest(manifest);
   for (const file of ["storage.tar.gz", "config.tar.gz"])
     if ((await hash(`${root}/${file}`)) !== manifest.files[file])
       throw new Error(`Checksum mismatch: ${file}`);
@@ -130,6 +130,7 @@ if (command === "backup") {
     throw new Error("Restore requires a stopped, empty Compose deployment");
   compose("create", "--no-build", "storage", "runtime");
   image = docker("inspect", "--format", "{{.Image}}", id("runtime"));
+  validateBackupManifest(manifest, image);
   for (const [service, path] of [
     ["storage", "/data"],
     ["runtime", "/config"],

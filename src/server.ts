@@ -37,6 +37,7 @@ import { handleGdprStorageErasure } from "@/server/gdpr/storage-erasure";
 import { GDPR_STORAGE_ERASURE_PATH } from "@/shared/gdpr-erasure";
 import { handleOperatorRequest } from "@/server/standalone/admin";
 import { handleImport, isLegacyImportActive } from "@/server/standalone/import";
+import { handleClientRestore } from "@/server/standalone/client-restore";
 import { hasOperatorSecret } from "@/server/standalone/operator-auth";
 
 const startHandler = createStartHandler(defaultStreamHandler);
@@ -194,7 +195,7 @@ async function handleAppRequest(
   const pathname = new URL(publicRequest.url).pathname;
   ctx.waitUntil(maybeSendSelfHostHeartbeat(pathname));
 
-  // Standalone Docker operator tooling (account commands, legacy import).
+  // Standalone operator tooling (account commands, legacy and client restore).
   // Both handlers answer 404 without the operator secret; the block is also
   // what keeps hosted from paying a KV read per request.
   if (hasOperatorSecret()) {
@@ -203,6 +204,8 @@ async function handleAppRequest(
     if (await isLegacyImportActive()) {
       return new Response("Data import in progress", { status: 503 });
     }
+    if (pathname === "/api/standalone/client-restore")
+      return handleClientRestore(publicRequest);
     if (pathname === "/api/standalone/admin") {
       return handleOperatorRequest(publicRequest);
     }
