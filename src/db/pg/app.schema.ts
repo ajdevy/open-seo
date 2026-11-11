@@ -111,6 +111,55 @@ export const projects = pgTable(
   ],
 );
 
+// The durable outbox contains only authenticated ciphertext. The separate
+// counter survives confirmation/pruning so a project's revision never moves
+// backwards while the project itself exists.
+export const projectSettingsSnapshotRevisions = pgTable(
+  "project_settings_snapshot_revisions",
+  {
+    projectId: text("project_id")
+      .primaryKey()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull(),
+    updatedAt: timestampColumn("updated_at").notNull().default(isoNow),
+  },
+);
+
+export const projectSettingsSnapshotOutbox = pgTable(
+  "project_settings_snapshot_outbox",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    algorithm: text("algorithm").notNull(),
+    schemaVersion: integer("schema_version").notNull(),
+    iv: text("iv").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    status: text("status", { enum: ["unconfirmed", "confirmed"] })
+      .notNull()
+      .default("unconfirmed"),
+    createdAt: timestampColumn("created_at").notNull().default(isoNow),
+    confirmedAt: timestampColumn("confirmed_at"),
+  },
+  (table) => [
+    uniqueIndex("project_settings_snapshot_outbox_revision_idx").on(
+      table.projectId,
+      table.revision,
+    ),
+    uniqueIndex("project_settings_snapshot_outbox_idempotency_idx").on(
+      table.idempotencyKey,
+    ),
+    index("project_settings_snapshot_outbox_status_idx").on(
+      table.status,
+      table.projectId,
+      table.revision,
+    ),
+  ],
+);
+
 // User-saved keywords within a project. This is the canonical saved list.
 export const savedKeywords = pgTable(
   "saved_keywords",

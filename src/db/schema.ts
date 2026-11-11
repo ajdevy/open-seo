@@ -90,6 +90,8 @@ export const {
   userOnboardingAnswers,
   userSignupCampaigns,
   projects,
+  projectSettingsSnapshotRevisions,
+  projectSettingsSnapshotOutbox,
   savedKeywords,
   savedKeywordTags,
   savedKeywordTagAssignments,

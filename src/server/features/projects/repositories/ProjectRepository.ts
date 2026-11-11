@@ -1,7 +1,14 @@
-import { and, count, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db";
+import { getDatabaseProvider } from "@/db/provider";
 import { projects } from "@/db/schema";
 import { AppError } from "@/server/lib/errors";
+import {
+  commitProjectSettingsMutation,
+  isUniqueViolation,
+  makeProjectSettingsSnapshot,
+  readProjectSettingsRows,
+} from "@/server/features/project-settings-snapshots/snapshotRepository";
 
 async function listProjects(organizationId: string) {
   return db.query.projects.findMany({
@@ -86,10 +93,45 @@ async function createProject(
   market?: { locationCode: number; languageCode: string },
 ) {
   const id = crypto.randomUUID();
+  await commitProjectSettingsMutation(id, async () => {
+    const project = {
+      id,
+      organizationId,
+      name,
+      domain: domain ?? null,
+      locationCode: market?.locationCode ?? 2840,
+      languageCode: market?.languageCode ?? "en",
+      createdAt: new Date().toISOString(),
+      archivedAt: null,
+      aiResearchKeywords: null,
+      indexnowKey: null,
+    };
+    return {
+      snapshot: makeProjectSettingsSnapshot({
+        project,
+        tracker: null,
+        questions: [],
+      }),
+      write: (tx) => [
+        tx.insert(projects).values({
+          id,
+          organizationId,
+          name,
+          domain: domain ?? null,
+          ...market,
+        }),
+      ],
+      result: undefined,
+    };
+  });
   const [row] = await db
-    .insert(projects)
-    .values({ id, organizationId, name, domain, ...market })
-    .returning();
+    .select()
+    .from(projects)
+    .where(
+      and(eq(projects.id, id), eq(projects.organizationId, organizationId)),
+    )
+    .limit(1);
+  if (!row) throw new AppError("NOT_FOUND");
   return row;
 }
 
@@ -103,9 +145,44 @@ async function updateProject(
     market?: { locationCode: number; languageCode: string };
   },
 ) {
+  await commitProjectSettingsMutation(projectId, async () => {
+    const state = await readProjectSettingsRows(projectId);
+    if (
+      !state ||
+      state.project.organizationId !== organizationId ||
+      state.project.archivedAt !== null
+    )
+      throw new AppError("NOT_FOUND");
+    const project = {
+      ...state.project,
+      name: input.name,
+      domain: input.domain ?? null,
+      ...input.market,
+    };
+    return {
+      snapshot: makeProjectSettingsSnapshot({ ...state, project }),
+      write: (tx) => [
+        tx
+          .update(projects)
+          .set({
+            name: input.name,
+            domain: input.domain ?? null,
+            ...input.market,
+          })
+          .where(
+            and(
+              eq(projects.id, projectId),
+              eq(projects.organizationId, organizationId),
+              isNull(projects.archivedAt),
+            ),
+          ),
+      ],
+      result: undefined,
+    };
+  });
   const [row] = await db
-    .update(projects)
-    .set({ name: input.name, domain: input.domain ?? null, ...input.market })
+    .select()
+    .from(projects)
     .where(
       and(
         eq(projects.id, projectId),
@@ -113,12 +190,8 @@ async function updateProject(
         isNull(projects.archivedAt),
       ),
     )
-    .returning();
-
-  if (!row) {
-    throw new AppError("NOT_FOUND");
-  }
-
+    .limit(1);
+  if (!row) throw new AppError("NOT_FOUND");
   return row;
 }
 
@@ -129,9 +202,35 @@ async function updateProjectWebsite(
   domain: string,
   market: { locationCode: number; languageCode: string },
 ) {
+  await commitProjectSettingsMutation(projectId, async () => {
+    const state = await readProjectSettingsRows(projectId);
+    if (
+      !state ||
+      state.project.organizationId !== organizationId ||
+      state.project.archivedAt !== null
+    )
+      throw new AppError("NOT_FOUND");
+    const project = { ...state.project, domain, ...market };
+    return {
+      snapshot: makeProjectSettingsSnapshot({ ...state, project }),
+      write: (tx) => [
+        tx
+          .update(projects)
+          .set({ domain, ...market })
+          .where(
+            and(
+              eq(projects.id, projectId),
+              eq(projects.organizationId, organizationId),
+              isNull(projects.archivedAt),
+            ),
+          ),
+      ],
+      result: undefined,
+    };
+  });
   const [row] = await db
-    .update(projects)
-    .set({ domain, ...market })
+    .select()
+    .from(projects)
     .where(
       and(
         eq(projects.id, projectId),
@@ -139,12 +238,8 @@ async function updateProjectWebsite(
         isNull(projects.archivedAt),
       ),
     )
-    .returning();
-
-  if (!row) {
-    throw new AppError("NOT_FOUND");
-  }
-
+    .limit(1);
+  if (!row) throw new AppError("NOT_FOUND");
   return row;
 }
 
@@ -155,31 +250,86 @@ async function setIndexNowKeyIfMissing(
   organizationId: string,
   key: string,
 ) {
-  await db
-    .update(projects)
-    .set({ indexnowKey: key })
-    .where(
-      and(
-        eq(projects.id, projectId),
-        eq(projects.organizationId, organizationId),
-        isNull(projects.indexnowKey),
-      ),
-    );
+  await commitProjectSettingsMutation(projectId, async () => {
+    const state = await readProjectSettingsRows(projectId);
+    if (!state || state.project.organizationId !== organizationId)
+      throw new AppError("NOT_FOUND");
+    const project = {
+      ...state.project,
+      indexnowKey: state.project.indexnowKey ?? key,
+    };
+    return {
+      snapshot: makeProjectSettingsSnapshot({ ...state, project }),
+      write: (tx) => [
+        tx
+          .update(projects)
+          .set({ indexnowKey: key })
+          .where(
+            and(
+              eq(projects.id, projectId),
+              eq(projects.organizationId, organizationId),
+              isNull(projects.indexnowKey),
+            ),
+          ),
+      ],
+      result: undefined,
+    };
+  });
 }
 
 async function tryCreateDefaultProject(organizationId: string) {
   const id = crypto.randomUUID();
-  const inserted = await db
-    .insert(projects)
-    .values({
-      id,
-      organizationId,
-      name: "Default",
-      domain: null,
-    })
-    .onConflictDoNothing()
-    .returning({ id: projects.id });
-  return inserted.length > 0 ? id : null;
+  try {
+    await commitProjectSettingsMutation(id, async () => {
+      const project = {
+        id,
+        organizationId,
+        name: "Default",
+        domain: null,
+        locationCode: 2840,
+        languageCode: "en",
+        createdAt: new Date().toISOString(),
+        archivedAt: null,
+        aiResearchKeywords: null,
+        indexnowKey: null,
+      };
+      return {
+        snapshot: makeProjectSettingsSnapshot({
+          project,
+          tracker: null,
+          questions: [],
+        }),
+        write: (tx) => [
+          tx.insert(projects).values({
+            id,
+            organizationId,
+            name: "Default",
+            domain: null,
+          }),
+        ],
+        result: undefined,
+      };
+    });
+    return id;
+  } catch (error) {
+    // The reserved Default singleton is the only expected conflict here.
+    if (isUniqueViolation(error)) {
+      const [existing] = await db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(
+          and(
+            eq(projects.organizationId, organizationId),
+            eq(projects.name, "Default"),
+            isNull(projects.domain),
+            isNull(projects.archivedAt),
+          ),
+        )
+        .limit(1);
+      if (existing) return null;
+    }
+    throw error;
+  }
 }
 
 async function listArchivedProjects(organizationId: string) {
@@ -193,39 +343,66 @@ async function listArchivedProjects(organizationId: string) {
 }
 
 async function restoreProject(projectId: string, organizationId: string) {
-  const [row] = await db
-    .update(projects)
-    .set({ archivedAt: null })
-    .where(
-      and(
-        eq(projects.id, projectId),
-        eq(projects.organizationId, organizationId),
-        isNotNull(projects.archivedAt),
-      ),
+  await commitProjectSettingsMutation(projectId, async () => {
+    const state = await readProjectSettingsRows(projectId);
+    if (
+      !state ||
+      state.project.organizationId !== organizationId ||
+      state.project.archivedAt === null
     )
-    .returning({ id: projects.id });
-
-  if (!row) {
-    throw new AppError("NOT_FOUND");
-  }
+      throw new AppError("NOT_FOUND");
+    const project = { ...state.project, archivedAt: null };
+    return {
+      snapshot: makeProjectSettingsSnapshot({ ...state, project }),
+      write: (tx) => [
+        tx
+          .update(projects)
+          .set({ archivedAt: null })
+          .where(
+            and(
+              eq(projects.id, projectId),
+              eq(projects.organizationId, organizationId),
+              isNotNull(projects.archivedAt),
+            ),
+          ),
+      ],
+      result: undefined,
+    };
+  });
 }
 
 async function archiveProject(projectId: string, organizationId: string) {
-  const [row] = await db
-    .update(projects)
-    .set({ archivedAt: sql`(current_timestamp)` })
-    .where(
-      and(
-        eq(projects.id, projectId),
-        eq(projects.organizationId, organizationId),
-        isNull(projects.archivedAt),
-      ),
+  await commitProjectSettingsMutation(projectId, async () => {
+    const state = await readProjectSettingsRows(projectId);
+    if (
+      !state ||
+      state.project.organizationId !== organizationId ||
+      state.project.archivedAt !== null
     )
-    .returning({ id: projects.id });
-
-  if (!row) {
-    throw new AppError("NOT_FOUND");
-  }
+      throw new AppError("NOT_FOUND");
+    const now = new Date().toISOString();
+    const archivedAt =
+      getDatabaseProvider() === "postgres"
+        ? now
+        : now.slice(0, 19).replace("T", " ");
+    const project = { ...state.project, archivedAt };
+    return {
+      snapshot: makeProjectSettingsSnapshot({ ...state, project }),
+      write: (tx) => [
+        tx
+          .update(projects)
+          .set({ archivedAt })
+          .where(
+            and(
+              eq(projects.id, projectId),
+              eq(projects.organizationId, organizationId),
+              isNull(projects.archivedAt),
+            ),
+          ),
+      ],
+      result: undefined,
+    };
+  });
 }
 
 export const ProjectRepository = {

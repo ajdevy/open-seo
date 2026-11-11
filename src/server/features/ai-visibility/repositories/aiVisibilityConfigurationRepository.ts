@@ -85,6 +85,17 @@ export function writeResearchKeywords(
   projectId: string,
   names: string[],
 ) {
+  return [
+    tx
+      .update(projects)
+      .set({ aiResearchKeywords: researchKeywordsValue(names) })
+      .where(
+        and(eq(projects.id, projectId), isNull(projects.aiResearchKeywords)),
+      ),
+  ];
+}
+
+export function researchKeywordsValue(names: string[]) {
   // One keyword per line, so a keyword itself never holds a line break.
   const keywords = [
     ...new Map(
@@ -94,12 +105,5 @@ export function writeResearchKeywords(
       ]),
     ).values(),
   ].filter(Boolean);
-  return [
-    tx
-      .update(projects)
-      .set({ aiResearchKeywords: keywords.join("\n") || null })
-      .where(
-        and(eq(projects.id, projectId), isNull(projects.aiResearchKeywords)),
-      ),
-  ];
+  return keywords.join("\n") || null;
 }

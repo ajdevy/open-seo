@@ -302,6 +302,13 @@
       "when": 1793956857970,
       "tag": "0042_parched_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794374498774,
+      "tag": "0043_fuzzy_virginia_dare",
+      "breakpoints": true
     }
   ]
 }
