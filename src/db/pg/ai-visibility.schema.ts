@@ -32,6 +32,10 @@ export const aiTrackers = pgTable(
     })
       .notNull()
       .default("weekly"),
+    scheduleWeekday: integer("schedule_weekday"),
+    scheduleHour: integer("schedule_hour"),
+    scheduleMinute: integer("schedule_minute"),
+    scheduleTimeZone: text("schedule_time_zone"),
     nextCheckAt: text("next_check_at"),
     lastSkipReason: text("last_skip_reason"),
     createdAt: text("created_at").notNull(),

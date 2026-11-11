@@ -43,6 +43,8 @@ type Props = {
   onScheduleTimeChange: (scheduleTime: LocalScheduleTime) => void;
   /** AI visibility pauses tracking instead of offering a manual schedule. */
   allowManual?: boolean;
+  /** AI visibility stores an explicit IANA timezone for weekly schedules. */
+  showTimeZone?: boolean;
 };
 
 export function ScheduleField({
@@ -51,6 +53,7 @@ export function ScheduleField({
   scheduleTime,
   onScheduleTimeChange,
   allowManual = true,
+  showTimeZone = false,
 }: Props) {
   const id = useId();
   const items = allowManual
@@ -137,8 +140,25 @@ export function ScheduleField({
             />
           </div>
           <FieldDescription>
-            In your local timezone: {browserTimeZoneLabel()}
+            {scheduleTime.timeZone
+              ? `IANA timezone: ${scheduleTime.timeZone}`
+              : `In your local timezone: ${browserTimeZoneLabel()}`}
           </FieldDescription>
+          {showTimeZone && schedule === "weekly" && (
+            <Input
+              type="text"
+              className="w-full"
+              aria-label="IANA timezone"
+              placeholder="Europe/Moscow"
+              value={scheduleTime.timeZone ?? ""}
+              onChange={(e) =>
+                onScheduleTimeChange({
+                  ...scheduleTime,
+                  timeZone: e.target.value,
+                })
+              }
+            />
+          )}
         </>
       )}
       {schedule === "daily" && (

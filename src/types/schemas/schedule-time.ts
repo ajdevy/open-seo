@@ -14,9 +14,9 @@ export const timeZoneSchema = z
   .string()
   .refine(isTimeZone, "Unknown IANA timezone");
 
-// A user-chosen run time for scheduled checks, in their own timezone. It only
-// picks where the next_check_at anchor starts; the
-// anchor is UTC and advances in fixed steps, so the timezone is not stored.
+// A user-chosen slot. Recurrence is defined by the owning schedule service;
+// AI Visibility weekly schedules currently preserve local wall-clock time
+// across DST.
 export const scheduleTimeSchema = z.object({
   weekday: z
     .number()
@@ -32,6 +32,6 @@ export const scheduleTimeSchema = z.object({
   timeZone: timeZoneSchema
     .optional()
     .describe(
-      'IANA timezone the weekday, hour, and minute are in, e.g. "America/New_York". Defaults to UTC.',
+        'Optional IANA timezone, e.g. "America/New_York". How it affects the first run and recurrence depends on the schedule service.',
     ),
 });

@@ -29,7 +29,9 @@ import {
   localScheduleTimeFrom,
   randomScheduleDate,
   withBrowserTimeZone,
+  type LocalScheduleTime,
 } from "@/client/features/rank-tracking/scheduleTime";
+import { DEFAULT_AI_WEEKLY_SCHEDULE } from "@/shared/ai-visibility-schedule";
 import { AiLoading, AiQueryError, aiMoney, aiVisibilityKey } from "./shared";
 
 const costEstimateQueryOptions = ({
@@ -101,14 +103,38 @@ export function TrackingCostReview({
   const [scheduleInterval, setScheduleInterval] = useState<AiScheduleInterval>(
     tracker.scheduleInterval,
   );
-  // Shown and edited in the browser's timezone; the server converts it to UTC.
-  const [scheduleTime, setScheduleTime] = useState(() =>
-    localScheduleTimeFrom(
-      tracker.enabled && tracker.nextCheckAt
-        ? new Date(tracker.nextCheckAt)
-        : randomScheduleDate(),
-    ),
-  );
+  // Keep a saved IANA timezone, or use the selected default for a new tracker.
+  const [scheduleTime, setScheduleTime] = useState<LocalScheduleTime>(() => {
+    if (
+      tracker.scheduleWeekday !== null &&
+      tracker.scheduleHour !== null &&
+      tracker.scheduleMinute !== null &&
+      tracker.scheduleTimeZone
+    )
+      return {
+        weekday: tracker.scheduleWeekday,
+        hour: tracker.scheduleHour,
+        minute: tracker.scheduleMinute,
+        timeZone: tracker.scheduleTimeZone,
+      };
+    if (tracker.enabled && tracker.nextCheckAt)
+      return localScheduleTimeFrom(new Date(tracker.nextCheckAt));
+    return tracker.scheduleInterval === "weekly"
+      ? DEFAULT_AI_WEEKLY_SCHEDULE
+      : localScheduleTimeFrom(randomScheduleDate());
+  });
+  const savedWallClockSchedule =
+    tracker.scheduleWeekday !== null &&
+    tracker.scheduleHour !== null &&
+    tracker.scheduleMinute !== null &&
+    tracker.scheduleTimeZone !== null
+      ? {
+          weekday: tracker.scheduleWeekday,
+          hour: tracker.scheduleHour,
+          minute: tracker.scheduleMinute,
+          timeZone: tracker.scheduleTimeZone,
+        }
+      : null;
   const [scheduleTimeEdited, setScheduleTimeEdited] = useState(false);
   const estimate = useQuery({
     ...costEstimateQueryOptions({
@@ -209,13 +235,30 @@ export function TrackingCostReview({
                 allowManual={false}
                 schedule={scheduleInterval}
                 onScheduleChange={(value) => {
-                  if (value !== "manual") setScheduleInterval(value);
+                  if (value === "manual") return;
+                  if (value === "weekly" && scheduleInterval !== "weekly") {
+                    setScheduleTime(
+                      savedWallClockSchedule ?? DEFAULT_AI_WEEKLY_SCHEDULE,
+                    );
+                  } else if (
+                    value !== "weekly" &&
+                    scheduleInterval === "weekly" &&
+                    scheduleTime.timeZone
+                  ) {
+                    setScheduleTime({
+                      weekday: scheduleTime.weekday,
+                      hour: scheduleTime.hour,
+                      minute: scheduleTime.minute,
+                    });
+                  }
+                  setScheduleInterval(value);
                 }}
                 scheduleTime={scheduleTime}
                 onScheduleTimeChange={(time) => {
                   setScheduleTime(time);
                   setScheduleTimeEdited(true);
                 }}
+                showTimeZone
               />
             )}
             <Field>
