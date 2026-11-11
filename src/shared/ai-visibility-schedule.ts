@@ -7,6 +7,13 @@ export interface AiWeeklyWallClockSchedule {
   timeZone: string;
 }
 
+export const DEFAULT_AI_WEEKLY_SCHEDULE: AiWeeklyWallClockSchedule = {
+  weekday: 3,
+  hour: 10,
+  minute: 0,
+  timeZone: "Europe/Moscow",
+};
+
 export interface MissedAiWeeklyWallClockSlot {
   localDate: string;
   resolution: "valid" | "nonexistent" | "ambiguous";

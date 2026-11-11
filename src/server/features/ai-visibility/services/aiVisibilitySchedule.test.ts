@@ -5,12 +5,11 @@ import { configuration, customer } from "./aiVisibilityTestFixtures";
 import { setAiScheduleSchema } from "@/types/schemas/ai-visibility";
 import { AiVisibilityError } from "./aiVisibilityErrors";
 
-const { testDb, hasDataforseoAccess, startRun } = await vi.hoisted(async () => {
+const { testDb, hasDataforseoAccess } = await vi.hoisted(async () => {
   const { createAiVisibilityTestDb } = await import("../aiVisibilityTestDb");
   return {
     testDb: await createAiVisibilityTestDb(),
     hasDataforseoAccess: vi.fn(),
-    startRun: vi.fn(),
   };
 });
 vi.mock("cloudflare:workers", () => ({
@@ -19,11 +18,9 @@ vi.mock("cloudflare:workers", () => ({
 vi.mock("@/db", () => ({ db: testDb.db }));
 vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
 vi.mock("@/server/lib/provider-access", () => ({ hasDataforseoAccess }));
-vi.mock("./aiVisibilityRuns", () => ({ startRun }));
 
 beforeEach(async () => {
   hasDataforseoAccess.mockResolvedValue(true);
-  startRun.mockResolvedValue(null);
   await testDb.seedProject();
   await repo.saveConfiguration(configuration());
 });
@@ -89,7 +86,6 @@ it("rejects a weekly timezone schedule without a weekday before saving", async (
   });
 
   expect(await repo.getTracker("project")).toEqual(before);
-  expect(startRun).not.toHaveBeenCalled();
 });
 
 it("ignores weekly-only fields when pausing a schedule", async () => {
@@ -122,7 +118,26 @@ it("ignores weekly-only fields when pausing a schedule", async () => {
     scheduleMinute: before.scheduleMinute,
     scheduleTimeZone: before.scheduleTimeZone,
   });
-  expect(startRun).not.toHaveBeenCalled();
+});
+
+it("defaults a new weekly schedule to Wednesday at 10 in Moscow without a baseline run", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-16T06:00:00.000Z"));
+
+  const saved = await setSchedule(
+    { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+    customer,
+  );
+
+  expect(saved.run).toBeNull();
+  expect(saved.state.tracker).toMatchObject({
+    scheduleInterval: "weekly",
+    scheduleWeekday: 3,
+    scheduleHour: 10,
+    scheduleMinute: 0,
+    scheduleTimeZone: "Europe/Moscow",
+    nextCheckAt: "2026-11-18T07:00:00.000Z",
+  });
 });
 
 it("clears weekly wall-clock settings when rescheduling another cadence", async () => {
