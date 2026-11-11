@@ -109,6 +109,11 @@ export default {
       optional: true,
       why: "Picks the OpenRouter model for SAM, prompt suggestions and website research (default openai/gpt-5.6-luna). The key itself is the gateway's OPENROUTER_API_KEY.",
     },
+    {
+      name: "AUTOGEO_QUEUE_MASTER_KEY_B64",
+      optional: true,
+      why: "Base64-encoded 256-bit key for encrypting project settings snapshots before they enter the durable outbox. Project, tracker, and question saves fail closed when it is unavailable.",
+    },
   ],
   // Both Workers, from cloudflare.config.ts and vite-plugin-every-app.ts.
   build: "pnpm build:report-widgets && AUTH_MODE=everyapp pnpm exec vite build",

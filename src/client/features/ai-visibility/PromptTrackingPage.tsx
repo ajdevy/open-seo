@@ -33,6 +33,7 @@ import {
 } from "./shared";
 import type { ProjectMarket } from "@/client/features/projects/types";
 import { DEFAULT_LOCATION_CODE } from "@/shared/keyword-locations";
+import { ProjectSettingsSnapshotNotice } from "./ProjectSettingsSnapshotNotice";
 
 export function PromptTrackingPage({
   projectId,
@@ -187,6 +188,7 @@ function PromptTrackingContent({
         title="Prompt Tracking"
         description="Track the prompts your customers use with AI. Inspect where your business is mentioned or cited."
       />
+      <ProjectSettingsSnapshotNotice snapshot={state.settingsSnapshot} />
       {!state.configured ? (
         <EmptyState
           variant="card"

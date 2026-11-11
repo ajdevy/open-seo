@@ -14,6 +14,12 @@ import {
   projectCompetitors,
 } from "@/db/schema";
 import {
+  commitProjectSettingsMutation,
+  getProjectSettingsSnapshotStatus,
+  makeProjectSettingsSnapshot,
+  readProjectSettingsRows,
+} from "@/server/features/project-settings-snapshots/snapshotRepository";
+import {
   getTracker,
   getConfiguration,
   saveConfiguration,
@@ -30,6 +36,61 @@ export type {
 } from "./aiVisibilityConfigurationRepository";
 
 const ACTIVE_RUN_STATUSES: RunRow["status"][] = ["queued", "running"];
+const SNAPSHOTTED_TRACKER_FIELDS = new Set([
+  "enabled",
+  "chatgpt",
+  "gemini",
+  "googleAiOverview",
+  "claude",
+  "perplexity",
+  "locationCode",
+  "languageCode",
+  "scheduleInterval",
+]);
+
+async function updateTracker(id: string, values: Partial<TrackerRow>) {
+  if (!Object.keys(values).some((key) => SNAPSHOTTED_TRACKER_FIELDS.has(key))) {
+    await db.update(aiTrackers).set(values).where(eq(aiTrackers.id, id));
+    return;
+  }
+
+  const [tracker] = await db
+    .select({ projectId: aiTrackers.projectId })
+    .from(aiTrackers)
+    .where(eq(aiTrackers.id, id))
+    .limit(1);
+  if (!tracker) return;
+
+  await commitProjectSettingsMutation(tracker.projectId, async () => {
+    const state = await readProjectSettingsRows(tracker.projectId);
+    if (!state?.tracker || state.tracker.id !== id)
+      throw new Error("The saved AI tracker is not available.");
+    const nextTracker = {
+      ...state.tracker,
+      enabled: values.enabled ?? state.tracker.enabled,
+      chatgpt: values.chatgpt ?? state.tracker.chatgpt,
+      gemini: values.gemini ?? state.tracker.gemini,
+      googleAiOverview:
+        values.googleAiOverview ?? state.tracker.googleAiOverview,
+      claude: values.claude ?? state.tracker.claude,
+      perplexity: values.perplexity ?? state.tracker.perplexity,
+      locationCode: values.locationCode ?? state.tracker.locationCode,
+      languageCode: values.languageCode ?? state.tracker.languageCode,
+      scheduleInterval:
+        values.scheduleInterval ?? state.tracker.scheduleInterval,
+    };
+    return {
+      snapshot: makeProjectSettingsSnapshot({
+        ...state,
+        tracker: nextTracker,
+      }),
+      write: (tx) => [
+        tx.update(aiTrackers).set(values).where(eq(aiTrackers.id, id)),
+      ],
+      result: undefined,
+    };
+  });
+}
 
 /** One atomic batch; the one-active-run index rejects a second active run. */
 async function createRun(
@@ -267,8 +328,8 @@ export const AiVisibilityRepository = {
   getTracker,
   getConfiguration,
   saveConfiguration,
-  updateTracker: (id: string, values: Partial<TrackerRow>) =>
-    db.update(aiTrackers).set(values).where(eq(aiTrackers.id, id)),
+  getProjectSettingsSnapshotStatus,
+  updateTracker,
   claimDueTracker,
   /** Oldest due first; every processed tracker advances its next check. */
   listDue: (now: string) =>
