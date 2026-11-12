@@ -211,4 +211,39 @@ describe("provider run budget reservations", () => {
       getAiProviderBudgetUsage(projectId, now.getTime()),
     ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 6_000_000 });
   });
+
+  it("rechecks the rolling cap if an unresolved hold appears during admission", async () => {
+    await createRun("racing-run");
+    await createRun("racing-unknown");
+    await testDb.client.execute(`
+      CREATE TRIGGER add_unknown_hold_after_admission
+      AFTER INSERT ON ai_provider_run_reservations
+      WHEN NEW.run_id = 'racing-run'
+      BEGIN
+        INSERT INTO ai_provider_run_reservations (
+          id, project_id, run_id, reserved_usd_micros, status, created_at
+        ) VALUES (
+          'racing-unknown-reservation', 'project', 'racing-unknown',
+          5000000, 'unknown', '2026-11-12T12:00:00.000Z'
+        );
+      END;
+    `);
+
+    await expect(reserve("racing-run", 4_000_000)).resolves.toMatchObject({
+      admitted: false,
+      reason: "budget_exceeded",
+      usedUsdMicros: 5_000_000,
+      remainingUsdMicros: 3_000_000,
+    });
+    const reservations = await testDb.db
+      .select()
+      .from(aiProviderRunReservations);
+    expect(
+      reservations.find((reservation) => reservation.runId === "racing-run")
+        ?.status,
+    ).toBe("released");
+    await expect(
+      getAiProviderBudgetUsage(projectId, now.getTime()),
+    ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 5_000_000 });
+  });
 });

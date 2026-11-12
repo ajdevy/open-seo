@@ -165,11 +165,42 @@ export async function reserveAiProviderRunBudget(input: {
       remainingUsdMicros: Math.max(limitUsdMicros - latestUsed, 0),
     };
   }
+
+  // Another reservation may have changed from reserved to unknown or settled
+  // after our initial usage read, which removes it from the active-run index.
+  // Re-read after inserting our hold so that race cannot admit spend over cap.
+  const admittedUsage = await getAiProviderBudgetUsage(
+    input.projectId,
+    Date.parse(input.createdAt),
+  );
+  const admittedUsed =
+    admittedUsage.accountedUsdMicros + admittedUsage.heldUsdMicros;
+  const otherUsed = admittedUsed - input.reserveUsdMicros;
+  if (admittedUsed > limitUsdMicros) {
+    // No provider call has started yet, so this reservation can be released.
+    // A concurrent status change fails closed: the row remains accounted.
+    await db
+      .update(aiProviderRunReservations)
+      .set({ status: "released" })
+      .where(
+        and(
+          eq(aiProviderRunReservations.id, input.id),
+          eq(aiProviderRunReservations.status, "reserved"),
+        ),
+      );
+    return {
+      admitted: false,
+      reason: "budget_exceeded",
+      heldUsdMicros: input.reserveUsdMicros,
+      usedUsdMicros: otherUsed,
+      remainingUsdMicros: Math.max(limitUsdMicros - otherUsed, 0),
+    };
+  }
   return {
     admitted: true,
     heldUsdMicros: input.reserveUsdMicros,
-    usedUsdMicros,
-    remainingUsdMicros: limitUsdMicros - usedUsdMicros - input.reserveUsdMicros,
+    usedUsdMicros: otherUsed,
+    remainingUsdMicros: limitUsdMicros - admittedUsed,
   };
 }
 
