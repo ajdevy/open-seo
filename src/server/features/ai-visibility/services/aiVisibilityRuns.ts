@@ -22,6 +22,10 @@ import { aiRunView } from "./aiVisibilityResults";
 import { aiCostForAnswers } from "./aiVisibilityCost";
 import { hasDataforseoAccess } from "@/server/lib/provider-access";
 import {
+  markAiProviderRunBudgetUnknown,
+  reserveAiProviderRunBudget,
+} from "../repositories/AiProviderRunBudgetRepository";
+import {
   startWorkflow,
   STUCK_RUN_AFTER_MS,
   terminateStuckWorkflow,
@@ -61,7 +65,12 @@ async function staleRunReason(run: RunRow): Promise<string | null> {
 /** Fails a run and its unfinished answers. Safe on a finished run. */
 export async function failAiRun(runId: string, error: string) {
   const run = await repo.getRunInternal(runId);
-  if (!run || (run.status !== "queued" && run.status !== "running")) return;
+  if (!run) return;
+  // A failed workflow may have reached a provider before its outcome was
+  // persisted. Keep the complete reservation until a human/evidence-based
+  // reconciliation proves the amount.
+  await markAiProviderRunBudgetUnknown(runId);
+  if (run.status !== "queued" && run.status !== "running") return;
   await repo.failPendingObservations(runId, error);
   await repo.updateRun(runId, {
     status: "failed",
@@ -195,6 +204,42 @@ export async function startRun(
         blocker.id,
       );
     }
+    const createdAt = new Date().toISOString();
+    const reservationCost = aiCostForAnswers(
+      scope.prompts.flatMap(() => scope.engines),
+      false,
+      trigger === "scheduled" ? "queued" : "live",
+    ).providerCostUsd;
+    let admission: Awaited<ReturnType<typeof reserveAiProviderRunBudget>>;
+    try {
+      admission = await reserveAiProviderRunBudget({
+        id: crypto.randomUUID(),
+        projectId: project.id,
+        runId: id,
+        limitUsdCents: config.tracker.weeklyProviderBudgetCents,
+        reserveUsdMicros: Math.round(reservationCost * 1e6),
+        createdAt,
+      });
+    } catch (error) {
+      // A dropped database response can hide a committed reservation. Preserve
+      // that outcome as unknown and fail closed before starting the workflow.
+      await markAiProviderRunBudgetUnknown(id).catch(() => undefined);
+      await failAiRun(id, AI_ANSWER_FAILURES.notStarted);
+      throw error;
+    }
+    if (!admission.admitted) {
+      const message =
+        admission.reason === "run_in_progress"
+          ? "Another provider run already holds this project's active reservation. No provider request was started."
+          : admission.reason === "unknown_outcome"
+            ? "This run has an unresolved provider outcome and cannot be started again until that outcome is reconciled."
+            : `This run may use up to $${reservationCost.toFixed(4)} in provider charges, but only $${(admission.remainingUsdMicros / 1e6).toFixed(4)} remains in this project's rolling 7-day budget. No provider request was started.`;
+      await failAiRun(id, AI_ANSWER_FAILURES.notStarted);
+      await repo.updateTracker(config.tracker.id, {
+        lastSkipReason: message,
+      });
+      throw new AiVisibilityError("PROVIDER_BUDGET_EXCEEDED", message, id);
+    }
     try {
       await startWorkflow(
         env.AI_VISIBILITY_WORKFLOW,
@@ -214,6 +259,7 @@ export async function startRun(
         "AI visibility check",
       );
     } catch (error) {
+      await markAiProviderRunBudgetUnknown(id);
       await failAiRun(id, AI_ANSWER_FAILURES.notStarted);
       throw error;
     }

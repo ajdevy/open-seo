@@ -149,6 +149,12 @@ export function TrackingCostReview({
   // Run now collects live answers; scheduled runs use the cheaper queue.
   const runCostUsd =
     (mode === "check" ? cost?.runNowCostUsd : cost?.costUsd) ?? 0;
+  const providerRunCostUsd =
+    (mode === "check" ? cost?.runNowProviderCostUsd : cost?.providerCostUsd) ??
+    0;
+  const fitsWeeklyProviderBudget = Boolean(
+    cost && providerRunCostUsd <= cost.weeklyProviderBudgetAvailableUsd,
+  );
   const start = useMutation({
     mutationFn: async () => {
       if (!cost) throw new Error("Review the estimate before starting.");
@@ -200,6 +206,7 @@ export function TrackingCostReview({
           <Button
             disabled={
               !cost ||
+              !fitsWeeklyProviderBudget ||
               // Approve only the current price, not the preloaded one
               // still being refreshed.
               estimate.isFetching ||
@@ -269,9 +276,26 @@ export function TrackingCostReview({
                 {aiMoney(runCostUsd)}
               </span>
               <FieldDescription>
-                {/* No per-answer price: engines cost different amounts. */}
+                This is the conservative run ceiling, including up to three
+                provider attempts per answer.
+              </FieldDescription>
+              <FieldDescription>
                 {`${cost.observations} ${cost.observations === 1 ? "answer" : "answers"}${mode === "schedule" ? ` · about ${aiMoney(cost.monthlyCostUsd)} a month (${cost.checksPerMonth} ${cost.checksPerMonth === 1 ? "run" : "runs"})` : " · live answers, ready in a few minutes"}`}
               </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel>Weekly provider budget</FieldLabel>
+              <FieldDescription>
+                {`${aiMoney(cost.weeklyProviderBudgetUsd)} per project over a rolling 7 days. ${aiMoney(cost.weeklyProviderBudgetAccountedUsd)} accounted and ${aiMoney(cost.weeklyProviderBudgetHeldUsd)} reserved; ${aiMoney(cost.weeklyProviderBudgetAvailableUsd)} available before this run.`}
+              </FieldDescription>
+              <FieldDescription>
+                {`This run reserves up to ${aiMoney(providerRunCostUsd)} for all selected provider routes, including retry allowance.`}
+              </FieldDescription>
+              {!fitsWeeklyProviderBudget && (
+                <FieldDescription className="text-destructive">
+                  The estimate exceeds the remaining weekly provider budget.
+                </FieldDescription>
+              )}
             </Field>
             {start.error && <AiQueryError error={start.error} />}
           </>

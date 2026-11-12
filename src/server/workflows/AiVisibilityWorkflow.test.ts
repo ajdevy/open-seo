@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   collect: vi.fn(),
   late: vi.fn(),
   settle: vi.fn(),
+  settleProviderBudget: vi.fn(),
   finalize: vi.fn(),
   markFailed: vi.fn(),
   sleep: vi.fn(),
@@ -41,6 +42,10 @@ vi.mock(
 vi.mock("@/server/features/ai-visibility/services/aiVisibilityBilling", () => ({
   settleAiRun: mocks.settle,
 }));
+vi.mock(
+  "@/server/features/ai-visibility/repositories/AiProviderRunBudgetRepository",
+  () => ({ settleAiProviderRunBudget: mocks.settleProviderBudget }),
+);
 vi.mock("./pgStep", () => ({
   pgStep: (
     _step: unknown,
@@ -112,6 +117,10 @@ describe("AI visibility workflow", () => {
       hold,
     ]);
     expect(mocks.finalize).toHaveBeenCalledExactlyOnceWith("run");
+    expect(mocks.settleProviderBudget).toHaveBeenCalledExactlyOnceWith(
+      "run",
+      expect.any(String),
+    );
   });
 
   it("polls the bare task list an older deploy's post step saved, with no hold to settle", async () => {
@@ -119,6 +128,7 @@ describe("AI visibility workflow", () => {
     await execute();
     expect(mocks.collect).toHaveBeenCalledWith("run", [task, task], true);
     expect(mocks.settle).not.toHaveBeenCalled();
+    expect(mocks.settleProviderBudget).toHaveBeenCalledOnce();
   });
 
   it("asks the model API for Claude and Perplexity, then reads queued answers before sleeping", async () => {

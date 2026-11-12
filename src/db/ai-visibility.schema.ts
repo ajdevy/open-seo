@@ -41,6 +41,9 @@ export const aiTrackers = sqliteTable(
     scheduleTimeZone: text("schedule_time_zone"),
     nextCheckAt: text("next_check_at"),
     lastSkipReason: text("last_skip_reason"),
+    weeklyProviderBudgetCents: integer("weekly_provider_budget_cents")
+      .notNull()
+      .default(800),
     createdAt: text("created_at").notNull(),
   },
   (t) => [
@@ -97,6 +100,42 @@ export const aiRuns = sqliteTable(
     uniqueIndex("ai_runs_one_active_idx")
       .on(t.trackerId)
       .where(sql`${t.status} IN ('queued', 'running')`),
+  ],
+);
+
+// One provider-neutral upper-bound reservation per paid run. Open reservations
+// remain in the rolling budget until their outcome is known and reconciled.
+export const aiProviderRunReservations = sqliteTable(
+  "ai_provider_run_reservations",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => aiRuns.id, { onDelete: "cascade" }),
+    reservedUsdMicros: integer("reserved_usd_micros").notNull(),
+    accountedUsdMicros: integer("accounted_usd_micros"),
+    status: text("status", {
+      enum: ["reserved", "settled", "unknown", "released"],
+    })
+      .notNull()
+      .default("reserved"),
+    createdAt: text("created_at").notNull(),
+    settledAt: text("settled_at"),
+  },
+  (t) => [
+    uniqueIndex("ai_provider_run_reservations_run_idx").on(t.runId),
+    // Enforces AC5 across all provider routes and closes the concurrent
+    // read-then-reserve race for every paid run in this project.
+    uniqueIndex("ai_provider_run_reservations_project_active_idx")
+      .on(t.projectId)
+      .where(sql`${t.status} = 'reserved'`),
+    index("ai_provider_run_reservations_project_created_idx").on(
+      t.projectId,
+      t.createdAt,
+    ),
   ],
 );
 

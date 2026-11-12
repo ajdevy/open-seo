@@ -130,6 +130,7 @@ export const {
   aiTrackers,
   aiPrompts,
   aiRuns,
+  aiProviderRunReservations,
   aiObservations,
   aiNativeResults,
   aiNativeSources,

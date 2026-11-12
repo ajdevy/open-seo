@@ -61,6 +61,7 @@ export function writeConfiguration(tx: Tx, rows: ConfigurationRows) {
           perplexity: tracker.perplexity,
           locationCode: tracker.locationCode,
           languageCode: tracker.languageCode,
+          weeklyProviderBudgetCents: tracker.weeklyProviderBudgetCents,
         },
       }),
     ...rows.prompts.map((prompt) =>

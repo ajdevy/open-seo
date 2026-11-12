@@ -28,6 +28,8 @@ export function aiEngineUsesModelApi(
 ): engine is AiModelApiEngine {
   return engine === "claude" || engine === "perplexity";
 }
+/** Maximum paid attempts allowed for a single provider answer. */
+export const AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER = 3;
 /**
  * Raw DataForSEO USD for one answer, standard queue. AI Overviews is one
  * organic SERP page ($0.0006) plus the async overview load ($0.0006).
@@ -70,6 +72,7 @@ export interface AiTracker {
   scheduleHour: number | null;
   scheduleMinute: number | null;
   scheduleTimeZone: string | null;
+  weeklyProviderBudgetUsd: number;
   nextCheckAt: string | null;
   lastSkipReason: string | null;
   createdAt: string;
@@ -132,6 +135,7 @@ export interface AiCostEstimate {
   engineCount: number;
   observations: number;
   providerCostUsd: number;
+  runNowProviderCostUsd: number;
   costUsd: number;
   costCredits: number;
   /** A one-off Run now check collects live answers, at the live price. */
@@ -140,6 +144,13 @@ export interface AiCostEstimate {
   scheduleInterval: AiScheduleInterval;
   checksPerMonth: number;
   monthlyCostUsd: number;
+  weeklyProviderBudgetUsd: number;
+  weeklyProviderBudgetAccountedUsd: number;
+  weeklyProviderBudgetHeldUsd: number;
+  weeklyProviderBudgetAvailableUsd: number;
+  runNowProviderBudgetRemainingUsd: number;
+  weeklyProviderBudgetScope: "project";
+  weeklyProviderBudgetWindowDays: 7;
   currency: "USD";
   warnings: string[];
 }

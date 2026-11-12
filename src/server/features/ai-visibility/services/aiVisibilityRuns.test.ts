@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { aiObservations, aiRuns } from "@/db/schema";
+import { aiObservations, aiProviderRunReservations, aiRuns } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { runCheck } from "./aiVisibilityRuns";
 import { getTracker } from "./aiVisibilityState";
@@ -133,6 +133,27 @@ describe("AI visibility checks", () => {
       runCheck({ projectId, maxCostUsd: 0.001 }, customer),
     ).rejects.toMatchObject({ reason: "COST_LIMIT_EXCEEDED" });
     expect(await repo.listRuns(projectId)).toEqual([]);
+  });
+
+  it("refuses a provider run above the saved rolling budget before workflow start", async () => {
+    const tracker = await repo.getTracker(projectId);
+    if (!tracker) throw new Error("Tracker fixture was not saved.");
+    await repo.updateTracker(tracker.id, { weeklyProviderBudgetCents: 1 });
+
+    await expect(
+      runCheck({ projectId, maxCostUsd: 1 }, customer),
+    ).rejects.toMatchObject({ reason: "PROVIDER_BUDGET_EXCEEDED" });
+
+    expect(workflow.create).not.toHaveBeenCalled();
+    expect(await repo.listRuns(projectId)).toMatchObject([
+      { status: "failed" },
+    ]);
+    expect(await testDb.db.select().from(aiProviderRunReservations)).toEqual(
+      [],
+    );
+    expect((await repo.getTracker(projectId))?.lastSkipReason).toContain(
+      "rolling 7-day budget",
+    );
   });
 
   it("refuses a check the credits cannot cover before it starts, and says why on the tracker", async () => {

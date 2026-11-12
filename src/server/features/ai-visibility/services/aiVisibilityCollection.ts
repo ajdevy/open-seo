@@ -13,6 +13,7 @@ import { AppError, asAppError } from "@/server/lib/errors";
 import type { ErrorCode } from "@/shared/error-codes";
 import { getIsoCountryCode } from "@/shared/keyword-locations";
 import {
+  AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER,
   aiEngineUsesModelApi,
   type AiBrand,
   type AiEngine,
@@ -64,7 +65,6 @@ const LIVE_ANSWERS_PER_STEP = 6;
  * task and its own backend failed it, so the failure and its cost are known. A
  * transport error or a timeout can hide a charge, so it is never retried.
  */
-const AI_ANSWER_ATTEMPTS = 3;
 /** Pause before a new attempt, so a short provider outage can clear. */
 const AI_RETRY_DELAY_MS = 3_000;
 
@@ -207,7 +207,7 @@ export async function collectAiLiveBatch(
       if (
         result.status === "failed" &&
         result.retryable &&
-        attempt < AI_ANSWER_ATTEMPTS
+        attempt < AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER
       ) {
         retry.push(task);
         continue;
@@ -296,7 +296,7 @@ export async function collectAiModelBatch(
           if (
             cause instanceof DataforseoChargedTaskError &&
             cause.code === "UPSTREAM_UNAVAILABLE" &&
-            attempt < AI_ANSWER_ATTEMPTS
+            attempt < AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER
           ) {
             await waitBeforeRetry();
             continue;
@@ -349,7 +349,7 @@ export async function collectAiRound(
       canRetry &&
       result.status === "failed" &&
       result.retryable &&
-      task.attempts < AI_ANSWER_ATTEMPTS
+      task.attempts < AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER
     )
       return retry.push(task);
     await saveAiOutcome(runId, task, result, brands);

@@ -26,6 +26,7 @@ import { runAiResearchSetup } from "@/server/features/ai-visibility/services/aiR
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { AI_TRACKING_HOLD_TTL_MS } from "@/server/lib/dataforseo";
 import { describeError } from "@/server/lib/errors";
+import { settleAiProviderRunBudget } from "@/server/features/ai-visibility/repositories/AiProviderRunBudgetRepository";
 
 // One binding serves answer collection runs and the one-time research setup,
 // so setup needs no new workflow infrastructure.
@@ -278,5 +279,8 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       }
     }
     await settle();
+    await pgStep(step, "settle-provider-budget", FREE_STEP, () =>
+      settleAiProviderRunBudget(runId, new Date().toISOString()),
+    );
   }
 }

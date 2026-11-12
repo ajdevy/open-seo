@@ -36,6 +36,9 @@ export function TrackerSetupReview({
   onSaveAndSchedule: () => void;
 }) {
   const paused = !enabled && !creating;
+  const fitsWeeklyProviderBudget =
+    review.estimate.providerCostUsd <=
+    review.estimate.weeklyProviderBudgetAvailableUsd;
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
@@ -100,13 +103,28 @@ export function TrackerSetupReview({
       <div className="space-y-1 rounded-lg bg-muted/60 p-4 text-sm">
         <p>
           Each run collects <strong>{review.estimate.observations}</strong>{" "}
-          {review.estimate.observations === 1 ? "answer" : "answers"} for{" "}
-          <strong>{aiMoney(review.estimate.costUsd)}</strong>
+          {review.estimate.observations === 1 ? "answer" : "answers"} with a
+          conservative cost ceiling of{" "}
+          <strong>{aiMoney(review.estimate.costUsd)}</strong>, including up to
+          three provider attempts per answer.
         </p>
         <p>
           <strong>{aiMoney(review.estimate.monthlyCostUsd)}</strong> estimated
           per month if it runs {review.estimate.scheduleInterval}.
         </p>
+        <p>
+          Provider budget:{" "}
+          <strong>{aiMoney(review.estimate.weeklyProviderBudgetUsd)}</strong>{" "}
+          per project, rolling 7 days.{" "}
+          {aiMoney(review.estimate.weeklyProviderBudgetAvailableUsd)} is
+          available before this check.
+        </p>
+        {!fitsWeeklyProviderBudget && (
+          <p className="font-medium text-destructive">
+            The estimated provider cost exceeds the remaining weekly budget.
+            Increase the budget before enabling scheduled checks.
+          </p>
+        )}
       </div>
       {!!error && <AiQueryError error={error} />}
       <DialogFooter>
@@ -121,7 +139,11 @@ export function TrackerSetupReview({
         <Button
           type="button"
           variant={paused ? "secondary" : "default"}
-          disabled={pending}
+          disabled={
+            pending ||
+            (creating &&
+              (!fitsWeeklyProviderBudget || review.estimate.observations === 0))
+          }
           onClick={onSave}
         >
           {pending && !scheduling && (
@@ -137,7 +159,10 @@ export function TrackerSetupReview({
           <Button
             type="button"
             disabled={
-              pending || !canSchedule || review.estimate.observations === 0
+              pending ||
+              !canSchedule ||
+              !fitsWeeklyProviderBudget ||
+              review.estimate.observations === 0
             }
             onClick={onSaveAndSchedule}
           >

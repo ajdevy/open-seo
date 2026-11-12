@@ -127,12 +127,20 @@ export function projectAiConfiguration(input: {
           scheduleTimeZone: null,
           nextCheckAt: firstWeeklyCheckAt(),
           lastSkipReason: null,
+          weeklyProviderBudgetCents:
+            patch.weeklyProviderBudgetUsd === undefined
+              ? 800
+              : Math.round(patch.weeklyProviderBudgetUsd * 100),
           createdAt: now,
         },
         prompts: [],
       };
   if (patch.engines)
     Object.assign(rows.tracker, engineColumns([...new Set(patch.engines)]));
+  if (patch.weeklyProviderBudgetUsd !== undefined)
+    rows.tracker.weeklyProviderBudgetCents = Math.round(
+      patch.weeklyProviderBudgetUsd * 100,
+    );
   applyMarket(rows, patch, !previous, trackerEngines(rows.tracker));
   const counts = applyPrompts(rows, patch, now);
   const unarchived = rows.prompts.filter((p) => !p.archived);
