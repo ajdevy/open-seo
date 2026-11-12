@@ -205,6 +205,8 @@ class WorkflowReviewSafetyTest(unittest.TestCase):
         for command in (
             "pnpm build",
             "pnpm test:ci",
+            "pnpm test:standalone:backup",
+            "pnpm test:standalone:client-restore",
             "pnpm db:migrate:local",
             "pnpm db:migrate:pg",
         ):

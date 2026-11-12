@@ -51,6 +51,10 @@ jobs:
         run: pnpm build
       - name: Run application and restore tests
         run: pnpm test:ci
+      - name: Run backup-manifest tests
+        run: pnpm test:standalone:backup
+      - name: Run selective-restore tests
+        run: pnpm test:standalone:client-restore
       - name: Apply SQLite migrations locally
         run: pnpm db:migrate:local
       - name: Apply PostgreSQL migrations locally
