@@ -182,6 +182,36 @@ class WorkflowReviewSafetyTest(unittest.TestCase):
         self.assertIn("gh pr create", workflow)
         self.assertIn("--draft", workflow)
 
+    def test_candidate_compatibility_uses_an_isolated_read_only_runner(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (
+            root
+            / ".github/workflows/autogeo-upstream-candidate-compatibility.yml"
+        ).read_text()
+        self.assertIn("pull_request:", workflow)
+        self.assertNotIn("pull_request_target", workflow)
+        self.assertIn("startsWith(github.head_ref, 'autogeo/upstream/v')", workflow)
+        self.assertIn("runs-on: ubuntu-24.04", workflow)
+        self.assertNotIn("self-hosted", workflow)
+        self.assertIn("permissions:\n  contents: read", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        for action in (
+            "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1",
+            "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+        ):
+            with self.subTest(action=action):
+                self.assertIn(action, workflow)
+        for command in (
+            "pnpm build",
+            "pnpm test:ci",
+            "pnpm db:migrate:local",
+            "pnpm db:migrate:pg",
+        ):
+            with self.subTest(command=command):
+                self.assertIn(command, workflow)
+        self.assertNotIn("pnpm deploy", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

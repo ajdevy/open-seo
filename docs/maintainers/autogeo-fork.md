@@ -24,10 +24,10 @@ publishing to `main`. Resolve conflicts on a reviewed branch and dispatch again.
 publication and release workflows are excluded from automated merges. Review
 upstream CI changes separately when changing our CI. The maintenance scripts and
 tests run with isolated Python imports, so application files cannot shadow the
-standard library. The sync job does not
-execute fetched application scripts, install dependencies, run provider requests,
-publish images, migrate databases, or deploy the app. A successful sync proves
-Git integration; application tests and deployment acceptance remain separate.
+standard library. The sync job does not execute fetched application scripts,
+install dependencies, run provider requests, publish images, migrate databases,
+or deploy the app. A successful sync proves Git integration; candidate
+compatibility checks and deployment acceptance remain separate.
 
 The job uses the repository-scoped `GITHUB_TOKEN` with Contents and Pull Requests
 write permissions so it can publish a candidate branch and open a draft PR. No
@@ -36,10 +36,17 @@ Checkout does not persist the token; push receives credentials from `gh` in
 memory. The candidate branch does not trigger a production deployment.
 The source release is recorded in `autogeo-upstream.json`.
 
-The job runs on the Ductor CI fleet with label `open-seo-sync`. Its runner accepts
-only this workflow from this repository's `main` on schedule or manual dispatch.
-It has no Docker socket or production mounts. Other application CI should use
-separately reviewed execution capacity rather than this maintenance-only runner.
+Candidate pull requests run the compatibility workflow on an ephemeral
+GitHub-hosted runner with read-only repository permissions and no provider or
+deployment secrets. It builds the candidate, runs the application and restore
+test suite, and applies the checked-in SQLite and PostgreSQL migrations to
+local test databases. The Ductor sync runner never executes the candidate
+application or its dependency scripts.
+
+The sync job runs on the Ductor CI fleet with label `open-seo-sync`. Its runner
+accepts only this workflow from this repository's `main` on schedule or manual
+dispatch. It has no Docker socket or production mounts. A passing candidate CI
+does not establish production deployment or runtime acceptance.
 
 ## AutoGEO execution policy
 
