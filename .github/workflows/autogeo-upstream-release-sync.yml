@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      pull-requests: write
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
@@ -31,12 +32,6 @@ jobs:
           persist-credentials: false
       - name: Check release merge behavior
         run: python3 -I -B -m unittest discover -s scripts/autogeo -p 'test_upstream_release_sync.py' -v
-      - name: Verify authenticated fork push
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
-            push --dry-run origin HEAD:refs/heads/main
       - name: Merge latest published stable release
         id: release
         env:
@@ -50,6 +45,20 @@ jobs:
         if: steps.release.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.branch }}
         run: |
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
-            push origin HEAD:refs/heads/main
+            push origin "HEAD:refs/heads/$RELEASE_BRANCH"
+      - name: Open draft pull request for review
+        if: steps.release.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.branch }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh pr create \
+            --draft \
+            --base main \
+            --head "$RELEASE_BRANCH" \
+            --title "chore: merge OpenSEO $RELEASE_TAG" \
+            --body "Automated candidate from the latest published stable OpenSEO release. Review the diff and required compatibility checks before merging. This workflow does not merge to main or deploy the application."

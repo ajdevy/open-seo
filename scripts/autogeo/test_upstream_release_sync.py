@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 
-from upstream_release_sync import STATE, git, merge_release, validate_release
+from upstream_release_sync import STATE, git, merge_release, release_branch, validate_release
 
 
 class ReleaseMergeTest(unittest.TestCase):
@@ -60,12 +60,18 @@ class ReleaseMergeTest(unittest.TestCase):
         return git(self.upstream, "rev-parse", "HEAD").stdout.strip()
 
     def assert_original(self):
+        self.assertEqual(git(self.fork, "branch", "--show-current").stdout.strip(), "main")
         self.assertEqual(git(self.fork, "rev-parse", "HEAD").stdout.strip(), self.base)
         self.assertEqual(git(self.fork, "status", "--porcelain").stdout, "")
 
     def test_merge_keeps_local_features_and_ci_and_excludes_new_upstream_workflows(self):
         sha = self.release(annotated=True)
         self.assertTrue(merge_release(self.fork, "v1.0.1", sha, str(self.upstream)))
+        self.assertEqual(
+            git(self.fork, "branch", "--show-current").stdout.strip(),
+            release_branch("v1.0.1"),
+        )
+        self.assertEqual(git(self.fork, "rev-parse", "main").stdout.strip(), self.base)
         self.assertEqual((self.fork / "app.txt").read_text(), "release change\n")
         self.assertEqual((self.fork / "autogeo.txt").read_text(), "our feature\n")
         self.assertEqual((self.fork / ".github/workflows/autogeo.yml").read_text(), "trusted fork CI\n")
@@ -74,11 +80,20 @@ class ReleaseMergeTest(unittest.TestCase):
         self.assertEqual((self.fork / "scripts/autogeo/trusted.txt").read_text(), "trusted maintenance\n")
         self.assertFalse((self.fork / "scripts/autogeo/test_new.py").exists())
         self.assertEqual(git(self.fork, "rev-parse", "HEAD^2").stdout.strip(), sha)
-        self.assertFalse(merge_release(self.fork, "v1.0.1", sha, str(self.upstream)))
 
     def test_already_included_release_makes_no_commit(self):
         self.assertFalse(merge_release(self.fork, "v1.0.0", self.initial, str(self.upstream)))
         self.assert_original()
+
+    def test_release_already_merged_from_review_branch_makes_no_new_candidate(self):
+        sha = self.release()
+        candidate = release_branch("v1.0.1")
+        self.assertTrue(merge_release(self.fork, "v1.0.1", sha, str(self.upstream), candidate))
+        git(self.fork, "switch", "main")
+        git(self.fork, "merge", "--no-ff", "--no-edit", candidate)
+        merged_head = git(self.fork, "rev-parse", "HEAD").stdout.strip()
+        self.assertFalse(merge_release(self.fork, "v1.0.1", sha, str(self.upstream), candidate))
+        self.assertEqual(git(self.fork, "rev-parse", "HEAD").stdout.strip(), merged_head)
 
     def test_application_conflict_aborts_and_preserves_fork(self):
         self.write(self.fork, "app.txt", "local feature\n")
@@ -99,6 +114,8 @@ class ReleaseMergeTest(unittest.TestCase):
     def test_release_rollback_is_rejected(self):
         sha = self.release()
         merge_release(self.fork, "v1.0.1", sha, str(self.upstream))
+        git(self.fork, "switch", "main")
+        git(self.fork, "merge", "--no-ff", "--no-edit", release_branch("v1.0.1"))
         with self.assertRaisesRegex(RuntimeError, "does not descend"):
             merge_release(self.fork, "v1.0.0", self.initial, str(self.upstream))
 
@@ -133,6 +150,12 @@ class ReleaseMergeTest(unittest.TestCase):
             merge_release(self.fork, "v1.0.0", self.initial, str(self.upstream))
         self.assertEqual((self.fork / "autogeo.txt").read_text(), "uncommitted work\n")
 
+    def test_candidate_branch_must_match_stable_release_tag(self):
+        sha = self.release()
+        with self.assertRaisesRegex(RuntimeError, "does not match the stable tag"):
+            merge_release(self.fork, "v1.0.1", sha, str(self.upstream), "main")
+        self.assert_original()
+
 
 class ReleaseSelectionTest(unittest.TestCase):
     def test_only_published_stable_semver_release_is_accepted(self):
@@ -141,6 +164,23 @@ class ReleaseSelectionTest(unittest.TestCase):
         for override in ({"draft": True}, {"prerelease": True}, {"published_at": None}, {"tag_name": "v1.2.3-rc.1"}, {"tag_name": "--upload-pack=evil"}):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 validate_release({**release, **override}, "a" * 40)
+
+    def test_release_branch_uses_only_stable_semver_tags(self):
+        self.assertEqual(release_branch("v1.2.3"), "autogeo/upstream/v1.2.3")
+        for tag in ("v1.2.3-rc.1", "main", "v1/2/3", "--upload-pack=evil"):
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                release_branch(tag)
+
+
+class WorkflowReviewSafetyTest(unittest.TestCase):
+    def test_workflow_publishes_only_a_review_branch(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/autogeo-upstream-release-sync.yml").read_text()
+        self.assertIn("pull-requests: write", workflow)
+        self.assertIn('push origin "HEAD:refs/heads/$RELEASE_BRANCH"', workflow)
+        self.assertNotIn("HEAD:refs/heads/main", workflow)
+        self.assertIn("gh pr create", workflow)
+        self.assertIn("--draft", workflow)
 
 
 if __name__ == "__main__":

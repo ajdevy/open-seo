@@ -9,13 +9,16 @@ Application adoption is incremental; this setup does not migrate production or c
 and can be dispatched manually from `main`. Upstream publishes stable GitHub
 Releases with `vMAJOR.MINOR.PATCH` tags, rather than separate release branches.
 The job resolves the latest published stable release to a full commit, fetches
-that tag, checks the identity and merges it into this fork's `main`.
+that tag, checks the identity and prepares a merge branch named
+`autogeo/upstream/<tag>`.
 
-Updates use an ordinary merge and push, never force-push, rebase, or replacement
-of fork history. No change is made if the release is already included. Conflicts
-outside fork-owned maintenance paths, a moved tag, a non-descendant release, whitespace
-errors, or a concurrent branch update fail the job without publishing a partial
-merge. Resolve conflicts on a reviewed branch and dispatch again.
+The job opens one draft pull request for review and never advances or deploys
+`main`. An existing upstream candidate PR pauses new candidate creation until it
+is reviewed. Updates use an ordinary merge, never force-push, rebase, or replace
+fork history. No change is made if the release is already included. Conflicts
+outside fork-owned maintenance paths, a moved tag, a non-descendant release,
+whitespace errors, or an orphan candidate branch fail the job visibly without
+publishing to `main`. Resolve conflicts on a reviewed branch and dispatch again.
 
 `.github/workflows/` and `scripts/autogeo/` belong to this fork: upstream deployment, preview, image
 publication and release workflows are excluded from automated merges. Review
@@ -26,10 +29,11 @@ execute fetched application scripts, install dependencies, run provider requests
 publish images, migrate databases, or deploy the app. A successful sync proves
 Git integration; application tests and deployment acceptance remain separate.
 
-The job uses the repository-scoped `GITHUB_TOKEN` with Contents write permission.
-No personal GitHub token or provider credentials are installed in the fork.
+The job uses the repository-scoped `GITHUB_TOKEN` with Contents and Pull Requests
+write permissions so it can publish a candidate branch and open a draft PR. No
+personal GitHub token or provider credentials are installed in the fork.
 Checkout does not persist the token; push receives credentials from `gh` in
-memory. This also prevents recursive workflow runs on the bot's merge push.
+memory. The candidate branch does not trigger a production deployment.
 The source release is recorded in `autogeo-upstream.json`.
 
 The job runs on the Ductor CI fleet with label `open-seo-sync`. Its runner accepts
