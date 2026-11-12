@@ -65,8 +65,12 @@ describe("provider run budget reservations", () => {
     const withinWindow = new Date(
       now.getTime() - 6 * 24 * 60 * 60_000,
     ).toISOString();
+    const settledRecently = new Date(
+      now.getTime() - 24 * 60 * 60_000,
+    ).toISOString();
     await createRun("old-settled", olderThanWindow);
     await createRun("recent-settled", withinWindow);
+    await createRun("settled-after-long-run", olderThanWindow);
     await createRun("old-unknown", olderThanWindow);
     await testDb.db.insert(aiProviderRunReservations).values([
       {
@@ -90,6 +94,16 @@ describe("provider run budget reservations", () => {
         settledAt: withinWindow,
       },
       {
+        id: "settled-after-long-run-reservation",
+        projectId,
+        runId: "settled-after-long-run",
+        reservedUsdMicros: 1_500_000,
+        accountedUsdMicros: 1_500_000,
+        status: "settled",
+        createdAt: olderThanWindow,
+        settledAt: settledRecently,
+      },
+      {
         id: "old-unknown-reservation",
         projectId,
         runId: "old-unknown",
@@ -102,7 +116,7 @@ describe("provider run budget reservations", () => {
     await expect(
       getAiProviderBudgetUsage(projectId, now.getTime()),
     ).resolves.toEqual({
-      accountedUsdMicros: 3_000_000,
+      accountedUsdMicros: 4_500_000,
       heldUsdMicros: 4_000_000,
     });
   });
@@ -178,5 +192,23 @@ describe("provider run budget reservations", () => {
       .from(aiProviderRunReservations);
     expect(remainingRuns).toEqual([{ id: "old-unknown" }]);
     expect(remainingReservations).toEqual([{ runId: "old-unknown" }]);
+  });
+
+  it("admits only one concurrent provider run for a project", async () => {
+    await createRun("concurrent-first");
+    await createRun("concurrent-second");
+
+    const outcomes = await Promise.all([
+      reserve("concurrent-first", 6_000_000),
+      reserve("concurrent-second", 6_000_000),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.admitted)).toHaveLength(1);
+    expect(outcomes.filter((outcome) => !outcome.admitted)).toMatchObject([
+      { admitted: false, reason: "run_in_progress" },
+    ]);
+    await expect(
+      getAiProviderBudgetUsage(projectId, now.getTime()),
+    ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 6_000_000 });
   });
 });

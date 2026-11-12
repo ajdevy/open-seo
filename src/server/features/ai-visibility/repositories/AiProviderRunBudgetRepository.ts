@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, or } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, or } from "drizzle-orm";
 import { db } from "@/db";
 import { aiProviderRunReservations } from "@/db/schema";
 
@@ -44,7 +44,13 @@ export async function getAiProviderBudgetUsage(
           inArray(aiProviderRunReservations.status, ["reserved", "unknown"]),
           and(
             eq(aiProviderRunReservations.status, "settled"),
-            gte(aiProviderRunReservations.createdAt, cutoff),
+            or(
+              gte(aiProviderRunReservations.settledAt, cutoff),
+              and(
+                isNull(aiProviderRunReservations.settledAt),
+                gte(aiProviderRunReservations.createdAt, cutoff),
+              ),
+            ),
           ),
         ),
       ),
@@ -185,7 +191,12 @@ export async function settleAiProviderRunBudget(
       accountedUsdMicros: reservation[0].reservedUsdMicros,
       settledAt,
     })
-    .where(eq(aiProviderRunReservations.id, reservation[0].id));
+    .where(
+      and(
+        eq(aiProviderRunReservations.id, reservation[0].id),
+        eq(aiProviderRunReservations.status, "reserved"),
+      ),
+    );
 }
 
 /** A provider outcome is ambiguous; retain its full hold past the window. */
