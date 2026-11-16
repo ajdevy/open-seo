@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
 import {
   aiPrompts,
@@ -305,4 +305,30 @@ export async function getProjectSettingsSnapshotStatus(
     status: row.status,
     recoverableAfterServerLoss: row.status === "confirmed",
   };
+}
+
+/**
+ * A reserved archive file ID is bound to the Google account and folder used
+ * when it was generated. Keep that target in place until the queued snapshot
+ * is confirmed, otherwise a retry could become permanently unconfirmable.
+ */
+export async function hasTargetBoundPendingProjectSettingsSnapshots(
+  organizationId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: projectSettingsSnapshotOutbox.id })
+    .from(projectSettingsSnapshotOutbox)
+    .innerJoin(
+      projects,
+      eq(projectSettingsSnapshotOutbox.projectId, projects.id),
+    )
+    .where(
+      and(
+        eq(projects.organizationId, organizationId),
+        eq(projectSettingsSnapshotOutbox.status, "unconfirmed"),
+        isNotNull(projectSettingsSnapshotOutbox.archiveFileId),
+      ),
+    )
+    .limit(1);
+  return Boolean(row);
 }

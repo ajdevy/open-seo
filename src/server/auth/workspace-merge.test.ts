@@ -10,6 +10,7 @@ import {
   vi,
 } from "vitest";
 import type * as WorkspaceMergeModule from "./workspace-merge";
+import type { decryptProjectSettingsSnapshot as DecryptProjectSettingsSnapshot } from "@/server/features/project-settings-snapshots/snapshotCrypto";
 
 // Real in-memory SQLite so the repoint-before-delete ordering, the Default
 // rename against the partial unique index, and the org-delete cascades run
@@ -28,7 +29,7 @@ vi.mock("cloudflare:workers", () => ({ env: mockEnv }));
 let client: Client;
 let testDb: ReturnType<typeof drizzle>;
 let WorkspaceMergeService: typeof WorkspaceMergeModule.WorkspaceMergeService;
-let decryptProjectSettingsSnapshot: (typeof import("@/server/features/project-settings-snapshots/snapshotCrypto"))["decryptProjectSettingsSnapshot"];
+let decryptProjectSettingsSnapshot: typeof DecryptProjectSettingsSnapshot;
 
 async function rows(sql: string) {
   return (await client.execute(sql)).rows;
@@ -114,6 +115,7 @@ beforeAll(async () => {
       status TEXT NOT NULL,
       created_at TEXT NOT NULL,
       confirmed_at TEXT,
+      archive_file_id TEXT,
       UNIQUE(project_id, revision)
     );
     CREATE TABLE user_onboarding_answers (
@@ -281,15 +283,28 @@ describe("WorkspaceMergeService", () => {
     const acmeSnapshotRow = snapshots.find(
       (snapshot) => snapshot.project_id === "p1-acme",
     );
-    expect(acmeSnapshotRow).toBeDefined();
+    if (!acmeSnapshotRow) {
+      throw new Error("Expected the Acme project snapshot row to be present.");
+    }
+    if (
+      typeof acmeSnapshotRow.revision !== "number" ||
+      typeof acmeSnapshotRow.algorithm !== "string" ||
+      typeof acmeSnapshotRow.schema_version !== "number" ||
+      typeof acmeSnapshotRow.iv !== "string" ||
+      typeof acmeSnapshotRow.ciphertext !== "string"
+    ) {
+      throw new Error(
+        "Expected the Acme project snapshot row to be decryptable.",
+      );
+    }
     await expect(
       decryptProjectSettingsSnapshot({
         projectId: "p1-acme",
-        revision: acmeSnapshotRow!.revision as number,
-        algorithm: acmeSnapshotRow!.algorithm as string,
-        schemaVersion: acmeSnapshotRow!.schema_version as number,
-        iv: acmeSnapshotRow!.iv as string,
-        ciphertext: acmeSnapshotRow!.ciphertext as string,
+        revision: acmeSnapshotRow.revision,
+        algorithm: acmeSnapshotRow.algorithm,
+        schemaVersion: acmeSnapshotRow.schema_version,
+        iv: acmeSnapshotRow.iv,
+        ciphertext: acmeSnapshotRow.ciphertext,
       }),
     ).resolves.toMatchObject({
       clientId: "shared-workspace",

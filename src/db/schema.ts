@@ -92,6 +92,7 @@ export const {
   projects,
   projectSettingsSnapshotRevisions,
   projectSettingsSnapshotOutbox,
+  googleDriveArchiveConnections,
   savedKeywords,
   savedKeywordTags,
   savedKeywordTagAssignments,

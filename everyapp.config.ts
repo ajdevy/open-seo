@@ -114,17 +114,47 @@ export default {
       optional: true,
       why: "Base64-encoded 256-bit key for encrypting project settings snapshots before they enter the durable outbox. Project, tracker, and question saves fail closed when it is unavailable.",
     },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_CLIENT_ID",
+      optional: true,
+      why: "OAuth client ID for the optional owner-managed Google Drive snapshot archive.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_CLIENT_SECRET",
+      optional: true,
+      why: "OAuth client secret for the optional owner-managed Google Drive snapshot archive. Never put it in source control or logs.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_TOKEN_KEY_B64",
+      optional: true,
+      why: "Base64-encoded 256-bit key dedicated to encrypting the Drive OAuth tokens stored by OpenSEO. Keep it separate from the snapshot encryption key.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_REDIRECT_URI",
+      optional: true,
+      why: "Exact HTTPS callback registered on the dedicated OAuth client: https://autogeo.flexsentlabs.com/api/google-drive/archive/oauth/callback.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_PICKER_API_KEY",
+      optional: true,
+      why: "Google Picker API key restricted to the OpenSEO deployment origin and required APIs.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_PROJECT_NUMBER",
+      optional: true,
+      why: "Google Cloud project number used by Google Picker for the selected Drive archive folder.",
+    },
   ],
   // Both Workers, from cloudflare.config.ts and vite-plugin-every-app.ts.
   build: "pnpm build:report-widgets && AUTH_MODE=everyapp pnpm exec vite build",
   dev: "pnpm build:report-widgets && AUTH_MODE=everyapp pnpm exec vite dev --host 127.0.0.1",
-  // Nothing reaches OpenSEO without a signed-in member: report sharing and
-  // the other unauthenticated routes are hosted-only, and the gateway's tool
-  // calls (`/__everyapp/tools/*`) carry their own gateway-signed tokens.
+  // Interactive routes require a signed-in member. The state-bound Google
+  // OAuth callback is the only public route; report sharing and other
+  // unauthenticated routes remain hosted-only.
   // Every member opens OpenSEO once it is installed, like the other three
   // launch apps (OpenCRM, OpenAnalytics, Agentic Inbox): the documented
   // default for them. Without it a fresh install opens to owners and admins
   // only, and an admin grants the rest by hand.
   access: "everyone",
-  public: [],
+  public: ["/api/google-drive/archive/oauth/callback"],
 } as const;

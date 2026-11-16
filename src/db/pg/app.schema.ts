@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- application table declarations */
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -138,6 +139,7 @@ export const projectSettingsSnapshotOutbox = pgTable(
     schemaVersion: integer("schema_version").notNull(),
     iv: text("iv").notNull(),
     ciphertext: text("ciphertext").notNull(),
+    archiveFileId: text("archive_file_id"),
     status: text("status", { enum: ["unconfirmed", "confirmed"] })
       .notNull()
       .default("unconfirmed"),
@@ -156,6 +158,46 @@ export const projectSettingsSnapshotOutbox = pgTable(
       table.status,
       table.projectId,
       table.revision,
+    ),
+  ],
+);
+
+// A single user-selected Google Drive archive per Every App workspace.
+// OAuth tokens are encrypted with a dedicated app secret before they reach
+// these columns; the Drive file itself is encrypted separately by the
+// project-settings snapshot key.
+export const googleDriveArchiveConnections = pgTable(
+  "google_drive_archive_connections",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    connectedByUserId: text("connected_by_user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    googleAccountId: text("google_account_id").notNull(),
+    accountEmail: text("account_email").notNull(),
+    accessTokenCiphertext: text("access_token_ciphertext").notNull(),
+    refreshTokenCiphertext: text("refresh_token_ciphertext").notNull(),
+    accessTokenExpiresAt: timestampColumn("access_token_expires_at").notNull(),
+    scope: text("scope").notNull(),
+    folderId: text("folder_id"),
+    folderName: text("folder_name"),
+    status: text("status", {
+      enum: ["connected", "reauthorization_required"],
+    })
+      .notNull()
+      .default("connected"),
+    createdAt: timestampColumn("created_at").notNull().default(isoNow),
+    updatedAt: timestampColumn("updated_at").notNull().default(isoNow),
+  },
+  (table) => [
+    uniqueIndex("google_drive_archive_connections_organization_idx").on(
+      table.organizationId,
+    ),
+    index("google_drive_archive_connections_account_idx").on(
+      table.googleAccountId,
     ),
   ],
 );

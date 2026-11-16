@@ -61,10 +61,14 @@ describe("project settings snapshot delivery", () => {
 
     let online = false;
     const delivered: EncryptedProjectSettingsSnapshot[] = [];
+    const deliveredFileIds: string[] = [];
+    let generatedFileIds = 0;
     const archive: ProjectSettingsSnapshotArchivePort = {
-      putEncryptedSnapshot: async (snapshot) => {
+      generateFileId: async () => `generated-drive-file-${++generatedFileIds}`,
+      putEncryptedSnapshot: async (snapshot, fileId) => {
         if (!online) throw new Error("synthetic archive offline");
         delivered.push(snapshot);
+        deliveredFileIds.push(fileId);
       },
     };
 
@@ -87,6 +91,8 @@ describe("project settings snapshot delivery", () => {
       ciphertext: "encrypted-payload-1",
     });
     expect(delivered[0]).not.toHaveProperty("snapshot");
+    expect(generatedFileIds).toBe(1);
+    expect(deliveredFileIds).toEqual(["generated-drive-file-1"]);
     await expect(getProjectSettingsSnapshotStatus("project")).resolves.toEqual({
       revision: 1,
       status: "confirmed",
@@ -97,11 +103,16 @@ describe("project settings snapshot delivery", () => {
   it("replays the same idempotency key when remote acceptance succeeded but its acknowledgement was lost", async () => {
     await seedOutbox([1]);
     const remoteArchive = new Map<string, EncryptedProjectSettingsSnapshot>();
-    const calls: EncryptedProjectSettingsSnapshot[] = [];
+    const calls: Array<{
+      snapshot: EncryptedProjectSettingsSnapshot;
+      fileId: string;
+    }> = [];
     let loseFirstAcknowledgement = true;
+    let generatedFileIds = 0;
     const archive: ProjectSettingsSnapshotArchivePort = {
-      putEncryptedSnapshot: async (snapshot) => {
-        calls.push(snapshot);
+      generateFileId: async () => `generated-drive-file-${++generatedFileIds}`,
+      putEncryptedSnapshot: async (snapshot, fileId) => {
+        calls.push({ snapshot, fileId });
         if (!remoteArchive.has(snapshot.idempotencyKey))
           remoteArchive.set(snapshot.idempotencyKey, snapshot);
         if (loseFirstAcknowledgement) {
@@ -120,8 +131,12 @@ describe("project settings snapshot delivery", () => {
       deliverPendingProjectSettingsSnapshots(archive),
     ).resolves.toEqual({ attempted: 1, confirmed: 1, unconfirmed: 0 });
     expect(calls).toHaveLength(2);
-    expect(calls[0]?.idempotencyKey).toBe(calls[1]?.idempotencyKey);
-    expect(calls[0]?.ciphertext).toBe(calls[1]?.ciphertext);
+    expect(calls[0]?.snapshot.idempotencyKey).toBe(
+      calls[1]?.snapshot.idempotencyKey,
+    );
+    expect(calls[0]?.snapshot.ciphertext).toBe(calls[1]?.snapshot.ciphertext);
+    expect(calls[0]?.fileId).toBe(calls[1]?.fileId);
+    expect(generatedFileIds).toBe(1);
     expect(remoteArchive).toHaveProperty("size", 1);
   });
 
@@ -129,7 +144,9 @@ describe("project settings snapshot delivery", () => {
     await seedOutbox([1, 2]);
     const calls: number[] = [];
     let online = false;
+    let nextFileId = 0;
     const archive: ProjectSettingsSnapshotArchivePort = {
+      generateFileId: async () => `generated-drive-file-${++nextFileId}`,
       putEncryptedSnapshot: async ({ revision }) => {
         calls.push(revision);
         if (!online) throw new Error("synthetic archive offline");
@@ -144,5 +161,39 @@ describe("project settings snapshot delivery", () => {
     expect(calls).toEqual([1, 1]);
     await deliverPendingProjectSettingsSnapshots(archive);
     expect(calls).toEqual([1, 1, 2]);
+  });
+
+  it("reserves one generated Drive file ID across concurrent delivery attempts", async () => {
+    await seedOutbox([1]);
+    let generated = 0;
+    let releaseGeneration: (() => void) | undefined;
+    const bothGenerated = new Promise<void>((resolve) => {
+      releaseGeneration = resolve;
+    });
+    const deliveredFileIds: string[] = [];
+    const archive: ProjectSettingsSnapshotArchivePort = {
+      generateFileId: async () => {
+        const candidate = `generated-drive-file-${++generated}`;
+        if (generated === 2) releaseGeneration?.();
+        await bothGenerated;
+        return candidate;
+      },
+      putEncryptedSnapshot: async (_snapshot, fileId) => {
+        deliveredFileIds.push(fileId);
+      },
+    };
+
+    const results = await Promise.all([
+      deliverPendingProjectSettingsSnapshots(archive),
+      deliverPendingProjectSettingsSnapshots(archive),
+    ]);
+
+    expect(results).toEqual([
+      { attempted: 1, confirmed: 1, unconfirmed: 0 },
+      { attempted: 1, confirmed: 1, unconfirmed: 0 },
+    ]);
+    expect(generated).toBe(2);
+    expect(deliveredFileIds).toHaveLength(2);
+    expect(new Set(deliveredFileIds).size).toBe(1);
   });
 });

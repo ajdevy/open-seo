@@ -42,20 +42,25 @@ Autumn stays hosted-only.
 - **MCP tools** (`src/server/everyapp/tools.ts`). One list, `registerOpenSeoTools`, feeds both OpenSEO's own MCP server and the gateway's catalog, so a new tool reaches both. Read-only tools are `read` and every other tool is `write`, deletes included: the gateway hides `destructive` tools from AI clients until it has an approval step, and every OpenSEO tool should reach them. Tools return OpenSEO's text for the model and their structured result for clients. `whoami` reports the mode as `Every App`.
 - **Account menu.** Shows the person from the identity, no organization switcher and no billing; "Sign out on Every App" opens the gateway (`GATEWAY_URL`, or the identity issuer in local dev), where sign-out happens.
 - **Build** (`cloudflare.config.ts`, `vite-plugin-every-app.ts`). With `AUTH_MODE=everyapp`, `vite.config.ts` swaps the Cloudflare Vite plugin 1.x and `wrangler.jsonc` for plugin 2.x and `cloudflare.config.ts`: the app's Worker from `everyAppWorker()`, and the site-audit engine (`src/audit-worker.ts`) as its helper Worker from `everyAppAuxiliaryWorker()`. The client build reads the same `AUTH_MODE`, so it shows the Every App copy. Every other build still uses `wrangler.jsonc`.
-- **Manifest** (`everyapp.config.ts`). Resources (D1 and KV, which classes the audit Worker defines), the helper Worker, the provider and capability requests with each one's need (the settings below), migrations, and the build and dev commands. `public` is empty: report sharing and OpenSEO's other unauthenticated routes are hosted-only, and the gateway's tool calls carry their own tokens.
+- **Manifest** (`everyapp.config.ts`). Resources (D1 and KV, which classes the audit Worker defines), the helper Worker, the provider and capability requests with each one's need (the settings below), migrations, and the build and dev commands. The only public route is the state-bound Google Drive OAuth callback; report sharing and other unauthenticated routes remain hosted-only.
 
 ## Settings
 
 `everyapp.config.ts` declares what OpenSEO needs set, with a `why` for whoever sets it, and whether OpenSEO opens without it. The provider keys are the gateway's, set once for every app from your Every App checkout; `pnpm everyapp configure openseo` asks for each, or set one alone: `CRAWLER_ACCESS_SECRET` and `OPENROUTER_MODEL` are OpenSEO's own, on its Workers. The gateway's app list shows OpenSEO as needing setup, with the command, until the required ones are set, and `pnpm everyapp status` shows each setting's state.
 
-| Setting                                                        | Held by | Need     | Used for                                                                                                 |
-| -------------------------------------------------------------- | ------- | -------- | -------------------------------------------------------------------------------------------------------- |
-| `OPENROUTER_API_KEY`                                           | gateway | required | SAM, prompt suggestions and website research, through the gateway's AI proxy                             |
-| `DATAFORSEO_API_KEY`                                           | gateway | required | Keyword, SERP, backlink, local business and AI answer data, including scheduled rank checks              |
-| `CONTEXT_API_KEY`                                              | gateway | optional | Rendering JavaScript-heavy pages when a site audit asks for it                                           |
-| `CRAWLER_ACCESS_SECRET`                                        | OpenSEO | optional | Encrypting the Shopify crawler-access signatures audits of protected stores send (32+ chars)             |
-| `OPENROUTER_MODEL`                                             | OpenSEO | optional | The OpenRouter model SAM, prompt suggestions and website research run on (default `openai/gpt-5.6-luna`) |
-| `GOOGLE_WORKSPACE_CLIENT_ID`, `GOOGLE_WORKSPACE_CLIENT_SECRET` | gateway | optional | Search Console and GA4 reads for your sites, with the Google account a member connects in Every App      |
+| Setting                                                                      | Held by | Need     | Used for                                                                                                                                              |
+| ---------------------------------------------------------------------------- | ------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENROUTER_API_KEY`                                                         | gateway | required | SAM, prompt suggestions and website research, through the gateway's AI proxy                                                                          |
+| `DATAFORSEO_API_KEY`                                                         | gateway | required | Keyword, SERP, backlink, local business and AI answer data, including scheduled rank checks                                                           |
+| `CONTEXT_API_KEY`                                                            | gateway | optional | Rendering JavaScript-heavy pages when a site audit asks for it                                                                                        |
+| `CRAWLER_ACCESS_SECRET`                                                      | OpenSEO | optional | Encrypting the Shopify crawler-access signatures audits of protected stores send (32+ chars)                                                          |
+| `OPENROUTER_MODEL`                                                           | OpenSEO | optional | The OpenRouter model SAM, prompt suggestions and website research run on (default `openai/gpt-5.6-luna`)                                              |
+| `AUTOGEO_QUEUE_MASTER_KEY_B64`                                               | OpenSEO | optional | Encrypting project settings snapshots before they enter the durable outbox                                                                            |
+| `GOOGLE_DRIVE_ARCHIVE_CLIENT_ID`, `GOOGLE_DRIVE_ARCHIVE_CLIENT_SECRET`       | OpenSEO | optional | A dedicated Google OAuth client for the workspace's user-selected Drive folder; it is separate from the gateway's Search Console and Analytics client |
+| `GOOGLE_DRIVE_ARCHIVE_TOKEN_KEY_B64`                                         | OpenSEO | optional | Encrypting the archive connection's access and refresh tokens at rest with a dedicated 256-bit key                                                    |
+| `GOOGLE_DRIVE_ARCHIVE_REDIRECT_URI`                                          | OpenSEO | optional | Exact HTTPS callback URI registered on that dedicated Google OAuth client                                                                             |
+| `GOOGLE_DRIVE_ARCHIVE_PICKER_API_KEY`, `GOOGLE_DRIVE_ARCHIVE_PROJECT_NUMBER` | OpenSEO | optional | Opening Google Picker for the owner/admin to select the folder that receives encrypted snapshots                                                      |
+| `GOOGLE_WORKSPACE_CLIENT_ID`, `GOOGLE_WORKSPACE_CLIENT_SECRET`               | gateway | optional | Search Console and GA4 reads for your sites, with the Google account a member connects in Every App                                                   |
 
 ```bash
 pnpm everyapp secret set OPENROUTER_API_KEY
@@ -68,6 +73,50 @@ pnpm everyapp secret set OPENROUTER_MODEL --app openseo      # optional
 `--app openseo` sets a value on OpenSEO's Workers from any directory; from this directory the name alone is enough, since the manifest lists both under `secrets`. That is how openseo.everyapp.team takes them too, being deployed with `everyapp deploy`.
 
 Without `CONTEXT_API_KEY`, audits run unrendered: the "Render JavaScript" option is off and says an admin sets it (`src/server/lib/audit/rendering-policy.ts`), and a rendered audit asked for through MCP is refused with the same sentence. Without `CRAWLER_ACCESS_SECRET`, the crawler-access form (Settings → Shopify, and the bot-protection advice on an audit) says an admin sets it instead of offering to save a signature; audits of unprotected sites are unaffected. Without `OPENROUTER_MODEL`, the AI features run on the default model in `src/server/lib/openrouter.ts`.
+
+## Google Drive settings archive
+
+The optional archive uses a dedicated Google OAuth client and the `drive.file`
+scope. An owner or admin connects an account and selects the target folder in
+Google Picker; OpenSEO checks that the selected item is a writable folder.
+OAuth access and refresh tokens are encrypted at rest with
+`GOOGLE_DRIVE_ARCHIVE_TOKEN_KEY_B64`, separate from the key that encrypts
+snapshot content. A short-lived access token is returned without caching only
+to open Picker. The archive uploads the encrypted snapshot envelope, reserves
+one Drive file ID in the durable outbox, and verifies retries by reading the
+file back and checking its SHA-256 digest.
+
+The production callback is
+`https://autogeo.flexsentlabs.com/api/google-drive/archive/oauth/callback`.
+Listing it in source does not prove that a production deployment serves it,
+that DNS and TLS route it correctly, or that the dedicated Google OAuth client
+has been registered. Those checks must pass before requesting user consent or
+enabling real Drive delivery. The callback must match the exact HTTPS origin
+and URI configured on the dedicated client.
+
+## Backup scope assessment
+
+This is a source-level inventory, not evidence about a deployed environment.
+The Every App manifest provisions D1 (`DB`), KV (`KV`), an app R2 binding, a
+helper audit Worker, Durable Objects, Workflows and migrations. The gateway
+owns provider credentials and Google Workspace state for Search Console and
+Analytics; OpenSEO stores its dedicated Drive archive connection in its own
+database. A full backup for this mode must identify and verify the state,
+required secrets and restore configuration for each resource actually enabled
+by the deployment.
+
+[`scripts/celld/backup.mjs`](../../scripts/celld/backup.mjs) is for the
+standalone Docker deployment: it archives the CELLD storage and configuration
+volumes and verifies file checksums. It does not export Every App D1, KV, R2,
+Durable Object or gateway-owned state, so it is not a full-backup procedure for
+this deployment mode.
+
+The Google Drive project-settings archive stores only encrypted project
+settings snapshots. It does not back up the database, results, users and
+permissions, object storage, gateway connections or deployment configuration.
+Neither a complete Every App backup nor a restore has been demonstrated; do not
+describe this settings archive as a full backup or enable automatic retention
+deletion on its basis.
 
 ## Run it locally
 

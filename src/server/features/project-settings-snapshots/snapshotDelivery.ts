@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { runBatch } from "@/db/runBatch";
 import { projectSettingsSnapshotOutbox } from "@/db/schema";
@@ -21,8 +21,10 @@ export interface EncryptedProjectSettingsSnapshot {
  * same envelope after an earlier acknowledgement was lost.
  */
 export interface ProjectSettingsSnapshotArchivePort {
+  generateFileId(projectId: string): Promise<string>;
   putEncryptedSnapshot(
     snapshot: EncryptedProjectSettingsSnapshot,
+    fileId: string,
   ): Promise<void>;
 }
 
@@ -51,6 +53,35 @@ async function confirmOutboxRow(id: string): Promise<boolean> {
     .where(eq(projectSettingsSnapshotOutbox.id, id))
     .limit(1);
   return row?.status === "confirmed";
+}
+
+async function reserveArchiveFileId(
+  id: string,
+  projectId: string,
+  archive: ProjectSettingsSnapshotArchivePort,
+): Promise<string> {
+  const candidate = await archive.generateFileId(projectId);
+  await runBatch((tx) => [
+    tx
+      .update(projectSettingsSnapshotOutbox)
+      .set({ archiveFileId: candidate })
+      .where(
+        and(
+          eq(projectSettingsSnapshotOutbox.id, id),
+          eq(projectSettingsSnapshotOutbox.status, "unconfirmed"),
+          isNull(projectSettingsSnapshotOutbox.archiveFileId),
+        ),
+      ),
+  ]);
+
+  const [row] = await db
+    .select({ archiveFileId: projectSettingsSnapshotOutbox.archiveFileId })
+    .from(projectSettingsSnapshotOutbox)
+    .where(eq(projectSettingsSnapshotOutbox.id, id))
+    .limit(1);
+  if (!row?.archiveFileId)
+    throw new Error("Project settings snapshot archive ID was not reserved.");
+  return row.archiveFileId;
 }
 
 /**
@@ -83,6 +114,7 @@ export async function deliverPendingProjectSettingsSnapshots(
       schemaVersion: projectSettingsSnapshotOutbox.schemaVersion,
       iv: projectSettingsSnapshotOutbox.iv,
       ciphertext: projectSettingsSnapshotOutbox.ciphertext,
+      archiveFileId: projectSettingsSnapshotOutbox.archiveFileId,
     })
     .from(projectSettingsSnapshotOutbox)
     .innerJoin(
@@ -109,15 +141,21 @@ export async function deliverPendingProjectSettingsSnapshots(
   for (const row of pending) {
     attempted++;
     try {
-      await archive.putEncryptedSnapshot({
-        projectId: row.projectId,
-        revision: row.revision,
-        idempotencyKey: row.idempotencyKey,
-        algorithm: row.algorithm,
-        schemaVersion: row.schemaVersion,
-        iv: row.iv,
-        ciphertext: row.ciphertext,
-      });
+      const fileId =
+        row.archiveFileId ??
+        (await reserveArchiveFileId(row.id, row.projectId, archive));
+      await archive.putEncryptedSnapshot(
+        {
+          projectId: row.projectId,
+          revision: row.revision,
+          idempotencyKey: row.idempotencyKey,
+          algorithm: row.algorithm,
+          schemaVersion: row.schemaVersion,
+          iv: row.iv,
+          ciphertext: row.ciphertext,
+        },
+        fileId,
+      );
       if (await confirmOutboxRow(row.id)) confirmed++;
     } catch {
       // Keep the row unconfirmed. The archive may have accepted the write but
