@@ -3,6 +3,9 @@ import { db } from "@/db";
 import {
   aiPrompts,
   aiTrackers,
+  projectCompetitors,
+  projectContextSections,
+  projectKeyPages,
   projectSettingsSnapshotOutbox,
   projectSettingsSnapshotRevisions,
   projects,
@@ -15,6 +18,31 @@ type Tx = Parameters<Parameters<typeof runBatch>[0]>[0];
 type ProjectRow = typeof projects.$inferSelect;
 type TrackerRow = typeof aiTrackers.$inferSelect;
 type QuestionRow = typeof aiPrompts.$inferSelect;
+type KeyPageRole = "hub" | "spoke" | "money" | "other";
+
+function sortedSnapshotRows<T>(
+  rows: T[],
+  compare: (left: T, right: T) => number,
+): T[] {
+  const sorted: T[] = [];
+  for (const row of rows) {
+    const index = sorted.findIndex((existing) => compare(existing, row) > 0);
+    if (index === -1) sorted.push(row);
+    else sorted.splice(index, 0, row);
+  }
+  return sorted;
+}
+
+export interface ProjectSettingsSnapshotContext {
+  sections: { key: string; title: string | null; content: string }[];
+  competitors: { domain: string; name: string | null; notes: string | null }[];
+  keyPages: {
+    url: string;
+    role: KeyPageRole;
+    topic: string | null;
+    notes: string | null;
+  }[];
+}
 
 export interface ProjectSettingsSnapshot {
   clientId: string;
@@ -50,12 +78,26 @@ export interface ProjectSettingsSnapshot {
     paused: boolean;
     archived: boolean;
   }[];
+  /** Restorable project memory, excluding provenance and transient research history. */
+  context: ProjectSettingsSnapshotContext;
+}
+
+export interface ProjectSettingsRows {
+  project: ProjectRow;
+  tracker: TrackerRow | null;
+  questions: QuestionRow[];
+  context: {
+    sections: (typeof projectContextSections.$inferSelect)[];
+    competitors: (typeof projectCompetitors.$inferSelect)[];
+    keyPages: (typeof projectKeyPages.$inferSelect)[];
+  };
 }
 
 export function makeProjectSettingsSnapshot(input: {
   project: ProjectRow;
   tracker: TrackerRow | null;
   questions: QuestionRow[];
+  context?: ProjectSettingsSnapshotContext;
 }): ProjectSettingsSnapshot {
   const { project, tracker } = input;
   return {
@@ -94,10 +136,39 @@ export function makeProjectSettingsSnapshot(input: {
       paused: question.paused,
       archived: question.archived,
     })),
+    context: {
+      sections: sortedSnapshotRows(
+        (input.context?.sections ?? []).map(({ key, title, content }) => ({
+          key,
+          title,
+          content,
+        })),
+        (left, right) => left.key.localeCompare(right.key),
+      ),
+      competitors: sortedSnapshotRows(
+        (input.context?.competitors ?? []).map(({ domain, name, notes }) => ({
+          domain,
+          name,
+          notes,
+        })),
+        (left, right) => left.domain.localeCompare(right.domain),
+      ),
+      keyPages: sortedSnapshotRows(
+        (input.context?.keyPages ?? []).map(({ url, role, topic, notes }) => ({
+          url,
+          role,
+          topic,
+          notes,
+        })),
+        (left, right) => left.url.localeCompare(right.url),
+      ),
+    },
   };
 }
 
-export async function readProjectSettingsRows(projectId: string) {
+export async function readProjectSettingsRows(
+  projectId: string,
+): Promise<ProjectSettingsRows | null> {
   const [project] = await db
     .select()
     .from(projects)
@@ -105,11 +176,12 @@ export async function readProjectSettingsRows(projectId: string) {
     .limit(1);
   if (!project) return null;
 
-  const [tracker] = await db
+  const [trackerRow] = await db
     .select()
     .from(aiTrackers)
     .where(eq(aiTrackers.projectId, projectId))
     .limit(1);
+  const tracker: TrackerRow | null = trackerRow ?? null;
   const questions = tracker
     ? await db
         .select()
@@ -117,7 +189,29 @@ export async function readProjectSettingsRows(projectId: string) {
         .where(eq(aiPrompts.trackerId, tracker.id))
         .orderBy(asc(aiPrompts.createdAt), asc(aiPrompts.id))
     : [];
-  return { project, tracker: tracker ?? null, questions };
+  const [sections, competitors, keyPages] = await Promise.all([
+    db
+      .select()
+      .from(projectContextSections)
+      .where(eq(projectContextSections.projectId, projectId))
+      .orderBy(asc(projectContextSections.key)),
+    db
+      .select()
+      .from(projectCompetitors)
+      .where(eq(projectCompetitors.projectId, projectId))
+      .orderBy(asc(projectCompetitors.domain)),
+    db
+      .select()
+      .from(projectKeyPages)
+      .where(eq(projectKeyPages.projectId, projectId))
+      .orderBy(asc(projectKeyPages.url)),
+  ]);
+  return {
+    project,
+    tracker,
+    questions,
+    context: { sections, competitors, keyPages },
+  };
 }
 
 export interface PreparedProjectSettingsMutation<T> {

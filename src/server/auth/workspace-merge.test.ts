@@ -98,6 +98,9 @@ beforeAll(async () => {
       archived INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE project_context_sections (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, key TEXT NOT NULL, title TEXT, content TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, PRIMARY KEY (project_id, key));
+    CREATE TABLE project_competitors (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, domain TEXT NOT NULL, name TEXT, notes TEXT, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, UNIQUE (project_id, domain));
+    CREATE TABLE project_key_pages (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, url TEXT NOT NULL, role TEXT NOT NULL, topic TEXT, notes TEXT, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, UNIQUE (project_id, url));
     CREATE TABLE project_settings_snapshot_revisions (
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
       revision INTEGER NOT NULL,
@@ -192,6 +195,9 @@ async function seedLegacyWorkspaces() {
       'Which exact stored question should be restored?', 1, 0,
       '2026-01-02 00:00:00'
     );
+    INSERT INTO project_context_sections (project_id, key, title, content, updated_at, updated_by) VALUES ('p1-acme', 'business_overview', NULL, 'Acme overview', '2026-01-03T00:00:00Z', 'user'), ('p1-acme', 'custom:launch-plan', 'Launch plan', 'Ship the new site', '2026-01-04T00:00:00Z', 'sam');
+    INSERT INTO project_competitors (id, project_id, domain, name, notes, updated_at, updated_by) VALUES ('competitor-acme', 'p1-acme', 'rival.example', 'Rival', 'Pricing-led', '2026-01-05T00:00:00Z', 'user');
+    INSERT INTO project_key_pages (id, project_id, url, role, topic, notes, updated_at, updated_by) VALUES ('key-page-acme', 'p1-acme', 'https://acme.example/pricing', 'money', 'Pricing', 'Main offer', '2026-01-06T00:00:00Z', 'user');
     INSERT INTO user_onboarding_answers (user_id, organization_id) VALUES
       ('u1', 'delegated-u1');
     INSERT INTO organization_activation_state
@@ -319,6 +325,27 @@ describe("WorkspaceMergeService", () => {
           archived: false,
         },
       ],
+      context: {
+        sections: [
+          { key: "business_overview", title: null, content: "Acme overview" },
+          {
+            key: "custom:launch-plan",
+            title: "Launch plan",
+            content: "Ship the new site",
+          },
+        ],
+        competitors: [
+          { domain: "rival.example", name: "Rival", notes: "Pricing-led" },
+        ],
+        keyPages: [
+          {
+            url: "https://acme.example/pricing",
+            role: "money",
+            topic: "Pricing",
+            notes: "Main offer",
+          },
+        ],
+      },
     });
     expect(
       await rows(

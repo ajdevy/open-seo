@@ -59,10 +59,37 @@ export async function saveWebsiteSetup(
         state.project.aiResearchKeywords ??
         (keywordNames.length ? researchKeywordsValue(keywordNames) : null),
     };
+    const context = {
+      ...state.context,
+      sections: state.context.sections.some(
+        (section) => section.key === "business_overview",
+      )
+        ? state.context.sections
+        : [
+            ...state.context.sections,
+            {
+              key: "business_overview",
+              title: null,
+              content: input.overview,
+            },
+          ],
+      // Setup only seeds the researched competitor list when the project has
+      // no saved competitor rows. Keep that same insert-only rule in the
+      // snapshot projection so it describes the state written in this batch.
+      competitors:
+        state.context.competitors.length > 0
+          ? state.context.competitors
+          : input.competitors.map(({ domain, name, notes }) => ({
+              domain,
+              name,
+              notes,
+            })),
+    };
     return {
       snapshot: makeProjectSettingsSnapshot({
         ...state,
         project,
+        context,
         tracker: trackingToWrite?.tracker ?? state.tracker,
         questions: trackingToWrite?.prompts ?? state.questions,
       }),
