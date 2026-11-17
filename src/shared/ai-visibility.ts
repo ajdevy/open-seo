@@ -95,6 +95,12 @@ export interface AiRun {
 export interface AiTrackerState {
   configured: boolean;
   tracker: AiTracker | null;
+  /** Latest encrypted settings snapshot and whether the remote copy is confirmed. */
+  settingsSnapshot?: {
+    revision: number | null;
+    status: "unavailable" | "unconfirmed" | "confirmed";
+    recoverableAfterServerLoss: boolean;
+  };
   /** Topics of unarchived prompts, in name order. */
   topics: string[];
   prompts: AiPrompt[];

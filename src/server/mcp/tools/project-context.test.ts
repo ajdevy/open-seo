@@ -20,16 +20,25 @@ const mocks = vi.hoisted(() => ({
   deleteResearchLogEntries: vi.fn(),
 }));
 
-vi.mock("cloudflare:workers", () => ({ env: {} }));
+const { testDb } = await vi.hoisted(async () => {
+  const { createAiVisibilityTestDb } =
+    await import("@/server/features/ai-visibility/aiVisibilityTestDb");
+  return { testDb: await createAiVisibilityTestDb() };
+});
+
+vi.mock("cloudflare:workers", () => ({
+  env: { DATABASE_PROVIDER: "d1" },
+}));
+vi.mock("@/db", () => ({ db: testDb.db }));
 vi.mock("@/server/features/projects/services/ProjectService", () => ({
   ProjectService: {
     getProjectForOrganization: mocks.getProjectForOrganization,
   },
 }));
-vi.mock("@/db/runBatch", () => ({
-  runBatch: async (build: (tx: unknown) => readonly Promise<unknown>[]) => {
-    for (const statement of build({})) await statement;
-  },
+vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/server/lib/runtime-env", () => ({
+  getOptionalEnvValue: async (name: string) =>
+    name === "AUTOGEO_QUEUE_MASTER_KEY_B64" ? btoa("k".repeat(32)) : undefined,
 }));
 
 vi.mock(
@@ -43,7 +52,11 @@ vi.mock(
   () => ({ ReportTemplateRepository: mocks }),
 );
 
-beforeEach(() => {
+beforeEach(async () => {
+  await testDb.seedProject();
+  await testDb.client.execute(
+    "UPDATE projects SET id = 'project_1' WHERE id = 'project'",
+  );
   mocks.getProjectForOrganization.mockResolvedValue({ id: "project_1" });
   mocks.listSections.mockResolvedValue([]);
   mocks.listCompetitors.mockResolvedValue([]);
@@ -82,9 +95,8 @@ describe("update_project_context", () => {
   // to MCP in the UI, and silently recording it as a user edit would be
   // invisible everywhere else.
   it("records writes as MCP-authored and answers with the context digest", async () => {
-    // Empty before the write, stored after it, so the digest in the reply is
-    // the post-write state and not an echo of the request.
-    mocks.listSections.mockResolvedValueOnce([]);
+    // The repository's returned state is the post-write context, not an echo of
+    // the request. The pre-write snapshot comes from the real test database.
     mocks.listSections.mockResolvedValue([
       {
         key: "current_goal",

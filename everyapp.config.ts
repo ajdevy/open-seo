@@ -2,9 +2,9 @@
  * OpenSEO on an Every App gateway (AUTH_MODE=everyapp). The gateway signs
  * people in and decides who may open OpenSEO, serves its MCP tools on the
  * gateway's one connector, and holds the DataForSEO, Context and OpenRouter
- * keys, so a deploy needs no OpenSEO settings to open (its own two,
- * CRAWLER_ACCESS_SECRET and OPENROUTER_MODEL, are optional, below). See
- * docs/maintainers/every-app.md.
+ * keys. OpenSEO also requires its snapshot encryption key before it can
+ * accept project-settings writes; the other app-owned keys below are
+ * optional. See docs/maintainers/every-app.md.
  *
  * D1 and KV, one organization (EVERY_APP_ORG_ID, set by the deploy).
  *
@@ -109,17 +109,51 @@ export default {
       optional: true,
       why: "Picks the OpenRouter model for SAM, prompt suggestions and website research (default openai/gpt-5.6-luna). The key itself is the gateway's OPENROUTER_API_KEY.",
     },
+    {
+      name: "AUTOGEO_QUEUE_MASTER_KEY_B64",
+      why: "Required base64-encoded 256-bit key for encrypting project settings snapshots before they enter the durable outbox.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_CLIENT_ID",
+      optional: true,
+      why: "OAuth client ID for the optional owner-managed Google Drive snapshot archive.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_CLIENT_SECRET",
+      optional: true,
+      why: "OAuth client secret for the optional owner-managed Google Drive snapshot archive. Never put it in source control or logs.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_TOKEN_KEY_B64",
+      optional: true,
+      why: "Base64-encoded 256-bit key dedicated to encrypting the Drive OAuth tokens stored by OpenSEO. Keep it separate from the snapshot encryption key.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_REDIRECT_URI",
+      optional: true,
+      why: "Exact HTTPS callback registered on the dedicated OAuth client: https://autogeo.flexsentlabs.com/api/google-drive/archive/oauth/callback.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_PICKER_API_KEY",
+      optional: true,
+      why: "Google Picker API key restricted to the OpenSEO deployment origin and required APIs.",
+    },
+    {
+      name: "GOOGLE_DRIVE_ARCHIVE_PROJECT_NUMBER",
+      optional: true,
+      why: "Google Cloud project number used by Google Picker for the selected Drive archive folder.",
+    },
   ],
   // Both Workers, from cloudflare.config.ts and vite-plugin-every-app.ts.
   build: "pnpm build:report-widgets && AUTH_MODE=everyapp pnpm exec vite build",
   dev: "pnpm build:report-widgets && AUTH_MODE=everyapp pnpm exec vite dev --host 127.0.0.1",
-  // Nothing reaches OpenSEO without a signed-in member: report sharing and
-  // the other unauthenticated routes are hosted-only, and the gateway's tool
-  // calls (`/__everyapp/tools/*`) carry their own gateway-signed tokens.
+  // Interactive routes require a signed-in member. The public Google OAuth
+  // callback only serves a static handoff page; token exchange is authenticated.
+  // Report sharing and other unauthenticated routes remain hosted-only.
   // Every member opens OpenSEO once it is installed, like the other three
   // launch apps (OpenCRM, OpenAnalytics, Agentic Inbox): the documented
   // default for them. Without it a fresh install opens to owners and admins
   // only, and an admin grants the rest by hand.
   access: "everyone",
-  public: [],
+  public: ["/api/google-drive/archive/oauth/callback"],
 } as const;

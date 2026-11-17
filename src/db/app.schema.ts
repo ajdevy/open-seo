@@ -100,6 +100,104 @@ export const projects = sqliteTable(
   ],
 );
 
+// The durable outbox contains only authenticated ciphertext. The separate
+// counter survives confirmation/pruning so a project's revision never moves
+// backwards while the project itself exists.
+export const projectSettingsSnapshotRevisions = sqliteTable(
+  "project_settings_snapshot_revisions",
+  {
+    projectId: text("project_id")
+      .primaryKey()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull(),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+  },
+);
+
+export const projectSettingsSnapshotOutbox = sqliteTable(
+  "project_settings_snapshot_outbox",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    algorithm: text("algorithm").notNull(),
+    schemaVersion: integer("schema_version").notNull(),
+    iv: text("iv").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    archiveFileId: text("archive_file_id"),
+    status: text("status", { enum: ["unconfirmed", "confirmed"] })
+      .notNull()
+      .default("unconfirmed"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+    confirmedAt: text("confirmed_at"),
+  },
+  (table) => [
+    uniqueIndex("project_settings_snapshot_outbox_revision_idx").on(
+      table.projectId,
+      table.revision,
+    ),
+    uniqueIndex("project_settings_snapshot_outbox_idempotency_idx").on(
+      table.idempotencyKey,
+    ),
+    index("project_settings_snapshot_outbox_status_idx").on(
+      table.status,
+      table.projectId,
+      table.revision,
+    ),
+  ],
+);
+
+// A single user-selected Google Drive archive per Every App workspace.
+// OAuth tokens are encrypted with a dedicated app secret before they reach
+// these columns; the Drive file itself is encrypted separately by the
+// project-settings snapshot key.
+export const googleDriveArchiveConnections = sqliteTable(
+  "google_drive_archive_connections",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    connectedByUserId: text("connected_by_user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    googleAccountId: text("google_account_id").notNull(),
+    accountEmail: text("account_email").notNull(),
+    accessTokenCiphertext: text("access_token_ciphertext").notNull(),
+    refreshTokenCiphertext: text("refresh_token_ciphertext").notNull(),
+    accessTokenExpiresAt: text("access_token_expires_at").notNull(),
+    scope: text("scope").notNull(),
+    folderId: text("folder_id"),
+    folderName: text("folder_name"),
+    status: text("status", {
+      enum: ["connected", "reauthorization_required"],
+    })
+      .notNull()
+      .default("connected"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+  },
+  (table) => [
+    uniqueIndex("google_drive_archive_connections_organization_idx").on(
+      table.organizationId,
+    ),
+    index("google_drive_archive_connections_account_idx").on(
+      table.googleAccountId,
+    ),
+  ],
+);
+
 // User-saved keywords within a project. This is the canonical saved list.
 export const savedKeywords = sqliteTable(
   "saved_keywords",

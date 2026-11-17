@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import {
@@ -12,10 +11,34 @@ import {
 } from "vitest";
 import type { runBatch } from "@/db/runBatch";
 import type * as ContextRepositoryModule from "@/server/features/project-context/repositories/ProjectContextRepository";
+import type * as ProjectRepositoryModule from "@/server/features/projects/repositories/ProjectRepository";
+import type * as SnapshotRepositoryModule from "@/server/features/project-settings-snapshots/snapshotRepository";
+import type {
+  commitProjectSettingsMutation as CommitProjectSettingsMutation,
+  PreparedProjectSettingsMutation,
+  ProjectSettingsSnapshot,
+  readProjectSettingsRows as ReadProjectSettingsRows,
+} from "@/server/features/project-settings-snapshots/snapshotRepository";
+import { setupProjectWebsiteSnapshotDb } from "./projectWebsiteSnapshotTestSupport";
 
-const { getProject, listCompetitors } = vi.hoisted(() => ({
-  getProject: vi.fn(),
-  listCompetitors: vi.fn(),
+const {
+  getProject,
+  listCompetitors,
+  readProjectSettingsRows,
+  commitProjectSettingsMutation,
+  snapshots,
+} = vi.hoisted(() => ({
+  getProject:
+    vi.fn<
+      typeof ProjectRepositoryModule.ProjectRepository.getProjectForOrganization
+    >(),
+  listCompetitors:
+    vi.fn<
+      typeof ContextRepositoryModule.ProjectContextRepository.listCompetitors
+    >(),
+  readProjectSettingsRows: vi.fn<typeof ReadProjectSettingsRows>(),
+  commitProjectSettingsMutation: vi.fn<typeof CommitProjectSettingsMutation>(),
+  snapshots: [] as ProjectSettingsSnapshot[],
 }));
 vi.mock("cloudflare:workers", () => ({
   env: { DATABASE_PROVIDER: "d1" },
@@ -25,12 +48,24 @@ vi.mock("@/db", () => ({ db: {} }));
 vi.mock("@/db/runBatch", () => ({
   runBatch: async (build: Parameters<typeof runBatch>[0]) => {
     if (beforeWrite) await beforeWrite();
-    // libsql executes the production Drizzle statements against real SQLite.
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- same Drizzle query surface as the D1 batch executor
     const executor = testDb as unknown as Parameters<typeof build>[0];
     for (const statement of build(executor)) await statement;
   },
 }));
+vi.mock(
+  "@/server/features/project-settings-snapshots/snapshotRepository",
+  async () => {
+    const actual = await vi.importActual<typeof SnapshotRepositoryModule>(
+      "@/server/features/project-settings-snapshots/snapshotRepository",
+    );
+    return {
+      ...actual,
+      readProjectSettingsRows,
+      commitProjectSettingsMutation,
+    };
+  },
+);
 vi.mock("@/server/features/projects/repositories/ProjectRepository", () => ({
   ProjectRepository: { getProjectForOrganization: getProject },
 }));
@@ -69,14 +104,28 @@ import { customer } from "@/server/features/ai-visibility/services/aiVisibilityT
 
 const client = createClient({ url: "file::memory:" });
 const testDb = drizzle(client);
+type Tx = Parameters<Parameters<typeof runBatch>[0]>[0];
 let beforeWrite: (() => Promise<void>) | null;
+async function executePreparedBatch<T>(
+  build: PreparedProjectSettingsMutation<T>["write"],
+) {
+  if (beforeWrite) await beforeWrite();
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- same Drizzle query surface as the D1 batch executor
+  const executor = testDb as unknown as Tx;
+  for (const statement of build(executor)) await statement;
+}
 const projectId = "4a5b6c7d-0000-4000-8000-000000000000";
 const project = {
   id: projectId,
+  organizationId: customer.organizationId,
   name: "Saved name",
   domain: null,
   locationCode: 2840,
   languageCode: "en",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  archivedAt: null,
+  aiResearchKeywords: null,
+  indexnowKey: null,
 };
 const accepted = {
   projectId,
@@ -90,7 +139,6 @@ const accepted = {
       notes: "Researched notes",
     },
     { name: "New rival", domain: "new-rival.com", notes: "New notes" },
-    // Cross the D1 chunk boundary: earlier inserts must not block later ones.
     ...Array.from({ length: 10 }, (_, index) => ({
       name: `Extra rival ${index}`,
       domain: `extra-rival-${index}.com`,
@@ -107,19 +155,20 @@ const accepted = {
 };
 
 beforeAll(async () => {
-  // Use the actual context migration so conflict keys match production.
-  await client.executeMultiple(
-    [
-      `CREATE TABLE projects (id text PRIMARY KEY, organization_id text, name text NOT NULL, domain text, archived_at text, ai_research_keywords text);`,
-      ...readFileSync("drizzle/sqlite/0042_project_memory.sql", "utf8")
-        .split("--> statement-breakpoint")
-        .filter((sql) => !sql.includes("DROP TABLE")),
-    ].join("\n"),
+  readProjectSettingsRows.mockImplementation(
+    await setupProjectWebsiteSnapshotDb(client),
   );
+  commitProjectSettingsMutation.mockImplementation(async (_id, prepare) => {
+    const prepared = await prepare();
+    snapshots.push(prepared.snapshot);
+    await executePreparedBatch(prepared.write);
+    return prepared.result;
+  });
 });
 afterAll(() => client.close());
 beforeEach(async () => {
   beforeWrite = null;
+  snapshots.length = 0;
   getProject.mockResolvedValue(project);
   listCompetitors.mockResolvedValue([]);
   await client.executeMultiple(
@@ -169,6 +218,28 @@ describe("ProjectWebsiteService.save", () => {
       (await client.execute("SELECT content FROM project_context_sections"))
         .rows[0]?.content,
     ).toBe(accepted.overview);
+    const snapshotContext = snapshots[0]?.context;
+    expect(snapshotContext?.sections).toEqual([
+      {
+        key: "business_overview",
+        title: null,
+        content: accepted.overview,
+      },
+    ]);
+    expect(
+      new Set(
+        snapshotContext?.competitors.map(
+          ({ domain, name, notes }) => `${domain}|${name}|${notes}`,
+        ),
+      ),
+    ).toEqual(
+      new Set(
+        accepted.competitors.map(
+          ({ domain, name, notes }) => `${domain}|${name}|${notes}`,
+        ),
+      ),
+    );
+    expect(snapshotContext?.keyPages).toEqual([]);
   });
 
   it.each(["before review", "during save"])(
@@ -182,7 +253,17 @@ describe("ProjectWebsiteService.save", () => {
       };
       if (timing === "before review") {
         await edit();
-        listCompetitors.mockResolvedValue([{ domain: "rival.com" }]);
+        listCompetitors.mockResolvedValue([
+          {
+            id: "existing-rival",
+            projectId,
+            domain: "rival.com",
+            name: "User rival",
+            notes: "User notes",
+            updatedAt: "2026-11-16T10:00:00.000Z",
+            updatedBy: "user",
+          },
+        ]);
       } else beforeWrite = edit;
 
       await ProjectWebsiteService.save(accepted, customer, "user");
@@ -218,4 +299,24 @@ describe("ProjectWebsiteService.save", () => {
       ]);
     },
   );
+
+  it("snapshots the saved competitor list when it appears after the service check", async () => {
+    await saveContext();
+    // Simulate a competitor being saved after the service's initial read.
+    listCompetitors.mockResolvedValue([]);
+
+    await ProjectWebsiteService.save(accepted, customer, "user");
+
+    const savedCompetitors = (
+      await client.execute(
+        "SELECT domain, name, notes FROM project_competitors",
+      )
+    ).rows;
+    expect(savedCompetitors).toEqual([
+      { domain: "rival.com", name: "User rival", notes: "User notes" },
+    ]);
+    expect(snapshots[0]?.context.competitors).toEqual([
+      { domain: "rival.com", name: "User rival", notes: "User notes" },
+    ]);
+  });
 });

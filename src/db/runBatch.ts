@@ -15,6 +15,32 @@ type BatchStatement = Parameters<typeof d1Db.batch>[0][number];
 export const DB_BATCH_SIZE = 100;
 
 /**
+ * Run a read/write sequence on one Postgres transaction connection.
+ *
+ * Unlike `runBatch`, this is for decisions that must read state after an
+ * awaited lock statement. READ COMMITTED gives each following query a fresh
+ * snapshot, which matters when the lock waited for another transaction to
+ * reserve a target-bound archive row.
+ */
+export async function runPostgresTransaction(
+  work: (tx: BatchExecutor) => Promise<void>,
+): Promise<void> {
+  if (getDatabaseProvider() !== "postgres") {
+    throw new Error(
+      "Postgres transaction requested for a non-Postgres database.",
+    );
+  }
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- pg tx exposes the same query builder surface as d1Db
+  const pg = pgDb as unknown as {
+    transaction: (
+      fn: (tx: BatchExecutor) => Promise<unknown>,
+      config: { isolationLevel: "read committed" },
+    ) => Promise<unknown>;
+  };
+  await pg.transaction(work, { isolationLevel: "read committed" });
+}
+
+/**
  * Run a set of write statements atomically on either backend.
  *
  * - D1: collected statements run via `db.batch([...])` (one atomic, ordered call).

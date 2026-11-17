@@ -6,6 +6,7 @@ import { ThemePreferenceRadio } from "@/client/components/ThemePreferenceMenuIte
 import { everyAppAccountQueryOptions } from "@/client/features/every-app/everyAppAccountQueries";
 import { McpConnectionsSettings } from "@/client/features/settings/McpConnectionsSettings";
 import { PrivacySettings } from "@/client/features/settings/PrivacySettings";
+import { GoogleDriveArchiveSettings } from "@/client/features/settings/GoogleDriveArchiveSettings";
 import {
   isEveryAppClientAuthMode,
   isHostedClientAuthMode,
@@ -60,19 +61,22 @@ function PersonalSettings() {
 function EveryAppSettings() {
   const { data: account } = useQuery(everyAppAccountQueryOptions());
   return (
-    <section className="space-y-3">
-      <SectionHeader title="Every App" />
-      <p className="text-sm text-muted-foreground">
-        Your account, teammates and AI connections are managed on Every App.
-      </p>
-      {account?.gatewayUrl ? (
-        <a
-          href={account.gatewayUrl}
-          className="inline-block text-sm font-medium text-primary underline-offset-4 hover:underline"
-        >
-          Open Every App →
-        </a>
-      ) : null}
-    </section>
+    <>
+      <section className="space-y-3">
+        <SectionHeader title="Every App" />
+        <p className="text-sm text-muted-foreground">
+          Your account, teammates and AI connections are managed on Every App.
+        </p>
+        {account?.gatewayUrl ? (
+          <a
+            href={account.gatewayUrl}
+            className="inline-block text-sm font-medium text-primary underline-offset-4 hover:underline"
+          >
+            Open Every App →
+          </a>
+        ) : null}
+      </section>
+      <GoogleDriveArchiveSettings />
+    </>
   );
 }

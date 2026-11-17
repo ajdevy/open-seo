@@ -33,15 +33,15 @@ const AI_ENGINE_NOTES: Record<AiEngine, string> = {
 export async function getTracker(input: {
   projectId: string;
 }): Promise<AiTrackerState> {
-  const [config, competitors, recent, providerKey, project] = await Promise.all(
-    [
+  const [config, competitors, recent, providerKey, project, settingsSnapshot] =
+    await Promise.all([
       repo.getConfiguration(input.projectId),
       repo.listCompetitors(input.projectId),
       repo.listRuns(input.projectId, 10),
       hasDataforseoAccess(),
       repo.getProject(input.projectId),
-    ],
-  );
+      repo.getProjectSettingsSnapshotStatus(input.projectId),
+    ]);
   // A run whose workflow stopped is failed here, so it never looks stuck.
   const runs = await Promise.all(recent.map((run) => reconcileAiRun(run)));
   const [observations, nativeResults, answered, nativeAnswered] =
@@ -70,6 +70,7 @@ export async function getTracker(input: {
     return {
       configured: false,
       tracker: null,
+      settingsSnapshot,
       topics: [],
       prompts: [],
       brands,
@@ -81,6 +82,7 @@ export async function getTracker(input: {
   const { tracker } = config;
   return {
     configured: true,
+    settingsSnapshot,
     tracker: {
       id: tracker.id,
       projectId: tracker.projectId,
