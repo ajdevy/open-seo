@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aiObservations, aiProviderRunReservations, aiRuns } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { runCheck } from "./aiVisibilityRuns";
+import { estimateCost } from "./aiVisibilityCost";
 import { getTracker } from "./aiVisibilityState";
 import { configuration, customer } from "./aiVisibilityTestFixtures";
 import { sendCreditsExhaustedEvent } from "@/server/email/onboarding-drip";
@@ -154,6 +155,77 @@ describe("AI visibility checks", () => {
     expect((await repo.getTracker(projectId))?.lastSkipReason).toContain(
       "rolling 7-day budget",
     );
+  });
+
+  it("includes an admitted run hold in the customer-facing budget estimate", async () => {
+    await runCheck({ projectId, maxCostUsd: 1 }, customer);
+
+    const estimate = await estimateCost({ projectId });
+
+    expect(estimate).toMatchObject({
+      weeklyProviderBudgetUsd: 8,
+      weeklyProviderBudgetAccountedUsd: 0,
+      weeklyProviderBudgetHeldUsd: 0.024,
+      weeklyProviderBudgetAvailableUsd: 7.976,
+      runNowProviderBudgetRemainingUsd: 7.952,
+      weeklyProviderBudgetScope: "installation",
+      weeklyProviderBudgetWindowDays: 7,
+    });
+  });
+
+  it("shows installation-wide reservations from other projects in the estimate", async () => {
+    const secondProjectId = "second-project";
+    await testDb.client.execute(`
+      INSERT INTO projects (id, organization_id, name, domain)
+      VALUES ('second-project', 'organization', 'Second project', 'second.example');
+    `);
+    const secondConfiguration = configuration(
+      { engines: ["claude"], prompts: [{ text: "Which SEO tools?" }] },
+      secondProjectId,
+    );
+    await repo.saveConfiguration(secondConfiguration);
+    const createdAt = new Date().toISOString();
+    await testDb.db.insert(aiRuns).values({
+      id: "second-project-run",
+      trackerId: secondConfiguration.tracker.id,
+      projectId: secondProjectId,
+      trigger: "manual",
+      status: "completed",
+      locationCode: 2840,
+      languageCode: "en",
+      createdAt,
+      completedAt: createdAt,
+    });
+    await testDb.db.insert(aiProviderRunReservations).values({
+      id: "second-project-reservation",
+      projectId: secondProjectId,
+      runId: "second-project-run",
+      reservedUsdMicros: 7_990_000,
+      status: "unknown",
+      createdAt,
+    });
+
+    const estimate = await estimateCost({ projectId });
+
+    expect(estimate).toMatchObject({
+      weeklyProviderBudgetUsd: 8,
+      weeklyProviderBudgetAccountedUsd: 0,
+      weeklyProviderBudgetHeldUsd: 7.99,
+      weeklyProviderBudgetAvailableUsd: 0.01,
+      weeklyProviderBudgetGlobalAvailableUsd: 0.01,
+      weeklyProviderBudgetScope: "installation",
+      weeklyProjectProviderBudgetUsd: 8,
+      weeklyProjectProviderBudgetAvailableUsd: 8,
+      weeklyProviderBudgetWindowDays: 7,
+    });
+
+    const refusedCheck = runCheck({ projectId, maxCostUsd: 1 }, customer);
+    await expect(refusedCheck).rejects.toHaveProperty(
+      "reason",
+      "PROVIDER_BUDGET_EXCEEDED",
+    );
+    await expect(refusedCheck).rejects.toThrow("installation-wide");
+    expect(workflow.create).not.toHaveBeenCalled();
   });
 
   it("refuses a check the credits cannot cover before it starts, and says why on the tracker", async () => {

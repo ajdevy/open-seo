@@ -131,6 +131,7 @@ export const {
   aiPrompts,
   aiRuns,
   aiProviderRunReservations,
+  aiProviderRunBudgetLocks,
   aiObservations,
   aiNativeResults,
   aiNativeSources,

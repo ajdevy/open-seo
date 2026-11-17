@@ -24,15 +24,18 @@ const saved = () =>
   }).rows;
 
 describe("AI configuration projection", () => {
-  it("creates a weekly tracker, first check at least a week out, in the project market with two consumer engines and General prompts", () => {
-    // Late in the UTC day, past the scheduler's 04:00–10:00 UTC slots.
+  it("creates a weekly tracker on the default Moscow slot without starting a baseline run", () => {
     vi.useFakeTimers({ now: new Date("2026-09-05T23:00:00.000Z") });
     const rows = saved();
     vi.useRealTimers();
-    expect(rows.tracker.nextCheckAt).toMatch(/^2026-09-13T0/);
+    expect(rows.tracker.nextCheckAt).toBe("2026-09-09T07:00:00.000Z");
     expect(rows.tracker).toMatchObject({
       enabled: true,
       scheduleInterval: "weekly",
+      scheduleWeekday: 3,
+      scheduleHour: 10,
+      scheduleMinute: 0,
+      scheduleTimeZone: "Europe/Moscow",
       locationCode: 2100,
       languageCode: "bg",
       chatgpt: true,

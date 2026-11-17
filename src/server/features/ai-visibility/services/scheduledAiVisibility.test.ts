@@ -49,17 +49,19 @@ async function dueTracker(
     scheduleHour?: number | null;
     scheduleMinute?: number | null;
     scheduleTimeZone?: string | null;
+    engine?: "chatgpt" | "claude";
   } = {},
 ) {
+  const { engine = "chatgpt", ...trackerSchedule } = schedule;
   const rows = configuration(
-    { engines: ["chatgpt"], prompts: [{ text: "Which SEO tools?", paused }] },
+    { engines: [engine], prompts: [{ text: "Which SEO tools?", paused }] },
     projectId,
   );
   await repo.saveConfiguration(rows);
   await repo.updateTracker(rows.tracker.id, {
     enabled: true,
     nextCheckAt: due,
-    ...schedule,
+    ...trackerSchedule,
   });
 }
 
@@ -105,6 +107,25 @@ it("records a skipped check for credits on the tracker without starting it", asy
     "INSUFFICIENT_CREDITS",
   );
   expect(await repo.listRuns("project")).toEqual([]);
+});
+
+it("skips a scheduled run when its shared rolling provider budget is exhausted", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
+  await dueTracker("project", false, { engine: "claude" });
+  const tracker = await repo.getTracker("project");
+  if (!tracker) throw new Error("Tracker fixture was not saved.");
+  await repo.updateTracker(tracker.id, { weeklyProviderBudgetCents: 1 });
+
+  await runScheduledAiVisibility();
+
+  expect((await repo.getTracker("project"))?.lastSkipReason).toContain(
+    "rolling 7-day budget",
+  );
+  expect(await repo.listRuns("project")).toMatchObject([
+    { trigger: "scheduled", status: "failed" },
+  ]);
+  expect(workflow.create).not.toHaveBeenCalled();
 });
 
 it("keeps both the skipped DST slot and insufficient-credit notices", async () => {
@@ -317,6 +338,7 @@ it("pauses an incomplete saved weekly local-time schedule instead of retrying it
     scheduleInterval: "weekly",
     nextCheckAt: "2026-03-01T14:00:00.000Z",
     scheduleHour: 9,
+    scheduleMinute: null,
     scheduleTimeZone: "America/New_York",
   });
 
@@ -335,6 +357,10 @@ it("keeps legacy trackers on the fixed UTC-anchor recurrence", async () => {
   await dueTracker("project", false, {
     scheduleInterval: "weekly",
     nextCheckAt: "2026-03-01T14:00:00.000Z",
+    scheduleWeekday: null,
+    scheduleHour: null,
+    scheduleMinute: null,
+    scheduleTimeZone: null,
   });
 
   await runScheduledAiVisibility();

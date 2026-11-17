@@ -113,11 +113,20 @@ export function TrackerSetupReview({
           per month if it runs {review.estimate.scheduleInterval}.
         </p>
         <p>
-          Provider budget:{" "}
+          Installation-wide provider budget:{" "}
           <strong>{aiMoney(review.estimate.weeklyProviderBudgetUsd)}</strong>{" "}
-          per project, rolling 7 days.{" "}
-          {aiMoney(review.estimate.weeklyProviderBudgetAvailableUsd)} is
-          available before this check.
+          over a rolling 7 days, with{" "}
+          <strong>
+            {aiMoney(review.estimate.weeklyProviderBudgetGlobalAvailableUsd)}
+          </strong>{" "}
+          available across all projects. This project's{" "}
+          <strong>
+            {aiMoney(review.estimate.weeklyProjectProviderBudgetUsd)}
+          </strong>{" "}
+          cap has{" "}
+          {aiMoney(review.estimate.weeklyProjectProviderBudgetAvailableUsd)}
+          available; this check needs room for up to{" "}
+          {aiMoney(review.estimate.providerCostUsd)}.
         </p>
         {!fitsWeeklyProviderBudget && (
           <p className="font-medium text-destructive">

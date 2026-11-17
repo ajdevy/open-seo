@@ -5,7 +5,10 @@ import {
   type AiBrand,
   type AiEngine,
 } from "@/shared/ai-visibility";
-import { computeNextCheckAt } from "@/shared/rank-tracking";
+import {
+  computeNextAiWallClockCheckAt,
+  DEFAULT_AI_WEEKLY_SCHEDULE,
+} from "@/shared/ai-visibility-schedule";
 import { applyMarket } from "./aiVisibilityMarket";
 import type {
   ConfigurationRows,
@@ -84,18 +87,6 @@ export function aiBrands(
   return [...brands.values()];
 }
 
-/**
- * A new tracker's first check, at least a full week out. The shared weekly
- * slot is seven calendar days ahead at 04:00–10:00 UTC, which lands short of
- * a week for trackers created later in the UTC day.
- */
-function firstWeeklyCheckAt() {
-  const next = new Date(computeNextCheckAt("weekly"));
-  if (next.getTime() < Date.now() + 7 * 86_400_000)
-    next.setUTCDate(next.getUTCDate() + 1);
-  return next.toISOString();
-}
-
 export function projectAiConfiguration(input: {
   previous: ConfigurationRows | null;
   projectId: string;
@@ -109,23 +100,27 @@ export function projectAiConfiguration(input: {
   skipped: number;
 } {
   const { previous, patch, now } = input;
+  const firstWeeklyCheckAt = computeNextAiWallClockCheckAt(
+    DEFAULT_AI_WEEKLY_SCHEDULE,
+    now,
+  );
   const rows: ConfigurationRows = previous
     ? structuredClone(previous)
     : {
         tracker: {
           id: crypto.randomUUID(),
           projectId: input.projectId,
-          // New tracking runs weekly. The first check is a week out, so
-          // creating a tracker never charges on its own.
+          // New tracking uses the owner's default Wednesday Moscow slot.
+          // Creating a tracker stores only a future slot; it starts no run.
           enabled: true,
           ...engineColumns(["chatgpt", "gemini"]),
           ...input.projectMarket,
           scheduleInterval: "weekly",
-          scheduleWeekday: null,
-          scheduleHour: null,
-          scheduleMinute: null,
-          scheduleTimeZone: null,
-          nextCheckAt: firstWeeklyCheckAt(),
+          scheduleWeekday: DEFAULT_AI_WEEKLY_SCHEDULE.weekday,
+          scheduleHour: DEFAULT_AI_WEEKLY_SCHEDULE.hour,
+          scheduleMinute: DEFAULT_AI_WEEKLY_SCHEDULE.minute,
+          scheduleTimeZone: DEFAULT_AI_WEEKLY_SCHEDULE.timeZone,
+          nextCheckAt: firstWeeklyCheckAt,
           lastSkipReason: null,
           weeklyProviderBudgetCents:
             patch.weeklyProviderBudgetUsd === undefined

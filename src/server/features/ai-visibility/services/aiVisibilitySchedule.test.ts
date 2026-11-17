@@ -77,7 +77,12 @@ it("rejects a weekly timezone schedule without a weekday before saving", async (
     },
   };
 
-  expect(setAiScheduleSchema.safeParse(input).success).toBe(false);
+  expect(
+    setAiScheduleSchema.safeParse({
+      ...input,
+      projectId: "00000000-0000-4000-8000-000000000001",
+    }).success,
+  ).toBe(false);
   const before = await repo.getTracker("project");
   if (!before) throw new Error("Tracker fixture was not saved.");
 
@@ -161,7 +166,6 @@ it("clears weekly wall-clock settings when rescheduling another cadence", async 
       scheduleTime: {
         hour: 10,
         minute: 30,
-        timeZone: "Europe/Berlin",
       },
     },
     customer,
@@ -176,7 +180,39 @@ it("clears weekly wall-clock settings when rescheduling another cadence", async 
   });
 });
 
+it("rejects a timezone on monthly schedules instead of silently using UTC", async () => {
+  const tracker = await repo.getTracker("project");
+  if (!tracker) throw new Error("Tracker fixture was not saved.");
+  const input = {
+    projectId: "project",
+    enabled: true,
+    scheduleTime: {
+      hour: 10,
+      minute: 30,
+      timeZone: "Europe/Berlin",
+    },
+  };
+
+  await repo.updateTracker(tracker.id, { scheduleInterval: "monthly" });
+  const before = await repo.getTracker("project");
+  if (!before) throw new Error("Tracker fixture was not saved.");
+  expect(
+    setAiScheduleSchema.safeParse({
+      ...input,
+      projectId: "00000000-0000-4000-8000-000000000001",
+      scheduleInterval: "monthly",
+    }).success,
+  ).toBe(false);
+  await expect(setSchedule(input, customer)).rejects.toMatchObject({
+    reason: "INVALID_SCHEDULE_TIME",
+  });
+
+  expect(await repo.getTracker("project")).toEqual(before);
+});
+
 it("rejects an invalid IANA timezone before the schedule is saved", async () => {
+  const before = await repo.getTracker("project");
+  if (!before) throw new Error("Tracker fixture was not saved.");
   const parsed = setAiScheduleSchema.safeParse({
     projectId: "project",
     enabled: true,
@@ -189,12 +225,14 @@ it("rejects an invalid IANA timezone before the schedule is saved", async () => 
   });
 
   expect(parsed.success).toBe(false);
-  expect((await repo.getTracker("project"))?.scheduleTimeZone).toBeNull();
+  expect(await repo.getTracker("project")).toEqual(before);
 });
 
 it("refuses to save a weekly recurrence with an ambiguous next wall time", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-25T05:31:00.000Z"));
+  const before = await repo.getTracker("project");
+  if (!before) throw new Error("Tracker fixture was not saved.");
 
   const result = setSchedule(
     {
@@ -213,7 +251,7 @@ it("refuses to save a weekly recurrence with an ambiguous next wall time", async
   await expect(result).rejects.toBeInstanceOf(AiVisibilityError);
   await expect(result).rejects.toThrow(/occurs twice.*2026-11-01/);
 
-  expect((await repo.getTracker("project"))?.scheduleTimeZone).toBeNull();
+  expect(await repo.getTracker("project")).toEqual(before);
 });
 
 it("keeps timezone-unconfigured schedules on the legacy anchor path", async () => {

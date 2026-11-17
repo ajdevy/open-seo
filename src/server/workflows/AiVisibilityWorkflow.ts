@@ -26,7 +26,12 @@ import { runAiResearchSetup } from "@/server/features/ai-visibility/services/aiR
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { AI_TRACKING_HOLD_TTL_MS } from "@/server/lib/dataforseo";
 import { describeError } from "@/server/lib/errors";
-import { settleAiProviderRunBudget } from "@/server/features/ai-visibility/repositories/AiProviderRunBudgetRepository";
+import {
+  markAiProviderRunBudgetUnknown,
+  releaseAiProviderRunBudget,
+  settleAiProviderRunBudget,
+} from "@/server/features/ai-visibility/repositories/AiProviderRunBudgetRepository";
+import { AiVisibilityRepository as repo } from "@/server/features/ai-visibility/repositories/AiVisibilityRepository";
 
 // One binding serves answer collection runs and the one-time research setup,
 // so setup needs no new workflow infrastructure.
@@ -106,6 +111,7 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       );
     const { runId, customer } = payload;
     let pending: AiPendingTask[] = [];
+    let providerCallMayHaveStarted = false;
     // Each posted batch holds credits until settle charges the answers that
     // arrived, once late reads end or the run fails.
     const holds: AiPostedHold[] = [];
@@ -134,8 +140,15 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     };
     const markFailed = async (error: unknown) => {
       await settle();
-      await pgStep(step, "mark-failed", FREE_STEP, () =>
-        markAiRunFailed(runId),
+      await pgStep(step, "mark-failed-with-provider-budget", FREE_STEP, () =>
+        (async () => {
+          // Release only when the workflow proves no provider dispatch began.
+          // Otherwise preserve the full hold for evidence-based reconciliation.
+          if (providerCallMayHaveStarted)
+            await markAiProviderRunBudgetUnknown(runId);
+          else await releaseAiProviderRunBudget(runId);
+          await markAiRunFailed(runId);
+        })(),
       );
       throw error;
     };
@@ -168,6 +181,7 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       pending = round.pending;
       for (const [index, batch] of round.retry.entries()) {
         try {
+          providerCallMayHaveStarted = true;
           queue(
             await pgStep(step, `repost-${name}-${index}`, SINGLE_ATTEMPT, () =>
               postAiBatch(runId, customer, plan.market, batch),
@@ -196,6 +210,7 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       // pending to poll.
       for (const [index, tasks] of plan.batches.entries())
         try {
+          providerCallMayHaveStarted = true;
           await pgStep(step, `live-${index}`, LIVE_STEP, () =>
             collectAiLiveBatch(runId, customer, plan.market, tasks),
           );
@@ -207,6 +222,7 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     else
       for (const [index, batch] of plan.batches.entries())
         try {
+          providerCallMayHaveStarted = true;
           queue(
             await pgStep(step, `post-${index}`, SINGLE_ATTEMPT, () =>
               postAiBatch(runId, customer, plan.market, batch),
@@ -222,6 +238,7 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     // one free read of them.
     for (const [index, batch] of plan.modelBatches.entries()) {
       try {
+        providerCallMayHaveStarted = true;
         await pgStep(step, `model-${index}`, LIVE_STEP, () =>
           collectAiModelBatch(runId, customer, plan.market, batch),
         );
@@ -279,8 +296,14 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       }
     }
     await settle();
-    await pgStep(step, "settle-provider-budget", FREE_STEP, () =>
-      settleAiProviderRunBudget(runId, new Date().toISOString()),
-    );
+    await pgStep(step, "settle-provider-budget", FREE_STEP, async () => {
+      const observations = await repo.getObservationStatuses([runId]);
+      const outcomeKnown =
+        observations.length > 0 &&
+        observations.every((observation) => observation.status === "completed");
+      if (outcomeKnown)
+        await settleAiProviderRunBudget(runId, new Date().toISOString());
+      else await markAiProviderRunBudgetUnknown(runId);
+    });
   }
 }

@@ -148,8 +148,13 @@ export interface AiCostEstimate {
   weeklyProviderBudgetAccountedUsd: number;
   weeklyProviderBudgetHeldUsd: number;
   weeklyProviderBudgetAvailableUsd: number;
+  weeklyProviderBudgetGlobalAvailableUsd: number;
+  weeklyProjectProviderBudgetUsd: number;
+  weeklyProjectProviderBudgetAccountedUsd: number;
+  weeklyProjectProviderBudgetHeldUsd: number;
+  weeklyProjectProviderBudgetAvailableUsd: number;
   runNowProviderBudgetRemainingUsd: number;
-  weeklyProviderBudgetScope: "project";
+  weeklyProviderBudgetScope: "installation";
   weeklyProviderBudgetWindowDays: 7;
   currency: "USD";
   warnings: string[];

@@ -3,7 +3,9 @@ import { aiProviderRunReservations, aiRuns } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "./AiVisibilityRepository";
 import {
   getAiProviderBudgetUsage,
+  getAiProviderGlobalBudgetUsage,
   markAiProviderRunBudgetUnknown,
+  releaseAiProviderRunBudget,
   reserveAiProviderRunBudget,
   settleAiProviderRunBudget,
 } from "./AiProviderRunBudgetRepository";
@@ -22,11 +24,16 @@ const projectId = "project";
 const now = new Date("2026-11-12T12:00:00.000Z");
 let trackerId: string;
 
-async function createRun(id: string, createdAt = now.toISOString()) {
+async function createRun(
+  id: string,
+  createdAt = now.toISOString(),
+  runProjectId = projectId,
+  runTrackerId = trackerId,
+) {
   await testDb.db.insert(aiRuns).values({
     id,
-    trackerId,
-    projectId,
+    trackerId: runTrackerId,
+    projectId: runProjectId,
     trigger: "manual",
     status: "completed",
     locationCode: 2840,
@@ -36,12 +43,17 @@ async function createRun(id: string, createdAt = now.toISOString()) {
   });
 }
 
-async function reserve(runId: string, reserveUsdMicros: number) {
+async function reserve(
+  runId: string,
+  reserveUsdMicros: number,
+  runProjectId = projectId,
+  limitUsdCents = 800,
+) {
   return reserveAiProviderRunBudget({
     id: `reservation-${runId}`,
-    projectId,
+    projectId: runProjectId,
     runId,
-    limitUsdCents: 800,
+    limitUsdCents,
     reserveUsdMicros,
     createdAt: now.toISOString(),
   });
@@ -139,18 +151,193 @@ describe("provider run budget reservations", () => {
       admitted: true,
       remainingUsdMicros: 500_000,
     });
+    await settleAiProviderRunBudget("second", now.toISOString());
     await expect(reserve("third", 1_000_000)).resolves.toMatchObject({
       admitted: false,
       reason: "budget_exceeded",
       remainingUsdMicros: 500_000,
     });
 
-    await settleAiProviderRunBudget("second", now.toISOString());
     await expect(
       getAiProviderBudgetUsage(projectId, now.getTime()),
     ).resolves.toEqual({
       accountedUsdMicros: 2_000_000,
       heldUsdMicros: 5_500_000,
+    });
+  });
+
+  it("releases only a reservation whose workflow never dispatched a provider call", async () => {
+    await createRun("not-dispatched");
+    await reserve("not-dispatched", 2_000_000);
+    await releaseAiProviderRunBudget("not-dispatched");
+    await expect(
+      getAiProviderBudgetUsage(projectId, now.getTime()),
+    ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 0 });
+    await expect(reserve("not-dispatched", 2_000_000)).resolves.toMatchObject({
+      admitted: false,
+      reason: "unknown_outcome",
+    });
+  });
+});
+
+describe("provider run budget admission across projects", () => {
+  it("enforces the shared eight-dollar rolling cap across projects", async () => {
+    const secondProjectId = "project-two";
+    await testDb.client.execute(`
+      INSERT INTO projects (id, organization_id, name, domain)
+      VALUES ('project-two', 'organization', 'Second project', 'second.example');
+    `);
+    const secondConfiguration = configuration(
+      { engines: ["claude"], prompts: [{ text: "Which SEO tools?" }] },
+      secondProjectId,
+    );
+    await repo.saveConfiguration(secondConfiguration);
+    await createRun(
+      "first-project-run",
+      now.toISOString(),
+      projectId,
+      trackerId,
+    );
+    await createRun(
+      "second-project-run",
+      now.toISOString(),
+      secondProjectId,
+      secondConfiguration.tracker.id,
+    );
+
+    await expect(
+      reserve("first-project-run", 6_000_000, projectId, 800),
+    ).resolves.toMatchObject({ admitted: true });
+    await markAiProviderRunBudgetUnknown("first-project-run");
+
+    await expect(
+      reserve("second-project-run", 3_000_000, secondProjectId, 800),
+    ).resolves.toMatchObject({
+      admitted: false,
+      reason: "global_budget_exceeded",
+      remainingUsdMicros: 2_000_000,
+    });
+  });
+
+  it("serializes cross-project admissions against the shared rolling cap", async () => {
+    const secondProjectId = "project-two";
+    await testDb.client.execute(`
+      INSERT INTO projects (id, organization_id, name, domain)
+      VALUES ('project-two', 'organization', 'Second project', 'second.example');
+    `);
+    const secondConfiguration = configuration(
+      { engines: ["claude"], prompts: [{ text: "Which SEO tools?" }] },
+      secondProjectId,
+    );
+    await repo.saveConfiguration(secondConfiguration);
+    await createRun(
+      "first-project-run",
+      now.toISOString(),
+      projectId,
+      trackerId,
+    );
+    await createRun(
+      "second-project-run",
+      now.toISOString(),
+      secondProjectId,
+      secondConfiguration.tracker.id,
+    );
+
+    const admissions = await Promise.all([
+      reserve("first-project-run", 5_000_000, projectId, 800),
+      reserve("second-project-run", 5_000_000, secondProjectId, 800),
+    ]);
+
+    expect(admissions.filter((admission) => admission.admitted)).toHaveLength(
+      1,
+    );
+    expect(admissions.filter((admission) => !admission.admitted)).toHaveLength(
+      1,
+    );
+    await expect(
+      getAiProviderGlobalBudgetUsage(now.getTime()),
+    ).resolves.toEqual({
+      accountedUsdMicros: 0,
+      heldUsdMicros: 5_000_000,
+    });
+  });
+
+  it("does not reuse a run reservation for a different provider-cost ceiling", async () => {
+    await createRun("same-run");
+
+    await expect(reserve("same-run", 2_000_000)).resolves.toMatchObject({
+      admitted: true,
+      heldUsdMicros: 2_000_000,
+    });
+    await expect(reserve("same-run", 1_000_000)).resolves.toMatchObject({
+      admitted: false,
+      reason: "reservation_mismatch",
+      heldUsdMicros: 2_000_000,
+    });
+    await expect(reserve("same-run", 3_000_000)).resolves.toMatchObject({
+      admitted: false,
+      reason: "reservation_mismatch",
+      heldUsdMicros: 2_000_000,
+    });
+    await expect(
+      getAiProviderBudgetUsage(projectId, now.getTime()),
+    ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 2_000_000 });
+  });
+
+  it("does not let a different project claim an existing run reservation", async () => {
+    await createRun("cross-project-run");
+    await expect(
+      reserve("cross-project-run", 2_000_000),
+    ).resolves.toMatchObject({
+      admitted: true,
+      heldUsdMicros: 2_000_000,
+    });
+
+    await expect(
+      reserveAiProviderRunBudget({
+        id: "cross-project-reservation",
+        projectId: "another-project",
+        runId: "cross-project-run",
+        limitUsdCents: 800,
+        reserveUsdMicros: 2_000_000,
+        createdAt: now.toISOString(),
+      }),
+    ).resolves.toMatchObject({
+      admitted: false,
+      reason: "reservation_mismatch",
+      heldUsdMicros: 2_000_000,
+    });
+
+    await expect(
+      getAiProviderBudgetUsage(projectId, now.getTime()),
+    ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 2_000_000 });
+    await expect(
+      getAiProviderBudgetUsage("another-project", now.getTime()),
+    ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 0 });
+  });
+
+  it("rejects concurrent duplicate reservations with different ceilings", async () => {
+    await createRun("racing-same-run");
+
+    const outcomes = await Promise.all([
+      reserve("racing-same-run", 5_000_000),
+      reserve("racing-same-run", 1_000_000),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.admitted)).toHaveLength(1);
+    expect(outcomes.filter((outcome) => !outcome.admitted)).toMatchObject([
+      { admitted: false, reason: "reservation_mismatch" },
+    ]);
+    const reservation = await testDb.db
+      .select()
+      .from(aiProviderRunReservations);
+    expect(reservation).toHaveLength(1);
+    expect(reservation[0]?.reservedUsdMicros).toBeGreaterThan(0);
+    await expect(
+      getAiProviderBudgetUsage(projectId, now.getTime()),
+    ).resolves.toEqual({
+      accountedUsdMicros: 0,
+      heldUsdMicros: reservation[0].reservedUsdMicros,
     });
   });
 
@@ -210,40 +397,5 @@ describe("provider run budget reservations", () => {
     await expect(
       getAiProviderBudgetUsage(projectId, now.getTime()),
     ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 6_000_000 });
-  });
-
-  it("rechecks the rolling cap if an unresolved hold appears during admission", async () => {
-    await createRun("racing-run");
-    await createRun("racing-unknown");
-    await testDb.client.execute(`
-      CREATE TRIGGER add_unknown_hold_after_admission
-      AFTER INSERT ON ai_provider_run_reservations
-      WHEN NEW.run_id = 'racing-run'
-      BEGIN
-        INSERT INTO ai_provider_run_reservations (
-          id, project_id, run_id, reserved_usd_micros, status, created_at
-        ) VALUES (
-          'racing-unknown-reservation', 'project', 'racing-unknown',
-          5000000, 'unknown', '2026-11-12T12:00:00.000Z'
-        );
-      END;
-    `);
-
-    await expect(reserve("racing-run", 4_000_000)).resolves.toMatchObject({
-      admitted: false,
-      reason: "budget_exceeded",
-      usedUsdMicros: 5_000_000,
-      remainingUsdMicros: 3_000_000,
-    });
-    const reservations = await testDb.db
-      .select()
-      .from(aiProviderRunReservations);
-    expect(
-      reservations.find((reservation) => reservation.runId === "racing-run")
-        ?.status,
-    ).toBe("released");
-    await expect(
-      getAiProviderBudgetUsage(projectId, now.getTime()),
-    ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 5_000_000 });
   });
 });

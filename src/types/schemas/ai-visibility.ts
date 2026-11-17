@@ -108,6 +108,17 @@ export const setAiScheduleSchema = aiProjectSchema
   .superRefine((input, ctx) => {
     if (
       input.enabled &&
+      input.scheduleTime?.timeZone !== undefined &&
+      input.scheduleInterval !== undefined &&
+      input.scheduleInterval !== "weekly"
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["scheduleTime", "timeZone"],
+        message: "A timezone is supported only for weekly schedules.",
+      });
+    if (
+      input.enabled &&
       input.scheduleInterval === "weekly" &&
       input.scheduleTime?.timeZone !== undefined &&
       input.scheduleTime.weekday === undefined

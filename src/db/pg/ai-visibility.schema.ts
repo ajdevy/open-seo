@@ -124,6 +124,8 @@ export const aiProviderRunReservations = pgTable(
       .default("reserved"),
     createdAt: text("created_at").notNull(),
     settledAt: text("settled_at"),
+    reconciliationReference: text("reconciliation_reference"),
+    reconciledAt: text("reconciled_at"),
   },
   (t) => [
     uniqueIndex("ai_provider_run_reservations_run_idx").on(t.runId),
@@ -137,6 +139,16 @@ export const aiProviderRunReservations = pgTable(
       t.createdAt,
     ),
   ],
+);
+
+// A singleton row serializes rolling-budget admissions across projects. The
+// row lock is held only for the reservation transaction, not for the run.
+export const aiProviderRunBudgetLocks = pgTable(
+  "ai_provider_run_budget_locks",
+  {
+    id: text("id").primaryKey(),
+    version: integer("version").notNull().default(0),
+  },
 );
 
 // One answer per prompt and engine in a run. Rows are created pending when the

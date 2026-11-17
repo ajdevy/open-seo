@@ -286,7 +286,7 @@ export function TrackingCostReview({
             <Field>
               <FieldLabel>Weekly provider budget</FieldLabel>
               <FieldDescription>
-                {`${aiMoney(cost.weeklyProviderBudgetUsd)} per project over a rolling 7 days. ${aiMoney(cost.weeklyProviderBudgetAccountedUsd)} accounted and ${aiMoney(cost.weeklyProviderBudgetHeldUsd)} reserved; ${aiMoney(cost.weeklyProviderBudgetAvailableUsd)} available before this run.`}
+                {`${aiMoney(cost.weeklyProviderBudgetUsd)} installation-wide over a rolling 7 days: ${aiMoney(cost.weeklyProviderBudgetAccountedUsd)} accounted, ${aiMoney(cost.weeklyProviderBudgetHeldUsd)} reserved, and ${aiMoney(cost.weeklyProviderBudgetGlobalAvailableUsd)} globally available. This project's ${aiMoney(cost.weeklyProjectProviderBudgetUsd)} cap has ${aiMoney(cost.weeklyProjectProviderBudgetAvailableUsd)} available; this run can use up to ${aiMoney(cost.weeklyProviderBudgetAvailableUsd)} under both limits.`}
               </FieldDescription>
               <FieldDescription>
                 {`This run reserves up to ${aiMoney(providerRunCostUsd)} for all selected provider routes, including retry allowance.`}

@@ -20,7 +20,12 @@ import { scheduledChecksPerMonth } from "@/shared/rank-tracking";
 import type { EstimateAiCostInput } from "@/types/schemas/ai-visibility";
 import { projectPatch } from "./aiVisibilityMutation";
 import { hasDataforseoAccess } from "@/server/lib/provider-access";
-import { getAiProviderBudgetUsage } from "../repositories/AiProviderRunBudgetRepository";
+import {
+  AI_PROVIDER_GLOBAL_BUDGET_USD_CENTS,
+  AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS,
+  getAiProviderBudgetUsage,
+  getAiProviderGlobalBudgetUsage,
+} from "../repositories/AiProviderRunBudgetRepository";
 
 /** Raw provider cost for one answer and one attempt. */
 function aiAnswerUsd(engine: AiEngine, mode: "live" | "queued") {
@@ -73,17 +78,40 @@ export async function estimateCost(
   const hosted = await isHostedServerAuthMode();
   const cost = aiCostForAnswers(answers, hosted, "queued");
   const runNow = aiCostForAnswers(answers, hosted, "live");
-  const usage = await getAiProviderBudgetUsage(input.projectId);
-  const weeklyProviderBudgetUsd =
-    config.tracker.weeklyProviderBudgetCents / 100;
-  const weeklyProviderBudgetAccountedUsd = usage.accountedUsdMicros / 1e6;
-  const weeklyProviderBudgetHeldUsd = usage.heldUsdMicros / 1e6;
-  const weeklyProviderBudgetAvailableUsd = Math.max(
-    weeklyProviderBudgetUsd -
-      weeklyProviderBudgetAccountedUsd -
-      weeklyProviderBudgetHeldUsd,
+  const [projectUsage, globalUsage] = await Promise.all([
+    getAiProviderBudgetUsage(input.projectId),
+    getAiProviderGlobalBudgetUsage(),
+  ]);
+  const weeklyProviderBudgetUsd = AI_PROVIDER_GLOBAL_BUDGET_USD_CENTS / 100;
+  const weeklyProviderBudgetAccountedUsd = globalUsage.accountedUsdMicros / 1e6;
+  const weeklyProviderBudgetHeldUsd = globalUsage.heldUsdMicros / 1e6;
+  const weeklyProviderBudgetGlobalAvailableUsdMicros = Math.max(
+    AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS -
+      globalUsage.accountedUsdMicros -
+      globalUsage.heldUsdMicros,
     0,
   );
+  const weeklyProviderBudgetGlobalAvailableUsd =
+    weeklyProviderBudgetGlobalAvailableUsdMicros / 1e6;
+  const weeklyProjectProviderBudgetUsd =
+    config.tracker.weeklyProviderBudgetCents / 100;
+  const weeklyProjectProviderBudgetAccountedUsd =
+    projectUsage.accountedUsdMicros / 1e6;
+  const weeklyProjectProviderBudgetHeldUsd = projectUsage.heldUsdMicros / 1e6;
+  const weeklyProjectProviderBudgetAvailableUsdMicros = Math.max(
+    config.tracker.weeklyProviderBudgetCents * 10_000 -
+      projectUsage.accountedUsdMicros -
+      projectUsage.heldUsdMicros,
+    0,
+  );
+  const weeklyProjectProviderBudgetAvailableUsd =
+    weeklyProjectProviderBudgetAvailableUsdMicros / 1e6;
+  const weeklyProviderBudgetAvailableUsdMicros = Math.min(
+    weeklyProviderBudgetGlobalAvailableUsdMicros,
+    weeklyProjectProviderBudgetAvailableUsdMicros,
+  );
+  const weeklyProviderBudgetAvailableUsd =
+    weeklyProviderBudgetAvailableUsdMicros / 1e6;
   const liveEngines = scope.engines.filter(aiEngineUsesModelApi);
   const scheduleInterval =
     input.scheduleInterval ?? current?.tracker.scheduleInterval ?? "weekly";
@@ -103,11 +131,18 @@ export async function estimateCost(
     weeklyProviderBudgetAccountedUsd,
     weeklyProviderBudgetHeldUsd,
     weeklyProviderBudgetAvailableUsd,
-    runNowProviderBudgetRemainingUsd: Math.max(
-      weeklyProviderBudgetAvailableUsd - runNow.providerCostUsd,
-      0,
-    ),
-    weeklyProviderBudgetScope: "project",
+    weeklyProviderBudgetGlobalAvailableUsd,
+    weeklyProjectProviderBudgetUsd,
+    weeklyProjectProviderBudgetAccountedUsd,
+    weeklyProjectProviderBudgetHeldUsd,
+    weeklyProjectProviderBudgetAvailableUsd,
+    runNowProviderBudgetRemainingUsd:
+      Math.max(
+        weeklyProviderBudgetAvailableUsdMicros -
+          Math.round(runNow.providerCostUsd * 1e6),
+        0,
+      ) / 1e6,
+    weeklyProviderBudgetScope: "installation",
     weeklyProviderBudgetWindowDays: 7,
     currency: "USD",
     warnings: [

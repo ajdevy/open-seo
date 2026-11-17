@@ -241,10 +241,10 @@ export const estimateAiVisibilityCostTool = defineAiTool({
   output: aiCostOutput,
   readOnly: true,
   description:
-    "Estimate one scheduled check, one-off check, and the monthly cost of a daily, weekly, or monthly schedule without collecting answers. Optional patch estimates proposed settings; promptIds estimates a check of those prompts. costUsd and runNowCostUsd are conservative cost ceilings that include up to three provider attempts per answer. The result also shows the shared per-project rolling 7-day provider budget and how much remains. Show the customer the relevant ceiling and budget before enabling tracking or running a paid check, and pass the approved runNowCostUsd to run_ai_visibility_check as maxCostUsd.",
+    "Estimate one scheduled check, one-off check, and the monthly cost of a daily, weekly, or monthly schedule without collecting answers. Optional patch estimates proposed settings; promptIds estimates a check of those prompts. costUsd and runNowCostUsd are conservative cost ceilings that include up to three provider attempts per answer. The result shows the installation-wide rolling 7-day provider budget, the project cap, and the amount available under both limits. Show the customer the relevant ceiling and budget before enabling tracking or running a paid check, and pass the approved runNowCostUsd to run_ai_visibility_check as maxCostUsd.",
   execute: (s, a) => s.estimateCost(a),
   summarize: (d) =>
-    `${d.observations} answers: up to $${d.costUsd.toFixed(4)} (${d.costCredits} credits) per scheduled check, up to $${d.runNowCostUsd.toFixed(4)} (${d.runNowCostCredits} credits) to run now. Rolling 7-day project budget: $${d.weeklyProviderBudgetUsd.toFixed(2)}, with $${d.weeklyProviderBudgetAvailableUsd.toFixed(4)} available. Estimate on the ${d.scheduleInterval} schedule: up to $${d.monthlyCostUsd.toFixed(2)}/month (${d.checksPerMonth} ${d.checksPerMonth === 1 ? "check" : "checks"}).${d.warnings.length ? ` Warnings: ${d.warnings.join("; ")}` : ""}`,
+    `${d.observations} answers: up to $${d.costUsd.toFixed(4)} (${d.costCredits} credits) per scheduled check, up to $${d.runNowCostUsd.toFixed(4)} (${d.runNowCostCredits} credits) to run now. Rolling 7-day installation-wide provider budget: $${d.weeklyProviderBudgetUsd.toFixed(2)}, with $${d.weeklyProviderBudgetAccountedUsd.toFixed(4)} accounted, $${d.weeklyProviderBudgetHeldUsd.toFixed(4)} reserved, and $${d.weeklyProviderBudgetGlobalAvailableUsd.toFixed(4)} globally available. This project's $${d.weeklyProjectProviderBudgetUsd.toFixed(2)} cap has $${d.weeklyProjectProviderBudgetAvailableUsd.toFixed(4)} available; $${d.weeklyProviderBudgetAvailableUsd.toFixed(4)} is available under both limits. Estimate on the ${d.scheduleInterval} schedule: up to $${d.monthlyCostUsd.toFixed(2)}/month (${d.checksPerMonth} ${d.checksPerMonth === 1 ? "check" : "checks"}).${d.warnings.length ? ` Warnings: ${d.warnings.join("; ")}` : ""}`,
 });
 export const setAiVisibilityScheduleTool = defineAiTool({
   name: "set_ai_visibility_schedule",
@@ -270,7 +270,7 @@ export const runAiVisibilityCheckTool = defineAiTool({
   readOnly: false,
   openWorld: true,
   description:
-    "Start an explicitly approved one-off paid AI check, preserving the schedule. It collects live answers, so results arrive within minutes. maxCostUsd is the conservative runNowCostUsd ceiling the user approved from estimate_ai_visibility_cost; the check is refused if the ceiling or shared project budget is exceeded. Only one check runs per project at a time. Returns a run immediately. Never call this tool to poll: use get_ai_visibility_run with the returned run ID.",
+    "Start an explicitly approved one-off paid AI check, preserving the schedule. It collects live answers, so results arrive within minutes. maxCostUsd is the conservative runNowCostUsd ceiling the user approved from estimate_ai_visibility_cost; the check is refused if the ceiling, installation-wide rolling 7-day provider budget, or project cap is exceeded. Only one check runs per project at a time. Returns a run immediately. Never call this tool to poll: use get_ai_visibility_run with the returned run ID.",
   execute: (s, a, b) => s.runCheck(a, b),
   summarize: (d) =>
     `Run ${d.id}: ${d.status}, ${d.completed}/${d.expected} completed. ${runNextAction(d)}`,

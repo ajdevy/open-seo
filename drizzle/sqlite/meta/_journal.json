@@ -470,6 +470,20 @@
       "when": 1794450168522,
       "tag": "0066_windy_liz_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "6",
+      "when": 1794786307593,
+      "tag": "0067_ancient_odin",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "6",
+      "when": 1794793744144,
+      "tag": "0068_amazing_venus",
+      "breakpoints": true
     }
   ]
 }

@@ -32,15 +32,18 @@ export async function setSchedule(
     return { state: await getTracker(input), run: null };
   }
   const scheduleInterval = input.scheduleInterval ?? tracker.scheduleInterval;
-  if (
-    scheduleInterval === "weekly" &&
-    input.scheduleTime?.timeZone !== undefined &&
-    input.scheduleTime.weekday === undefined
-  )
-    throw new AiVisibilityError(
-      "INVALID_SCHEDULE_TIME",
-      "A weekday is required for a weekly schedule with a timezone.",
-    );
+  if (input.scheduleTime?.timeZone !== undefined) {
+    if (scheduleInterval !== "weekly")
+      throw new AiVisibilityError(
+        "INVALID_SCHEDULE_TIME",
+        "A timezone is supported only for weekly schedules.",
+      );
+    if (input.scheduleTime.weekday === undefined)
+      throw new AiVisibilityError(
+        "INVALID_SCHEDULE_TIME",
+        "A weekday is required for a weekly schedule with a timezone.",
+      );
+  }
   if (!activeAiPrompts(config).length)
     throw new AiVisibilityError(
       "NO_ACTIVE_PROMPTS",

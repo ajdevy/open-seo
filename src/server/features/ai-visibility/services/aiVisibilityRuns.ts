@@ -233,7 +233,11 @@ export async function startRun(
           ? "Another provider run already holds this project's active reservation. No provider request was started."
           : admission.reason === "unknown_outcome"
             ? "This run has an unresolved provider outcome and cannot be started again until that outcome is reconciled."
-            : `This run may use up to $${reservationCost.toFixed(4)} in provider charges, but only $${(admission.remainingUsdMicros / 1e6).toFixed(4)} remains in this project's rolling 7-day budget. No provider request was started.`;
+            : admission.reason === "reservation_mismatch"
+              ? "A different provider-cost ceiling is already reserved for this run. No new provider request was started."
+              : admission.reason === "global_budget_exceeded"
+                ? `This run may use up to $${reservationCost.toFixed(4)} in provider charges, but only $${(admission.remainingUsdMicros / 1e6).toFixed(4)} remains in the installation-wide rolling 7-day provider budget. No provider request was started.`
+                : `This run may use up to $${reservationCost.toFixed(4)} in provider charges, but only $${(admission.remainingUsdMicros / 1e6).toFixed(4)} remains in this project's rolling 7-day budget. No provider request was started.`;
       await failAiRun(id, AI_ANSWER_FAILURES.notStarted);
       await repo.updateTracker(config.tracker.id, {
         lastSkipReason: message,

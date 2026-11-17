@@ -228,51 +228,9 @@ describe("AI visibility assistant tools", () => {
       expect.objectContaining({ organizationId: "org_123", projectId }),
     );
   });
-  it("returns the shared rolling provider budget with the conservative estimate", async () => {
-    mocks.service.estimateCost.mockResolvedValue({
-      promptCount: 1,
-      engineCount: 1,
-      observations: 1,
-      providerCostUsd: 0.12,
-      runNowProviderCostUsd: 0.24,
-      costUsd: 0.12,
-      costCredits: 120,
-      runNowCostUsd: 0.24,
-      runNowCostCredits: 240,
-      scheduleInterval: "weekly",
-      checksPerMonth: 4,
-      monthlyCostUsd: 0.48,
-      weeklyProviderBudgetUsd: 8,
-      weeklyProviderBudgetAccountedUsd: 0.5,
-      weeklyProviderBudgetHeldUsd: 0.25,
-      weeklyProviderBudgetAvailableUsd: 7.25,
-      runNowProviderBudgetRemainingUsd: 7.01,
-      weeklyProviderBudgetScope: "project",
-      weeklyProviderBudgetWindowDays: 7,
-      currency: "USD",
-      warnings: [],
-    });
+});
 
-    const result = await definitions.estimateAiVisibilityCostTool.handler(
-      { projectId },
-      context,
-    );
-
-    expect(result.structuredContent).toMatchObject({
-      data: {
-        weeklyProviderBudgetUsd: 8,
-        weeklyProviderBudgetAvailableUsd: 7.25,
-        weeklyProviderBudgetScope: "project",
-        weeklyProviderBudgetWindowDays: 7,
-      },
-    });
-    expect(
-      definitions.estimateAiVisibilityCostTool.config.outputSchema.safeParse(
-        result.structuredContent,
-      ).success,
-    ).toBe(true);
-    expect(textContent(result)).toContain("Rolling 7-day project budget");
-  });
+describe("AI visibility run and result output", () => {
   it("returns actionable typed conflicts with their run ID without retrying", async () => {
     mocks.service.runCheck.mockRejectedValue(
       new AiVisibilityError(

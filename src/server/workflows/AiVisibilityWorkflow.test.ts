@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   late: vi.fn(),
   settle: vi.fn(),
   settleProviderBudget: vi.fn(),
+  markProviderBudgetUnknown: vi.fn(),
+  releaseProviderBudget: vi.fn(),
+  observationStatuses: vi.fn(),
   finalize: vi.fn(),
   markFailed: vi.fn(),
   sleep: vi.fn(),
@@ -44,7 +47,19 @@ vi.mock("@/server/features/ai-visibility/services/aiVisibilityBilling", () => ({
 }));
 vi.mock(
   "@/server/features/ai-visibility/repositories/AiProviderRunBudgetRepository",
-  () => ({ settleAiProviderRunBudget: mocks.settleProviderBudget }),
+  () => ({
+    markAiProviderRunBudgetUnknown: mocks.markProviderBudgetUnknown,
+    releaseAiProviderRunBudget: mocks.releaseProviderBudget,
+    settleAiProviderRunBudget: mocks.settleProviderBudget,
+  }),
+);
+vi.mock(
+  "@/server/features/ai-visibility/repositories/AiVisibilityRepository",
+  () => ({
+    AiVisibilityRepository: {
+      getObservationStatuses: mocks.observationStatuses,
+    },
+  }),
 );
 vi.mock("./pgStep", () => ({
   pgStep: (
@@ -96,6 +111,10 @@ beforeEach(() => {
   mocks.post.mockResolvedValue({ pending: [task], hold });
   mocks.collect.mockResolvedValue({ pending: [], retry: [] });
   mocks.late.mockResolvedValue([]);
+  mocks.observationStatuses.mockResolvedValue([
+    { status: "completed" },
+    { status: "completed" },
+  ]);
 });
 
 describe("AI visibility workflow", () => {
@@ -206,7 +225,7 @@ describe("AI visibility workflow", () => {
     );
   });
 
-  it("keeps collecting when a live batch's step fails, and finalizes what arrived", async () => {
+  it("holds the provider budget for reconciliation when a paid batch has an unknown outcome", async () => {
     mocks.prepare.mockResolvedValue({
       market: { locationCode: 2840, languageCode: "en" },
       modelBatches: [],
@@ -214,10 +233,18 @@ describe("AI visibility workflow", () => {
       batches: [[], []],
     });
     mocks.live.mockRejectedValueOnce(new Error("internal workflows error"));
+    mocks.observationStatuses.mockResolvedValue([
+      { status: "failed" },
+      { status: "completed" },
+    ]);
     await execute();
     expect(mocks.live).toHaveBeenCalledTimes(2);
     expect(mocks.finalize).toHaveBeenCalledExactlyOnceWith("run");
     expect(mocks.markFailed).not.toHaveBeenCalled();
+    expect(mocks.markProviderBudgetUnknown).toHaveBeenCalledExactlyOnceWith(
+      "run",
+    );
+    expect(mocks.settleProviderBudget).not.toHaveBeenCalled();
   });
 
   it("gives the free bookkeeping steps retries", async () => {
@@ -235,10 +262,18 @@ describe("AI visibility workflow", () => {
     await expect(execute()).rejects.toThrow(error);
     expect(mocks.post).not.toHaveBeenCalled();
     expect(mocks.markFailed).toHaveBeenCalledExactlyOnceWith("run");
-    expect(mocks.steps).toHaveBeenCalledWith("mark-failed", {
-      retries: { limit: 2, delay: "10 seconds" },
-      timeout: "2 minutes",
-    });
+    expect(mocks.releaseProviderBudget).toHaveBeenCalledExactlyOnceWith("run");
+    expect(mocks.markProviderBudgetUnknown).not.toHaveBeenCalled();
+    expect(
+      mocks.releaseProviderBudget.mock.invocationCallOrder[0],
+    ).toBeLessThan(mocks.markFailed.mock.invocationCallOrder[0]);
+    expect(mocks.steps).toHaveBeenCalledWith(
+      "mark-failed-with-provider-budget",
+      {
+        retries: { limit: 2, delay: "10 seconds" },
+        timeout: "2 minutes",
+      },
+    );
   });
 
   it("does not log a rejected poll sleep as a failure, but still marks the run failed", async () => {
@@ -253,5 +288,9 @@ describe("AI visibility workflow", () => {
       hold,
     ]);
     expect(mocks.markFailed).toHaveBeenCalledExactlyOnceWith("run");
+    expect(mocks.markProviderBudgetUnknown).toHaveBeenCalledExactlyOnceWith(
+      "run",
+    );
+    expect(mocks.releaseProviderBudget).not.toHaveBeenCalled();
   });
 });
