@@ -134,7 +134,7 @@ it("keeps the old Drive destination and replays a lost acknowledgement after mer
   });
   await expect(
     cipher.decrypt(
-      movedConnection!.accessTokenCiphertext,
+      movedConnection.accessTokenCiphertext,
       googleDriveTokenContext(
         config,
         "shared-workspace",
@@ -145,7 +145,7 @@ it("keeps the old Drive destination and replays a lost acknowledgement after mer
   ).resolves.toBe("synthetic-access-token");
   await expect(
     cipher.decrypt(
-      movedConnection!.refreshTokenCiphertext,
+      movedConnection.refreshTokenCiphertext,
       googleDriveTokenContext(
         config,
         "shared-workspace",
@@ -169,19 +169,51 @@ it("keeps the old Drive destination and replays a lost acknowledgement after mer
   }> = [];
   let loseAcknowledgement = true;
   const archive: ProjectSettingsSnapshotArchivePort = {
-    generateFileId: async (projectId) => `generated-${projectId}`,
+    generateFileId: async (projectId) => {
+      const [project] = await testDb.db
+        .select({ organizationId: projects.organizationId })
+        .from(projects)
+        .where(eq(projects.id, projectId));
+      if (!project) throw new Error("Archive target project is unavailable.");
+      const [connection] = await testDb.db
+        .select({
+          id: googleDriveArchiveConnections.id,
+          organizationId: googleDriveArchiveConnections.organizationId,
+          googleAccountId: googleDriveArchiveConnections.googleAccountId,
+          folderId: googleDriveArchiveConnections.folderId,
+        })
+        .from(googleDriveArchiveConnections)
+        .where(
+          eq(
+            googleDriveArchiveConnections.organizationId,
+            project.organizationId,
+          ),
+        );
+      if (!connection?.folderId)
+        throw new Error("Archive target is unavailable for the project.");
+      return {
+        fileId: `generated-${projectId}`,
+        target: {
+          connectionId: connection.id,
+          organizationId: connection.organizationId,
+          googleAccountId: connection.googleAccountId,
+          folderId: connection.folderId,
+        },
+      };
+    },
     putEncryptedSnapshot: async (snapshot, fileId) => {
       const [project] = await testDb.db
         .select({ organizationId: projects.organizationId })
         .from(projects)
         .where(eq(projects.id, snapshot.projectId));
+      if (!project) throw new Error("Archive target project is unavailable.");
       const [connection] = await testDb.db
         .select({ folderId: googleDriveArchiveConnections.folderId })
         .from(googleDriveArchiveConnections)
         .where(
           eq(
             googleDriveArchiveConnections.organizationId,
-            project!.organizationId,
+            project.organizationId,
           ),
         );
       if (!connection?.folderId)

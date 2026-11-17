@@ -87,6 +87,14 @@ beforeAll(async () => {
       revision INTEGER NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE google_drive_archive_connections (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      google_account_id TEXT NOT NULL,
+      access_token_ciphertext TEXT NOT NULL,
+      refresh_token_ciphertext TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
     CREATE TABLE project_settings_snapshot_outbox (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

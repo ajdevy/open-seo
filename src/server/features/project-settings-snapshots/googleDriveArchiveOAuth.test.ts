@@ -32,6 +32,7 @@ const state = await vi.hoisted(async () => {
 });
 
 vi.mock("@/db", () => ({ db: state.testDb.db }));
+vi.mock("@/db/runBatch", () => ({ runBatch: state.testDb.runBatch }));
 vi.mock("cloudflare:workers", () => ({ env: { DATABASE_PROVIDER: "d1" } }));
 vi.mock("@/middleware/ensure-user/resolve", () => ({
   resolveUserContextFromHeaders: async () => state.userContext(),
@@ -103,6 +104,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 it("stores OAuth tokens encrypted and only returns a no-store Picker token", async () => {

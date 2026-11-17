@@ -2,6 +2,11 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { runBatch } from "@/db/runBatch";
 import { projectSettingsSnapshotOutbox } from "@/db/schema";
+import {
+  archiveTargetMatchesProject,
+  lockGoogleDriveArchiveConnectionTarget,
+  type GoogleDriveArchiveTargetBinding,
+} from "./archiveTargetRepository";
 
 const DELIVERY_BATCH_SIZE = 100;
 
@@ -21,11 +26,18 @@ export interface EncryptedProjectSettingsSnapshot {
  * same envelope after an earlier acknowledgement was lost.
  */
 export interface ProjectSettingsSnapshotArchivePort {
-  generateFileId(projectId: string): Promise<string>;
+  generateFileId(
+    projectId: string,
+  ): Promise<GeneratedProjectSettingsSnapshotArchiveId>;
   putEncryptedSnapshot(
     snapshot: EncryptedProjectSettingsSnapshot,
     fileId: string,
   ): Promise<void>;
+}
+
+export interface GeneratedProjectSettingsSnapshotArchiveId {
+  fileId: string;
+  target: GoogleDriveArchiveTargetBinding;
 }
 
 export interface ProjectSettingsSnapshotDeliveryResult {
@@ -62,14 +74,16 @@ async function reserveArchiveFileId(
 ): Promise<string> {
   const candidate = await archive.generateFileId(projectId);
   await runBatch((tx) => [
+    lockGoogleDriveArchiveConnectionTarget(tx, candidate.target),
     tx
       .update(projectSettingsSnapshotOutbox)
-      .set({ archiveFileId: candidate })
+      .set({ archiveFileId: candidate.fileId })
       .where(
         and(
           eq(projectSettingsSnapshotOutbox.id, id),
           eq(projectSettingsSnapshotOutbox.status, "unconfirmed"),
           isNull(projectSettingsSnapshotOutbox.archiveFileId),
+          archiveTargetMatchesProject(tx, projectId, candidate.target),
         ),
       ),
   ]);

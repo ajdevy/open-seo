@@ -1,8 +1,9 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, notExists, or, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { db } from "@/db";
 import { googleDriveArchiveConnections, projects } from "@/db/schema";
 import { hasTargetBoundPendingProjectSettingsSnapshots } from "./snapshotRepository";
+import { targetBoundPendingSnapshotQuery } from "./archiveTargetRepository";
 import {
   GOOGLE_DRIVE_FILES_URL,
   OAUTH_SCOPES,
@@ -90,33 +91,9 @@ export async function saveConnection(input: {
     createdAt: now,
     updatedAt: now,
   };
-  const [current] = await db
-    .select({
-      googleAccountId: googleDriveArchiveConnections.googleAccountId,
-      folderId: googleDriveArchiveConnections.folderId,
-      folderName: googleDriveArchiveConnections.folderName,
-    })
-    .from(googleDriveArchiveConnections)
-    .where(
-      eq(
-        googleDriveArchiveConnections.organizationId,
-        input.state.organizationId,
-      ),
-    )
-    .limit(1);
   await db
     .insert(googleDriveArchiveConnections)
-    .values({
-      ...values,
-      folderId:
-        current?.googleAccountId === input.googleAccountId
-          ? current.folderId
-          : null,
-      folderName:
-        current?.googleAccountId === input.googleAccountId
-          ? current.folderName
-          : null,
-    })
+    .values(values)
     .onConflictDoUpdate({
       target: [googleDriveArchiveConnections.organizationId],
       set: {
@@ -127,18 +104,41 @@ export async function saveConnection(input: {
         ...(input.tokens.refresh_token ? { refreshTokenCiphertext } : {}),
         accessTokenExpiresAt: values.accessTokenExpiresAt,
         scope: values.scope,
-        folderId:
-          current?.googleAccountId === input.googleAccountId
-            ? current.folderId
-            : null,
-        folderName:
-          current?.googleAccountId === input.googleAccountId
-            ? current.folderName
-            : null,
+        folderId: sql`case
+          when ${googleDriveArchiveConnections.googleAccountId} = ${input.googleAccountId}
+          then ${googleDriveArchiveConnections.folderId}
+          else null
+        end`,
+        folderName: sql`case
+          when ${googleDriveArchiveConnections.googleAccountId} = ${input.googleAccountId}
+          then ${googleDriveArchiveConnections.folderName}
+          else null
+        end`,
         status: "connected",
         updatedAt: now,
       },
+      setWhere: or(
+        eq(
+          googleDriveArchiveConnections.googleAccountId,
+          input.googleAccountId,
+        ),
+        notExists(
+          targetBoundPendingSnapshotQuery(db, input.state.organizationId),
+        ),
+      ),
     });
+  const [saved] = await db
+    .select({ googleAccountId: googleDriveArchiveConnections.googleAccountId })
+    .from(googleDriveArchiveConnections)
+    .where(
+      eq(
+        googleDriveArchiveConnections.organizationId,
+        input.state.organizationId,
+      ),
+    )
+    .limit(1);
+  if (saved?.googleAccountId !== input.googleAccountId)
+    throw new Error("google_drive_archive_target_change_blocked");
 }
 
 export async function connectionForOrganization(organizationId: string) {
@@ -206,7 +206,28 @@ export async function accessTokenForConnection(
           status: "reauthorization_required",
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(googleDriveArchiveConnections.id, connection.id));
+        .where(
+          and(
+            eq(googleDriveArchiveConnections.id, connection.id),
+            eq(
+              googleDriveArchiveConnections.organizationId,
+              connection.organizationId,
+            ),
+            eq(
+              googleDriveArchiveConnections.googleAccountId,
+              connection.googleAccountId,
+            ),
+            eq(
+              googleDriveArchiveConnections.refreshTokenCiphertext,
+              connection.refreshTokenCiphertext,
+            ),
+            eq(
+              googleDriveArchiveConnections.accessTokenExpiresAt,
+              connection.accessTokenExpiresAt,
+            ),
+            eq(googleDriveArchiveConnections.status, "connected"),
+          ),
+        );
     throw new Error("Google Drive authorization refresh failed.");
   }
   const tokens = tokenResponseSchema.safeParse(payload);
@@ -219,7 +240,7 @@ export async function accessTokenForConnection(
   const expiresAt = new Date(
     Date.now() + tokens.data.expires_in * 1_000,
   ).toISOString();
-  await db
+  const [updatedConnection] = await db
     .update(googleDriveArchiveConnections)
     .set({
       accessTokenCiphertext: encryptedAccessToken,
@@ -234,7 +255,34 @@ export async function accessTokenForConnection(
         : {}),
       updatedAt: new Date().toISOString(),
     })
-    .where(eq(googleDriveArchiveConnections.id, connection.id));
+    .where(
+      and(
+        eq(googleDriveArchiveConnections.id, connection.id),
+        eq(
+          googleDriveArchiveConnections.organizationId,
+          connection.organizationId,
+        ),
+        eq(
+          googleDriveArchiveConnections.googleAccountId,
+          connection.googleAccountId,
+        ),
+        eq(
+          googleDriveArchiveConnections.refreshTokenCiphertext,
+          connection.refreshTokenCiphertext,
+        ),
+        eq(
+          googleDriveArchiveConnections.accessTokenExpiresAt,
+          connection.accessTokenExpiresAt,
+        ),
+        eq(googleDriveArchiveConnections.status, "connected"),
+        connection.folderId === null
+          ? isNull(googleDriveArchiveConnections.folderId)
+          : eq(googleDriveArchiveConnections.folderId, connection.folderId),
+      ),
+    )
+    .returning({ id: googleDriveArchiveConnections.id });
+  if (!updatedConnection)
+    throw new Error("Google Drive connection changed during token refresh.");
   return tokens.data.access_token;
 }
 
@@ -251,6 +299,12 @@ export async function getGoogleDriveArchiveAccessForProject(projectId: string) {
   if (!connection?.folderId)
     throw new Error("Google Drive archive folder has not been selected.");
   return {
+    target: {
+      connectionId: connection.id,
+      organizationId: connection.organizationId,
+      googleAccountId: connection.googleAccountId,
+      folderId: connection.folderId,
+    },
     folderId: connection.folderId,
     accessToken: await accessTokenForConnection(connection, config),
   };
@@ -265,6 +319,12 @@ export async function getGoogleDriveArchiveAccessForOrganization(
   if (!connection?.folderId)
     throw new Error("Google Drive archive folder has not been selected.");
   return {
+    target: {
+      connectionId: connection.id,
+      organizationId: connection.organizationId,
+      googleAccountId: connection.googleAccountId,
+      folderId: connection.folderId,
+    },
     folderId: connection.folderId,
     accessToken: await accessTokenForConnection(connection, config),
   };

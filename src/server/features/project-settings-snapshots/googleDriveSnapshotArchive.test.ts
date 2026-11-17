@@ -11,7 +11,7 @@ import {
 it("stores only the encrypted envelope and verifies idempotent read-back", async () => {
   const harness = createArchiveHarness();
   const saved = snapshot();
-  const fileId = await harness.archive.generateFileId(saved.projectId);
+  const { fileId } = await harness.archive.generateFileId(saved.projectId);
 
   await harness.archive.putEncryptedSnapshot(saved, fileId);
   await harness.archive.putEncryptedSnapshot(saved, fileId);
@@ -46,7 +46,7 @@ it("stores only the encrypted envelope and verifies idempotent read-back", async
 it("accepts a writable My Drive folder selected by Picker", async () => {
   const harness = createArchiveHarness();
   const saved = snapshot();
-  const fileId = await harness.archive.generateFileId(saved.projectId);
+  const { fileId } = await harness.archive.generateFileId(saved.projectId);
 
   await expect(
     harness.archive.putEncryptedSnapshot(saved, fileId),
@@ -72,7 +72,7 @@ it("refuses folders that are trashed or no longer writable", async () => {
 it("does not confirm a remote file whose ciphertext no longer matches", async () => {
   const harness = createArchiveHarness();
   const saved = snapshot();
-  const fileId = await harness.archive.generateFileId(saved.projectId);
+  const { fileId } = await harness.archive.generateFileId(saved.projectId);
   await harness.archive.putEncryptedSnapshot(saved, fileId);
   const file = [...harness.storedFiles.values()][0];
   if (!file) throw new Error("Expected the snapshot to be archived.");
@@ -91,7 +91,7 @@ it("does not confirm a remote file whose ciphertext no longer matches", async ()
 it("deduplicates concurrent uploads using the outbox-reserved file ID", async () => {
   const harness = createArchiveHarness({ concurrentLookups: true });
   const saved = snapshot();
-  const fileId = await harness.archive.generateFileId(saved.projectId);
+  const { fileId } = await harness.archive.generateFileId(saved.projectId);
 
   await Promise.all([
     harness.archive.putEncryptedSnapshot(saved, fileId),
@@ -119,7 +119,7 @@ it("deduplicates concurrent uploads using the outbox-reserved file ID", async ()
 it("does not confirm a retry after the file leaves the selected folder", async () => {
   const harness = createArchiveHarness();
   const saved = snapshot();
-  const fileId = await harness.archive.generateFileId(saved.projectId);
+  const { fileId } = await harness.archive.generateFileId(saved.projectId);
   await harness.archive.putEncryptedSnapshot(saved, fileId);
   const archivedFile = harness.storedFiles.get(fileId);
   if (!archivedFile) throw new Error("Expected the snapshot to be archived.");
@@ -133,7 +133,7 @@ it("does not confirm a retry after the file leaves the selected folder", async (
 it("does not confirm a retry after the file is moved to trash", async () => {
   const harness = createArchiveHarness();
   const saved = snapshot();
-  const fileId = await harness.archive.generateFileId(saved.projectId);
+  const { fileId } = await harness.archive.generateFileId(saved.projectId);
   await harness.archive.putEncryptedSnapshot(saved, fileId);
   const archivedFile = harness.storedFiles.get(fileId);
   if (!archivedFile) throw new Error("Expected the snapshot to be archived.");
@@ -148,6 +148,12 @@ it("rejects invalid selected folder IDs before network access", async () => {
   const fetcher = vi.fn(async () => Response.json({}));
   const archive = createGoogleDriveProjectSettingsSnapshotArchive({
     resolveAccess: async () => ({
+      target: {
+        connectionId: "synthetic-connection-1",
+        organizationId: "synthetic-organization-1",
+        googleAccountId: "synthetic-google-account-1",
+        folderId: "folder/another-user",
+      },
       folderId: "folder/another-user",
       accessToken: "synthetic-access-token",
     }),
@@ -170,6 +176,12 @@ it("keeps Google error response bodies out of surfaced archive errors", async ()
   );
   const archive = createGoogleDriveProjectSettingsSnapshotArchive({
     resolveAccess: async () => ({
+      target: {
+        connectionId: "synthetic-connection-1",
+        organizationId: "synthetic-organization-1",
+        googleAccountId: "synthetic-google-account-1",
+        folderId: FOLDER_ID,
+      },
       folderId: FOLDER_ID,
       accessToken: "synthetic-sensitive-token",
     }),

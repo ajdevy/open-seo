@@ -1,9 +1,14 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, notExists, or } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
+import { runBatch } from "@/db/runBatch";
 import { hasOrgPermission } from "@/lib/org-permissions";
 import { googleDriveArchiveConnections } from "@/db/schema";
 import { resolveUserContextFromHeaders } from "@/middleware/ensure-user/resolve";
+import {
+  lockGoogleDriveArchiveConnectionTarget,
+  targetBoundPendingSnapshotQuery,
+} from "./archiveTargetRepository";
 import { hasTargetBoundPendingProjectSettingsSnapshots } from "./snapshotRepository";
 import {
   accessTokenForConnection,
@@ -103,15 +108,52 @@ async function handleFolderRequest(
     return genericError(409, "archive_target_change_blocked");
   const accessToken = await accessTokenForConnection(connection, config);
   const folder = await verifySelectedFolder(accessToken, input.data.id);
-  await db
-    .update(googleDriveArchiveConnections)
-    .set({
-      folderId: folder.id,
-      folderName: folder.name,
-      status: "connected",
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(googleDriveArchiveConnections.id, connection.id));
+  await runBatch((tx) => [
+    lockGoogleDriveArchiveConnectionTarget(tx, {
+      connectionId: connection.id,
+      organizationId: connection.organizationId,
+      googleAccountId: connection.googleAccountId,
+      folderId: connection.folderId,
+    }),
+    tx
+      .update(googleDriveArchiveConnections)
+      .set({
+        folderId: folder.id,
+        folderName: folder.name,
+        status: "connected",
+        updatedAt: new Date().toISOString(),
+      })
+      .where(
+        and(
+          eq(googleDriveArchiveConnections.id, connection.id),
+          eq(
+            googleDriveArchiveConnections.organizationId,
+            connection.organizationId,
+          ),
+          eq(
+            googleDriveArchiveConnections.googleAccountId,
+            connection.googleAccountId,
+          ),
+          eq(googleDriveArchiveConnections.status, "connected"),
+          connection.folderId === null
+            ? isNull(googleDriveArchiveConnections.folderId)
+            : eq(googleDriveArchiveConnections.folderId, connection.folderId),
+          or(
+            eq(googleDriveArchiveConnections.folderId, folder.id),
+            notExists(
+              targetBoundPendingSnapshotQuery(tx, context.organizationId),
+            ),
+          ),
+        ),
+      ),
+  ]);
+  const current = await connectionForOrganization(context.organizationId);
+  if (
+    current?.id !== connection.id ||
+    current.googleAccountId !== connection.googleAccountId ||
+    current.folderId !== folder.id
+  )
+    return genericError(409, "archive_target_change_blocked");
   return jsonResponse({ folder: { id: folder.id, name: folder.name } });
 }
 
@@ -121,14 +163,10 @@ async function handleDisconnectRequest(
 ) {
   const connection = await connectionForOrganization(context.organizationId);
   if (!connection) return jsonResponse({ disconnected: true });
-  if (
-    await hasTargetBoundPendingProjectSettingsSnapshots(context.organizationId)
-  )
-    return genericError(409, "archive_target_change_blocked");
   const cipher = await tokenCipher(config);
-  let revoked = false;
+  let refreshToken: string | null = null;
   try {
-    const token = await cipher.decrypt(
+    refreshToken = await cipher.decrypt(
       connection.refreshTokenCiphertext,
       googleDriveTokenContext(
         config,
@@ -137,19 +175,60 @@ async function handleDisconnectRequest(
         "refresh",
       ),
     );
-    const response = await fetch(GOOGLE_REVOKE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ token }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    revoked = response.ok || response.status === 400;
   } catch {
     // Local removal remains authoritative; Google can be revoked manually.
   }
-  await db
-    .delete(googleDriveArchiveConnections)
-    .where(eq(googleDriveArchiveConnections.id, connection.id));
+
+  await runBatch((tx) => [
+    lockGoogleDriveArchiveConnectionTarget(tx, {
+      connectionId: connection.id,
+      organizationId: connection.organizationId,
+      googleAccountId: connection.googleAccountId,
+      folderId: connection.folderId,
+    }),
+    tx
+      .delete(googleDriveArchiveConnections)
+      .where(
+        and(
+          eq(googleDriveArchiveConnections.id, connection.id),
+          eq(
+            googleDriveArchiveConnections.organizationId,
+            connection.organizationId,
+          ),
+          eq(
+            googleDriveArchiveConnections.googleAccountId,
+            connection.googleAccountId,
+          ),
+          connection.folderId === null
+            ? isNull(googleDriveArchiveConnections.folderId)
+            : eq(googleDriveArchiveConnections.folderId, connection.folderId),
+          notExists(
+            targetBoundPendingSnapshotQuery(tx, context.organizationId),
+          ),
+        ),
+      ),
+  ]);
+  const [stillConnected] = await db
+    .select({ id: googleDriveArchiveConnections.id })
+    .from(googleDriveArchiveConnections)
+    .where(eq(googleDriveArchiveConnections.id, connection.id))
+    .limit(1);
+  if (stillConnected) return genericError(409, "archive_target_change_blocked");
+
+  let revoked = false;
+  if (refreshToken) {
+    try {
+      const response = await fetch(GOOGLE_REVOKE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token: refreshToken }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      revoked = response.ok || response.status === 400;
+    } catch {
+      // Local removal remains authoritative; Google can be revoked manually.
+    }
+  }
   return jsonResponse({ disconnected: true, googleRevoked: revoked });
 }
 

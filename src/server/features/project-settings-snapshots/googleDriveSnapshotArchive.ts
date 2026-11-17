@@ -1,8 +1,10 @@
 import { z } from "zod";
 import type {
+  GeneratedProjectSettingsSnapshotArchiveId,
   EncryptedProjectSettingsSnapshot,
   ProjectSettingsSnapshotArchivePort,
 } from "./snapshotDelivery";
+import type { GoogleDriveArchiveTargetBinding } from "./archiveTargetRepository";
 
 const GOOGLE_DRIVE_API_URL = "https://www.googleapis.com/drive/v3";
 const GOOGLE_DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3";
@@ -36,6 +38,7 @@ const driveGeneratedIdsSchema = z.object({
 const driveCreateSchema = driveFileSchema;
 
 type DriveAccess = {
+  target: GoogleDriveArchiveTargetBinding;
   folderId: string;
   accessToken: string;
 };
@@ -164,6 +167,8 @@ export function createGoogleDriveProjectSettingsSnapshotArchive(
   async function accessFor(projectId: string): Promise<DriveAccess> {
     const access = await resolveAccess(projectId);
     validateFolderId(access.folderId);
+    if (access.target.folderId !== access.folderId)
+      throw new Error("Google Drive archive target changed during resolution.");
     if (!access.accessToken.trim())
       throw new Error("Google Drive authorization is unavailable.");
     return access;
@@ -275,7 +280,9 @@ export function createGoogleDriveProjectSettingsSnapshotArchive(
   }
 
   return {
-    async generateFileId(projectId: string) {
+    async generateFileId(
+      projectId: string,
+    ): Promise<GeneratedProjectSettingsSnapshotArchiveId> {
       const access = await accessFor(projectId);
       await ensureWritableFolder(access, fetcher);
       const url = new URL(`${GOOGLE_DRIVE_API_URL}/files/generateIds`);
@@ -299,7 +306,10 @@ export function createGoogleDriveProjectSettingsSnapshotArchive(
         driveGeneratedIdsSchema,
         "generated ID",
       );
-      return validateGeneratedFileId(result.ids[0] ?? "");
+      return {
+        fileId: validateGeneratedFileId(result.ids[0] ?? ""),
+        target: access.target,
+      };
     },
     async putEncryptedSnapshot(snapshot, fileId) {
       const reservedFileId = validateGeneratedFileId(fileId);

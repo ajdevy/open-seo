@@ -4,6 +4,12 @@ import { createGoogleDriveProjectSettingsSnapshotArchive } from "./googleDriveSn
 import type { EncryptedProjectSettingsSnapshot } from "./snapshotDelivery";
 
 export const FOLDER_ID = "picked-folder-123";
+const ARCHIVE_TARGET = {
+  connectionId: "synthetic-connection-1",
+  organizationId: "synthetic-organization-1",
+  googleAccountId: "synthetic-google-account-1",
+  folderId: FOLDER_ID,
+};
 
 export const encryptedEnvelopeSchema = z.object({
   algorithm: z.string(),
@@ -149,6 +155,7 @@ export function createArchiveHarness(
     fetcher,
     archive: createGoogleDriveProjectSettingsSnapshotArchive({
       resolveAccess: async () => ({
+        target: ARCHIVE_TARGET,
         folderId: FOLDER_ID,
         accessToken: "synthetic-access-token",
       }),
