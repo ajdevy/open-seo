@@ -8,6 +8,7 @@ describe("Every App snapshot encryption configuration", () => {
     );
 
     expect(secret).toBeDefined();
-    expect(secret?.optional).not.toBe(true);
+    if (!secret) return;
+    expect("optional" in secret ? secret.optional : undefined).not.toBe(true);
   });
 });
