@@ -15,6 +15,21 @@ export interface GoogleDriveArchiveTargetBinding {
   folderId: string;
 }
 
+/**
+ * Lock the current organization connection even when the caller's earlier
+ * read is stale. OAuth reconnect uses this before its transaction-local
+ * pending-snapshot check; reservations and target mutations lock this row too.
+ */
+export function lockGoogleDriveArchiveConnectionForOrganization(
+  tx: Tx,
+  organizationId: string,
+) {
+  return tx
+    .update(googleDriveArchiveConnections)
+    .set({ updatedAt: sql`${googleDriveArchiveConnections.updatedAt}` })
+    .where(eq(googleDriveArchiveConnections.organizationId, organizationId));
+}
+
 export type GoogleDriveArchiveConnectionTarget = Omit<
   GoogleDriveArchiveTargetBinding,
   "folderId"
