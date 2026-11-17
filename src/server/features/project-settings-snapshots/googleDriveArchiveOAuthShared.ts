@@ -19,6 +19,7 @@ export const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 export const OAUTH_SCOPES = ["openid", "email", GOOGLE_DRIVE_SCOPE] as const;
 const STATE_PREFIX = "google-drive-archive:";
 const STATE_TTL_MS = 10 * 60_000;
+const BROWSER_BINDING_LENGTH = 43;
 export const TOKEN_SKEW_MS = 60_000;
 export const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -32,6 +33,7 @@ const stateSchema = z.object({
   userId: z.string().min(1),
   organizationId: z.string().min(1),
   redirectUri: z.string().url(),
+  browserBindingHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
 });
 export type GoogleDriveArchiveOAuthState = z.infer<typeof stateSchema>;
 
@@ -240,6 +242,31 @@ function base64Url(bytes: Uint8Array): string {
     .replace(/=+$/u, "");
 }
 
+export async function hashBrowserBinding(browserBinding: string) {
+  if (
+    !new RegExp(`^[A-Za-z0-9_-]{${BROWSER_BINDING_LENGTH}}$`, "u").test(
+      browserBinding,
+    )
+  )
+    return null;
+  return base64Url(
+    new Uint8Array(
+      await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(browserBinding),
+      ),
+    ),
+  );
+}
+
+export function sameBindingHash(left: string, right: string) {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index++)
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  return difference === 0;
+}
+
 export async function codeVerifier(state: string, clientSecret: string) {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -269,6 +296,7 @@ async function createState(input: {
   userId: string;
   organizationId: string;
   redirectUri: string;
+  browserBindingHash: string;
 }) {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   const state = base64Url(bytes);
@@ -290,8 +318,35 @@ async function createState(input: {
   return state;
 }
 
+function isValidState(state: string | null): state is string {
+  return Boolean(state && /^[A-Za-z0-9_-]{40,64}$/u.test(state));
+}
+
+function parseStateValue(value: string) {
+  try {
+    return stateSchema.parse(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+export async function readState(state: string | null) {
+  if (!isValidState(state)) return null;
+  const [row] = await db
+    .select({ value: verification.value })
+    .from(verification)
+    .where(
+      and(
+        eq(verification.identifier, `${STATE_PREFIX}${state}`),
+        gt(verification.expiresAt, new Date()),
+      ),
+    )
+    .limit(1);
+  return row ? parseStateValue(row.value) : null;
+}
+
 export async function consumeState(state: string | null) {
-  if (!state || !/^[A-Za-z0-9_-]{40,64}$/u.test(state)) return null;
+  if (!isValidState(state)) return null;
   const [row] = await db
     .delete(verification)
     .where(
@@ -302,11 +357,7 @@ export async function consumeState(state: string | null) {
     )
     .returning({ value: verification.value });
   if (!row) return null;
-  try {
-    return stateSchema.parse(JSON.parse(row.value));
-  } catch {
-    return null;
-  }
+  return parseStateValue(row.value);
 }
 
 export async function googleTokenRequest(params: Record<string, string>) {
@@ -331,9 +382,14 @@ export async function createAuthorizationUrl(input: {
   config: DriveArchiveConfig;
   context: { userId: string; organizationId: string };
 }) {
+  const browserBinding = base64Url(crypto.getRandomValues(new Uint8Array(32)));
+  const browserBindingHash = await hashBrowserBinding(browserBinding);
+  if (!browserBindingHash)
+    throw new Error("Google Drive browser binding could not be created.");
   const state = await createState({
     ...input.context,
     redirectUri: input.config.redirectUri,
+    browserBindingHash,
   });
   const verifier = await codeVerifier(state, input.config.clientSecret);
   const url = new URL(GOOGLE_AUTH_URL);
@@ -347,5 +403,5 @@ export async function createAuthorizationUrl(input: {
   url.searchParams.set("state", state);
   url.searchParams.set("code_challenge", await codeChallenge(verifier));
   url.searchParams.set("code_challenge_method", "S256");
-  return url.toString();
+  return { authorizationUrl: url.toString(), browserBinding };
 }

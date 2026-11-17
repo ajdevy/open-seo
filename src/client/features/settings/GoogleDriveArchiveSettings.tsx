@@ -25,6 +25,7 @@ const pickerTokenSchema = z.object({
 });
 const authorizationUrlSchema = z.object({
   authorizationUrl: z.string().url(),
+  browserBinding: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
 });
 const disconnectResponseSchema = z.object({ disconnected: z.boolean() });
 const selectedFolderResponseSchema = z.object({
@@ -194,8 +195,24 @@ export function GoogleDriveArchiveSettings() {
       });
       return parseJson(response, authorizationUrlSchema);
     },
-    onSuccess: ({ authorizationUrl }) => {
-      window.location.assign(authorizationUrl);
+    onSuccess: ({ authorizationUrl, browserBinding }) => {
+      const state = new URL(authorizationUrl).searchParams.get("state");
+      if (!state || !/^[A-Za-z0-9_-]{40,64}$/u.test(state)) {
+        toast.error("Google Drive authorization could not be started.");
+        return;
+      }
+      try {
+        window.sessionStorage.setItem(
+          `open-seo:google-drive-archive:${state}`,
+          browserBinding,
+        );
+      } catch {
+        toast.error(
+          "This browser cannot securely continue Google authorization.",
+        );
+        return;
+      }
+      window.location.replace(authorizationUrl);
     },
     onError: (error) => toast.error(error.message),
   });

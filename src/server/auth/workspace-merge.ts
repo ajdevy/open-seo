@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
-import { and, eq, inArray, isNull, like } from "drizzle-orm";
+import { and, eq, inArray, isNull, like, notExists } from "drizzle-orm";
 import { chunk, firstBy, identity } from "remeda";
 import { db } from "@/db";
 import { getAuthMode } from "@/lib/auth-mode";
+import { lockProjectOrganizations } from "@/server/features/projects/repositories/lockProjectOrganizations";
 import { AppError } from "@/server/lib/errors";
 import {
   commitProjectSettingsMutations,
@@ -62,178 +63,210 @@ async function mergeLegacyWorkspaces() {
     );
   }
 
-  return commitProjectSettingsMutations(async (getPreviousRevision) => {
-    const legacyOrgs = await db
-      .select({ id: organization.id, name: organization.name })
-      .from(organization)
-      .where(legacyWorkspaceFilter);
+  const initialLegacyCount = await countLegacyWorkspaces();
+  if (initialLegacyCount === 0) return { mergedWorkspaces: 0 };
 
-    if (legacyOrgs.length === 0)
-      return {
-        snapshots: [],
-        write: () => [],
-        result: { mergedWorkspaces: 0 },
+  // Project selection and encrypted snapshot preparation happen before the
+  // atomic write. If a project is created in that gap, leave its legacy org in
+  // place and prepare a second batch that snapshots it before deleting the org.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await commitProjectSettingsMutations(async (getPreviousRevision) => {
+      const legacyOrgs = await db
+        .select({ id: organization.id, name: organization.name })
+        .from(organization)
+        .where(legacyWorkspaceFilter);
+
+      if (legacyOrgs.length === 0)
+        return {
+          snapshots: [],
+          write: () => [],
+          result: { mergedWorkspaces: 0 },
+        };
+
+      const legacyIds = legacyOrgs.map((org) => org.id);
+      // Legacy org names are "<email localpart> workspace" — reuse the localpart
+      // to label renamed projects with their previous owner.
+      const ownerLabelByOrgId = new Map(
+        legacyOrgs.map((org) => [org.id, org.name.replace(/ workspace$/, "")]),
+      );
+
+      // Each legacy workspace auto-created a ("Default", no-domain) project, and
+      // the shared workspace allows only one active such project. Rename them
+      // before repointing so the partial unique index can't reject the move —
+      // renaming (never deleting) means a Default that holds work survives intact.
+      const conflictingDefaults = await db
+        .select({ id: projects.id, organizationId: projects.organizationId })
+        .from(projects)
+        .where(
+          and(
+            inArray(projects.organizationId, legacyIds),
+            eq(projects.name, "Default"),
+            isNull(projects.domain),
+            isNull(projects.archivedAt),
+          ),
+        );
+      const conflictingDefaultIds = new Set(
+        conflictingDefaults.map((project) => project.id),
+      );
+      const projectsToMerge = await db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(inArray(projects.organizationId, legacyIds));
+      const previousRevisions = new Map(
+        await Promise.all(
+          projectsToMerge.map(
+            async ({ id }) => [id, await getPreviousRevision(id)] as const,
+          ),
+        ),
+      );
+      const projectStates = await Promise.all(
+        projectsToMerge.map(({ id }) => readProjectSettingsRows(id)),
+      );
+
+      const snapshots = projectStates.flatMap((state) => {
+        if (!state || !legacyIds.includes(state.project.organizationId))
+          return [];
+        const previousRevision = previousRevisions.get(state.project.id);
+        if (previousRevision === undefined) return [];
+        const shouldRenameDefault =
+          conflictingDefaultIds.has(state.project.id) &&
+          state.project.name === "Default" &&
+          state.project.domain === null &&
+          state.project.archivedAt === null;
+        const name = shouldRenameDefault
+          ? `Default (${ownerLabelByOrgId.get(state.project.organizationId) ?? "imported"})`
+          : state.project.name;
+        return [
+          {
+            projectId: state.project.id,
+            previousRevision,
+            snapshot: makeProjectSettingsSnapshot({
+              ...state,
+              project: {
+                ...state.project,
+                organizationId: SHARED_WORKSPACE_ORGANIZATION_ID,
+                name,
+              },
+            }),
+          },
+        ];
+      });
+
+      // Earliest-wins merge of activation milestones across the shared row and
+      // all legacy rows.
+      const activationRows = await db
+        .select()
+        .from(organizationActivationState)
+        .where(
+          inArray(organizationActivationState.organizationId, [
+            SHARED_WORKSPACE_ORGANIZATION_ID,
+            ...legacyIds,
+          ]),
+        );
+      const mergedActivation = {
+        firstMcpAuthorizedAt: earliest(
+          activationRows.map((row) => row.firstMcpAuthorizedAt),
+        ),
+        firstMcpToolCallAt: earliest(
+          activationRows.map((row) => row.firstMcpToolCallAt),
+        ),
       };
 
-    const legacyIds = legacyOrgs.map((org) => org.id);
-    // Legacy org names are "<email localpart> workspace" — reuse the localpart
-    // to label renamed projects with their previous owner.
-    const ownerLabelByOrgId = new Map(
-      legacyOrgs.map((org) => [org.id, org.name.replace(/ workspace$/, "")]),
-    );
+      const projectIds = projectsToMerge.map(({ id }) => id);
+      const repointToShared = {
+        organizationId: SHARED_WORKSPACE_ORGANIZATION_ID,
+      };
 
-    // Each legacy workspace auto-created a ("Default", no-domain) project, and
-    // the shared workspace allows only one active such project. Rename them
-    // before repointing so the partial unique index can't reject the move —
-    // renaming (never deleting) means a Default that holds work survives intact.
-    const conflictingDefaults = await db
-      .select({ id: projects.id, organizationId: projects.organizationId })
-      .from(projects)
-      .where(
-        and(
-          inArray(projects.organizationId, legacyIds),
-          eq(projects.name, "Default"),
-          isNull(projects.domain),
-          isNull(projects.archivedAt),
-        ),
-      );
-    const conflictingDefaultIds = new Set(
-      conflictingDefaults.map((project) => project.id),
-    );
-    const projectsToMerge = await db
-      .select({ id: projects.id })
-      .from(projects)
-      .where(inArray(projects.organizationId, legacyIds));
-    const previousRevisions = new Map(
-      await Promise.all(
-        projectsToMerge.map(
-          async ({ id }) => [id, await getPreviousRevision(id)] as const,
-        ),
-      ),
-    );
-    const projectStates = await Promise.all(
-      projectsToMerge.map(({ id }) => readProjectSettingsRows(id)),
-    );
-
-    const snapshots = projectStates.flatMap((state) => {
-      if (!state || !legacyIds.includes(state.project.organizationId))
-        return [];
-      const previousRevision = previousRevisions.get(state.project.id);
-      if (previousRevision === undefined) return [];
-      const shouldRenameDefault =
-        conflictingDefaultIds.has(state.project.id) &&
-        state.project.name === "Default" &&
-        state.project.domain === null &&
-        state.project.archivedAt === null;
-      const name = shouldRenameDefault
-        ? `Default (${ownerLabelByOrgId.get(state.project.organizationId) ?? "imported"})`
-        : state.project.name;
-      return [
-        {
-          projectId: state.project.id,
-          previousRevision,
-          snapshot: makeProjectSettingsSnapshot({
-            ...state,
-            project: {
-              ...state.project,
-              organizationId: SHARED_WORKSPACE_ORGANIZATION_ID,
-              name,
-            },
-          }),
-        },
-      ];
+      return {
+        snapshots,
+        write: (tx) => [
+          // Project creation takes the same row lock inside its write batch. This
+          // makes a create either visible to the guarded delete below or fail its
+          // organization FK after this merge has removed the legacy org.
+          lockProjectOrganizations(tx, legacyIds),
+          ...conflictingDefaults.map((project) =>
+            tx
+              .update(projects)
+              .set({
+                name: `Default (${ownerLabelByOrgId.get(project.organizationId) ?? "imported"})`,
+              })
+              .where(
+                and(
+                  eq(projects.id, project.id),
+                  eq(projects.organizationId, project.organizationId),
+                  inArray(projects.organizationId, legacyIds),
+                  eq(projects.name, "Default"),
+                  isNull(projects.domain),
+                  isNull(projects.archivedAt),
+                ),
+              ),
+          ),
+          ...chunk(projectIds, 50).map((ids) =>
+            tx
+              .update(projects)
+              .set(repointToShared)
+              .where(
+                and(
+                  inArray(projects.id, ids),
+                  inArray(projects.organizationId, legacyIds),
+                ),
+              ),
+          ),
+          tx
+            .update(userOnboardingAnswers)
+            .set(repointToShared)
+            .where(inArray(userOnboardingAnswers.organizationId, legacyIds)),
+          tx
+            .update(gscConnections)
+            .set(repointToShared)
+            .where(inArray(gscConnections.organizationId, legacyIds)),
+          tx
+            .update(ga4Connections)
+            .set(repointToShared)
+            .where(inArray(ga4Connections.organizationId, legacyIds)),
+          ...(activationRows.length > 0
+            ? [
+                tx
+                  .insert(organizationActivationState)
+                  .values({
+                    organizationId: SHARED_WORKSPACE_ORGANIZATION_ID,
+                    ...mergedActivation,
+                  })
+                  .onConflictDoUpdate({
+                    target: organizationActivationState.organizationId,
+                    set: mergedActivation,
+                  }),
+              ]
+            : []),
+          // Everything user-visible is repointed above; deleting the legacy orgs
+          // cascades away only the per-org leftovers (members, billing status,
+          // legacy activation rows).
+          tx
+            .delete(organization)
+            .where(
+              and(
+                inArray(organization.id, legacyIds),
+                notExists(
+                  tx
+                    .select({ id: projects.id })
+                    .from(projects)
+                    .where(inArray(projects.organizationId, legacyIds)),
+                ),
+              ),
+            ),
+        ],
+        result: { mergedWorkspaces: legacyOrgs.length },
+      };
     });
 
-    // Earliest-wins merge of activation milestones across the shared row and
-    // all legacy rows.
-    const activationRows = await db
-      .select()
-      .from(organizationActivationState)
-      .where(
-        inArray(organizationActivationState.organizationId, [
-          SHARED_WORKSPACE_ORGANIZATION_ID,
-          ...legacyIds,
-        ]),
-      );
-    const mergedActivation = {
-      firstMcpAuthorizedAt: earliest(
-        activationRows.map((row) => row.firstMcpAuthorizedAt),
-      ),
-      firstMcpToolCallAt: earliest(
-        activationRows.map((row) => row.firstMcpToolCallAt),
-      ),
-    };
+    if ((await countLegacyWorkspaces()) === 0)
+      return { mergedWorkspaces: initialLegacyCount };
+  }
 
-    const projectIds = projectsToMerge.map(({ id }) => id);
-    const repointToShared = {
-      organizationId: SHARED_WORKSPACE_ORGANIZATION_ID,
-    };
-
-    return {
-      snapshots,
-      write: (tx) => [
-        ...conflictingDefaults.map((project) =>
-          tx
-            .update(projects)
-            .set({
-              name: `Default (${ownerLabelByOrgId.get(project.organizationId) ?? "imported"})`,
-            })
-            .where(
-              and(
-                eq(projects.id, project.id),
-                eq(projects.organizationId, project.organizationId),
-                inArray(projects.organizationId, legacyIds),
-                eq(projects.name, "Default"),
-                isNull(projects.domain),
-                isNull(projects.archivedAt),
-              ),
-            ),
-        ),
-        ...chunk(projectIds, 50).map((ids) =>
-          tx
-            .update(projects)
-            .set(repointToShared)
-            .where(
-              and(
-                inArray(projects.id, ids),
-                inArray(projects.organizationId, legacyIds),
-              ),
-            ),
-        ),
-        tx
-          .update(userOnboardingAnswers)
-          .set(repointToShared)
-          .where(inArray(userOnboardingAnswers.organizationId, legacyIds)),
-        tx
-          .update(gscConnections)
-          .set(repointToShared)
-          .where(inArray(gscConnections.organizationId, legacyIds)),
-        tx
-          .update(ga4Connections)
-          .set(repointToShared)
-          .where(inArray(ga4Connections.organizationId, legacyIds)),
-        ...(activationRows.length > 0
-          ? [
-              tx
-                .insert(organizationActivationState)
-                .values({
-                  organizationId: SHARED_WORKSPACE_ORGANIZATION_ID,
-                  ...mergedActivation,
-                })
-                .onConflictDoUpdate({
-                  target: organizationActivationState.organizationId,
-                  set: mergedActivation,
-                }),
-            ]
-          : []),
-        // Everything user-visible is repointed above; deleting the legacy orgs
-        // cascades away only the per-org leftovers (members, billing status,
-        // legacy activation rows).
-        tx.delete(organization).where(inArray(organization.id, legacyIds)),
-      ],
-      result: { mergedWorkspaces: legacyOrgs.length },
-    };
-  });
+  throw new AppError(
+    "CONFLICT",
+    "Projects are still being created in a legacy workspace. Retry the workspace merge.",
+  );
 }
 
 export const WorkspaceMergeService = {

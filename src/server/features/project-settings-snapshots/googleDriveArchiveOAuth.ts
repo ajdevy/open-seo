@@ -2,32 +2,23 @@ import { eq } from "drizzle-orm";
 import type { z } from "zod";
 import { db } from "@/db";
 import { googleDriveArchiveConnections, projects } from "@/db/schema";
-import { getGoogleAccountId } from "@/server/features/google/googleIdToken";
 import { hasTargetBoundPendingProjectSettingsSnapshots } from "./snapshotRepository";
 import {
   GOOGLE_DRIVE_FILES_URL,
-  GOOGLE_DRIVE_SCOPE,
-  GOOGLE_TOKEN_URL,
-  GOOGLE_USERINFO_URL,
   OAUTH_SCOPES,
+  GOOGLE_TOKEN_URL,
   REQUEST_TIMEOUT_MS,
   TOKEN_SKEW_MS,
-  codeVerifier,
-  consumeState,
   driveFolderSchema,
-  genericError,
-  googleTokenRequest,
   readConfig,
-  redirect,
   tokenCipher,
   tokenResponseSchema,
   googleDriveTokenContext,
-  userInfoSchema,
   type DriveArchiveConfig,
   type GoogleDriveArchiveOAuthState,
 } from "./googleDriveArchiveOAuthShared";
 
-async function saveConnection(input: {
+export async function saveConnection(input: {
   config: DriveArchiveConfig;
   state: GoogleDriveArchiveOAuthState;
   tokens: z.infer<typeof tokenResponseSchema>;
@@ -148,75 +139,6 @@ async function saveConnection(input: {
         updatedAt: now,
       },
     });
-}
-
-function callbackReturn(code: "connected" | "failed" | "pending-snapshots") {
-  return `/settings?googleDriveArchive=${code}`;
-}
-
-export async function handleGoogleDriveArchiveOAuthCallback(
-  request: Request,
-): Promise<Response> {
-  try {
-    const config = await readConfig();
-    if (!config) return redirect(callbackReturn("failed"));
-    const requestUrl = new URL(request.url);
-    if (`${requestUrl.origin}${requestUrl.pathname}` !== config.redirectUri)
-      return genericError(400, "invalid_callback");
-    const rawState = requestUrl.searchParams.get("state");
-    const state = await consumeState(rawState);
-    if (!state || state.redirectUri !== config.redirectUri)
-      return redirect(callbackReturn("failed"));
-    if (requestUrl.searchParams.has("error"))
-      return redirect(callbackReturn("failed"));
-    const code = requestUrl.searchParams.get("code");
-    if (!code) return redirect(callbackReturn("failed"));
-    const verifier = await codeVerifier(rawState!, config.clientSecret);
-    const { tokens } = await googleTokenRequest({
-      code,
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-      redirect_uri: config.redirectUri,
-      grant_type: "authorization_code",
-      code_verifier: verifier,
-    });
-    if (!tokens || !tokens.id_token) return redirect(callbackReturn("failed"));
-    const scopes = new Set((tokens.scope ?? "").split(/\s+/u).filter(Boolean));
-    if (
-      !scopes.has(GOOGLE_DRIVE_SCOPE) ||
-      !scopes.has("openid") ||
-      !scopes.has("email")
-    )
-      return redirect(callbackReturn("failed"));
-    const googleAccountId = await getGoogleAccountId(
-      tokens.id_token,
-      config.clientId,
-    );
-    const userInfoResponse = await fetch(GOOGLE_USERINFO_URL, {
-      headers: { Authorization: `Bearer ${tokens.access_token}` },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!userInfoResponse.ok) return redirect(callbackReturn("failed"));
-    const userInfo = userInfoSchema.parse(await userInfoResponse.json());
-    if (!userInfo.email_verified || userInfo.sub !== googleAccountId)
-      return redirect(callbackReturn("failed"));
-    await saveConnection({
-      config,
-      state,
-      tokens,
-      googleAccountId,
-      accountEmail: userInfo.email,
-    });
-    return redirect(callbackReturn("connected"));
-  } catch (error) {
-    // OAuth response details and token values must never enter logs.
-    if (
-      error instanceof Error &&
-      error.message === "google_drive_archive_target_change_blocked"
-    )
-      return redirect(callbackReturn("pending-snapshots"));
-    return redirect(callbackReturn("failed"));
-  }
 }
 
 export async function connectionForOrganization(organizationId: string) {

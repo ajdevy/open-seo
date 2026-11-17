@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { eq, like } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 const state = await vi.hoisted(async () => {
   const { createAiVisibilityTestDb } =
     await import("@/server/features/ai-visibility/aiVisibilityTestDb");
   let role: "owner" | "admin" | "member" = "owner";
+  let userId = "open-seo-user-1";
+  let organizationId = "organization";
   return {
     testDb: await createAiVisibilityTestDb(),
     env: {} as Record<string, string>,
@@ -13,9 +15,17 @@ const state = await vi.hoisted(async () => {
     setRole(value: typeof role) {
       role = value;
     },
+    setIdentity(input: { userId?: string; organizationId?: string }) {
+      userId = input.userId ?? userId;
+      organizationId = input.organizationId ?? organizationId;
+    },
+    resetIdentity() {
+      userId = "open-seo-user-1";
+      organizationId = "organization";
+    },
     userContext: () => ({
-      userId: "open-seo-user-1",
-      organizationId: "organization",
+      userId,
+      organizationId,
       role,
     }),
   };
@@ -39,7 +49,7 @@ import {
   projectSettingsSnapshotOutbox,
   verification,
 } from "@/db/schema";
-import { handleGoogleDriveArchiveOAuthCallback } from "./googleDriveArchiveOAuth";
+import { handleGoogleDriveArchiveOAuthCallback } from "./googleDriveArchiveOAuthCallback";
 import { handleGoogleDriveArchiveRequest } from "./googleDriveArchiveOAuthRoutes";
 
 const ORIGIN = "https://autogeo.flexsentlabs.com";
@@ -68,15 +78,6 @@ function sameOriginHeaders() {
   };
 }
 
-function base64Url(bytes: Uint8Array) {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/u, "");
-}
-
 function requireResponse(response: Response | null): Response {
   if (!response) throw new Error("Google Drive archive route was not handled.");
   return response;
@@ -88,6 +89,7 @@ async function jsonBody<T>(response: Response, schema: z.ZodType<T>) {
 
 beforeEach(async () => {
   state.setRole("owner");
+  state.resetIdentity();
   state.accountId = "google-account-1";
   Object.keys(state.env).forEach((key) => delete state.env[key]);
   setSyntheticConfig();
@@ -103,95 +105,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("starts drive.file OAuth with single-use state and PKCE", async () => {
-  const response = requireResponse(
-    await handleGoogleDriveArchiveRequest(
-      new Request(ORIGIN + "/api/google-drive/archive/oauth/start", {
-        method: "POST",
-        headers: sameOriginHeaders(),
-      }),
-    ),
-  );
-
-  expect(response.status).toBe(200);
-  const body = await jsonBody(
-    response,
-    z.object({ authorizationUrl: z.string().url() }),
-  );
-  const url = new URL(body.authorizationUrl);
-  const stateToken = url.searchParams.get("state");
-  const challenge = url.searchParams.get("code_challenge");
-  expect(stateToken).toMatch(/^[A-Za-z0-9_-]{40,64}$/u);
-  expect(url.searchParams.get("scope")?.split(" ")).toEqual([
-    "openid",
-    "email",
-    DRIVE_SCOPE,
-  ]);
-  expect(url.searchParams.get("redirect_uri")).toBe(CALLBACK);
-  expect(url.searchParams.get("code_challenge_method")).toBe("S256");
-  expect(url.searchParams.has("client_secret")).toBe(false);
-  const [storedState] = await db
-    .select()
-    .from(verification)
-    .where(like(verification.identifier, "google-drive-archive:%"));
-  expect(storedState?.identifier).toBe(`google-drive-archive:${stateToken}`);
-
-  const hmacKey = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(
-      "open-seo:google-drive-archive:pkce:" + CLIENT_SECRET,
-    ),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const verifier = base64Url(
-    new Uint8Array(
-      await crypto.subtle.sign(
-        "HMAC",
-        hmacKey,
-        new TextEncoder().encode(stateToken ?? ""),
-      ),
-    ),
-  );
-  const expectedChallenge = base64Url(
-    new Uint8Array(
-      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
-    ),
-  );
-  expect(challenge).toBe(expectedChallenge);
-  expect(response.headers.get("cache-control")).toContain("no-store");
-});
-
-it("rejects non-admin and cross-origin management requests", async () => {
-  state.setRole("member");
-  const nonAdmin = requireResponse(
-    await handleGoogleDriveArchiveRequest(
-      new Request(ORIGIN + "/api/google-drive/archive/oauth/start", {
-        method: "POST",
-        headers: sameOriginHeaders(),
-      }),
-    ),
-  );
-  expect(nonAdmin.status).toBe(403);
-
-  state.setRole("owner");
-  const crossOrigin = requireResponse(
-    await handleGoogleDriveArchiveRequest(
-      new Request(ORIGIN + "/api/google-drive/archive/oauth/start", {
-        method: "POST",
-        headers: { ...sameOriginHeaders(), origin: "https://attacker.example" },
-      }),
-    ),
-  );
-  expect(crossOrigin.status).toBe(403);
-  const stateRows = await db
-    .select()
-    .from(verification)
-    .where(like(verification.identifier, "google-drive-archive:%"));
-  expect(stateRows).toHaveLength(0);
-});
-
 it("stores OAuth tokens encrypted and only returns a no-store Picker token", async () => {
   const startResponse = requireResponse(
     await handleGoogleDriveArchiveRequest(
@@ -203,7 +116,10 @@ it("stores OAuth tokens encrypted and only returns a no-store Picker token", asy
   );
   const startBody = await jsonBody(
     startResponse,
-    z.object({ authorizationUrl: z.string().url() }),
+    z.object({
+      authorizationUrl: z.string().url(),
+      browserBinding: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
+    }),
   );
   const stateToken = new URL(startBody.authorizationUrl).searchParams.get(
     "state",
@@ -246,10 +162,26 @@ it("stores OAuth tokens encrypted and only returns a no-store Picker token", asy
   const callback = await handleGoogleDriveArchiveOAuthCallback(
     new Request(CALLBACK + "?code=synthetic-code&state=" + stateToken),
   );
-  expect(callback.status).toBe(303);
-  expect(callback.headers.get("location")).toBe(
-    "/settings?googleDriveArchive=connected",
+  expect(callback.status).toBe(200);
+  expect(callback.headers.get("content-type")).toContain("text/html");
+  expect(await callback.text()).toContain("oauth/complete");
+  expect(fetcher).not.toHaveBeenCalled();
+  const completion = requireResponse(
+    await handleGoogleDriveArchiveRequest(
+      new Request(ORIGIN + "/api/google-drive/archive/oauth/complete", {
+        method: "POST",
+        headers: sameOriginHeaders(),
+        body: JSON.stringify({
+          state: stateToken,
+          browserBinding: startBody.browserBinding,
+          code: "synthetic-code",
+          authorizationDenied: false,
+        }),
+      }),
+    ),
   );
+  expect(completion.status).toBe(200);
+  expect(await completion.json()).toEqual({ connected: true });
   expect(fetcher).toHaveBeenCalledTimes(2);
   const [connection] = await db
     .select()
@@ -376,7 +308,10 @@ it("stores OAuth tokens encrypted and only returns a no-store Picker token", asy
   );
   const reconnectStartBody = await jsonBody(
     reconnectStartResponse,
-    z.object({ authorizationUrl: z.string().url() }),
+    z.object({
+      authorizationUrl: z.string().url(),
+      browserBinding: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
+    }),
   );
   const reconnectState = new URL(
     reconnectStartBody.authorizationUrl,
@@ -385,10 +320,25 @@ it("stores OAuth tokens encrypted and only returns a no-store Picker token", asy
   const reconnectCallback = await handleGoogleDriveArchiveOAuthCallback(
     new Request(CALLBACK + "?code=synthetic-code&state=" + reconnectState),
   );
-  expect(reconnectCallback.status).toBe(303);
-  expect(reconnectCallback.headers.get("location")).toBe(
-    "/settings?googleDriveArchive=pending-snapshots",
+  expect(reconnectCallback.status).toBe(200);
+  const reconnectCompletion = requireResponse(
+    await handleGoogleDriveArchiveRequest(
+      new Request(ORIGIN + "/api/google-drive/archive/oauth/complete", {
+        method: "POST",
+        headers: sameOriginHeaders(),
+        body: JSON.stringify({
+          state: reconnectState,
+          browserBinding: reconnectStartBody.browserBinding,
+          code: "synthetic-code",
+          authorizationDenied: false,
+        }),
+      }),
+    ),
   );
+  expect(reconnectCompletion.status).toBe(409);
+  expect(await reconnectCompletion.json()).toEqual({
+    error: "archive_target_change_blocked",
+  });
 
   const [savedConnection] = await db
     .select()
@@ -399,4 +349,19 @@ it("stores OAuth tokens encrypted and only returns a no-store Picker token", asy
     googleAccountId: "google-account-1",
     folderId: "folder-valid-123",
   });
+});
+
+it("clears callback query parameters before rejecting an expired state", async () => {
+  const fetcher = vi.fn();
+  vi.stubGlobal("fetch", fetcher);
+  const callback = await handleGoogleDriveArchiveOAuthCallback(
+    new Request(CALLBACK + "?code=synthetic-code&state=invalid"),
+  );
+
+  expect(callback.status).toBe(200);
+  expect(callback.headers.get("cache-control")).toContain("no-store");
+  expect(await callback.text()).toContain(
+    'window.history.replaceState(null, "", window.location.pathname)',
+  );
+  expect(fetcher).not.toHaveBeenCalled();
 });

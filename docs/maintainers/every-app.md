@@ -94,6 +94,15 @@ has been registered. Those checks must pass before requesting user consent or
 enabling real Drive delivery. The callback must match the exact HTTPS origin
 and URI configured on the dedicated client.
 
+The gateway strips browser cookies before forwarding a request and removes
+`Set-Cookie` on the response, so this callback does not rely on either header.
+Its public GET only serves a strict, no-store handoff page: the initiating
+browser keeps a one-time random binding in that tab's `sessionStorage`, and the
+page posts the OAuth response to the authenticated `/oauth/complete` endpoint.
+That endpoint rechecks the signed current user, workspace and admin permission,
+matches and consumes the bound state, and only then exchanges the code and saves
+encrypted tokens. The public GET never exchanges a code or writes a connection.
+
 ## Backup scope assessment
 
 This is a source-level inventory, not evidence about a deployed environment.

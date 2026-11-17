@@ -148,9 +148,9 @@ export default {
   // Both Workers, from cloudflare.config.ts and vite-plugin-every-app.ts.
   build: "pnpm build:report-widgets && AUTH_MODE=everyapp pnpm exec vite build",
   dev: "pnpm build:report-widgets && AUTH_MODE=everyapp pnpm exec vite dev --host 127.0.0.1",
-  // Interactive routes require a signed-in member. The state-bound Google
-  // OAuth callback is the only public route; report sharing and other
-  // unauthenticated routes remain hosted-only.
+  // Interactive routes require a signed-in member. The public Google OAuth
+  // callback only serves a static handoff page; token exchange is authenticated.
+  // Report sharing and other unauthenticated routes remain hosted-only.
   // Every member opens OpenSEO once it is installed, like the other three
   // launch apps (OpenCRM, OpenAnalytics, Agentic Inbox): the documented
   // default for them. Without it a fresh install opens to owners and admins

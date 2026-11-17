@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { getDatabaseProvider } from "@/db/provider";
 import { projects } from "@/db/schema";
 import { AppError } from "@/server/lib/errors";
+import { lockProjectOrganizations } from "./lockProjectOrganizations";
 import {
   commitProjectSettingsMutation,
   isUniqueViolation,
@@ -113,6 +114,7 @@ async function createProject(
         questions: [],
       }),
       write: (tx) => [
+        lockProjectOrganizations(tx, [organizationId]),
         tx.insert(projects).values({
           id,
           organizationId,
@@ -300,6 +302,7 @@ async function tryCreateDefaultProject(organizationId: string) {
           questions: [],
         }),
         write: (tx) => [
+          lockProjectOrganizations(tx, [organizationId]),
           tx.insert(projects).values({
             id,
             organizationId,
