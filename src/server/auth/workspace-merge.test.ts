@@ -143,6 +143,7 @@ beforeAll(async () => {
       project_id TEXT NOT NULL,
       organization_id TEXT NOT NULL REFERENCES organization(id) ON DELETE CASCADE
     );
+    CREATE TABLE google_drive_archive_connections (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL UNIQUE REFERENCES organization(id) ON DELETE CASCADE, google_account_id TEXT NOT NULL, access_token_ciphertext TEXT NOT NULL, refresh_token_ciphertext TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   `);
 
   ({ WorkspaceMergeService } = await import("./workspace-merge"));
@@ -163,6 +164,7 @@ beforeEach(async () => {
     DELETE FROM organization_activation_state;
     DELETE FROM gsc_connections;
     DELETE FROM ga4_connections;
+    DELETE FROM google_drive_archive_connections;
     DELETE FROM organization;
   `);
 });

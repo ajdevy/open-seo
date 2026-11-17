@@ -12,6 +12,7 @@ import {
 } from "@/server/features/project-settings-snapshots/snapshotRepository";
 import {
   ga4Connections,
+  googleDriveArchiveConnections,
   gscConnections,
   organization,
   organizationActivationState,
@@ -19,6 +20,7 @@ import {
   userOnboardingAnswers,
 } from "@/db/schema";
 import { SHARED_WORKSPACE_ORGANIZATION_ID } from "./delegated-organization";
+import { prepareWorkspaceArchiveConnectionTransfer } from "./workspace-mergeArchiveConnection";
 
 // Earliest-wins pick across nullable UTC timestamp strings (string compare is
 // chronological for these).
@@ -84,6 +86,9 @@ async function mergeLegacyWorkspaces() {
         };
 
       const legacyIds = legacyOrgs.map((org) => org.id);
+      const archiveConnectionTransfer =
+        await prepareWorkspaceArchiveConnectionTransfer(legacyIds);
+
       // Legacy org names are "<email localpart> workspace" — reuse the localpart
       // to label renamed projects with their previous owner.
       const ownerLabelByOrgId = new Map(
@@ -224,6 +229,36 @@ async function mergeLegacyWorkspaces() {
             .update(ga4Connections)
             .set(repointToShared)
             .where(inArray(ga4Connections.organizationId, legacyIds)),
+          ...(archiveConnectionTransfer
+            ? [
+                tx
+                  .update(googleDriveArchiveConnections)
+                  .set({
+                    organizationId: SHARED_WORKSPACE_ORGANIZATION_ID,
+                    accessTokenCiphertext:
+                      archiveConnectionTransfer.accessTokenCiphertext,
+                    refreshTokenCiphertext:
+                      archiveConnectionTransfer.refreshTokenCiphertext,
+                    updatedAt: new Date().toISOString(),
+                  })
+                  .where(
+                    and(
+                      eq(
+                        googleDriveArchiveConnections.id,
+                        archiveConnectionTransfer.id,
+                      ),
+                      eq(
+                        googleDriveArchiveConnections.organizationId,
+                        archiveConnectionTransfer.organizationId,
+                      ),
+                      eq(
+                        googleDriveArchiveConnections.updatedAt,
+                        archiveConnectionTransfer.updatedAt,
+                      ),
+                    ),
+                  ),
+              ]
+            : []),
           ...(activationRows.length > 0
             ? [
                 tx
@@ -251,6 +286,17 @@ async function mergeLegacyWorkspaces() {
                     .select({ id: projects.id })
                     .from(projects)
                     .where(inArray(projects.organizationId, legacyIds)),
+                ),
+                notExists(
+                  tx
+                    .select({ id: googleDriveArchiveConnections.id })
+                    .from(googleDriveArchiveConnections)
+                    .where(
+                      inArray(
+                        googleDriveArchiveConnections.organizationId,
+                        legacyIds,
+                      ),
+                    ),
                 ),
               ),
             ),
