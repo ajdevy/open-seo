@@ -2,9 +2,9 @@
  * OpenSEO on an Every App gateway (AUTH_MODE=everyapp). The gateway signs
  * people in and decides who may open OpenSEO, serves its MCP tools on the
  * gateway's one connector, and holds the DataForSEO, Context and OpenRouter
- * keys, so a deploy needs no OpenSEO settings to open (its own two,
- * CRAWLER_ACCESS_SECRET and OPENROUTER_MODEL, are optional, below). See
- * docs/maintainers/every-app.md.
+ * keys. OpenSEO also requires its snapshot encryption key before it can
+ * accept project-settings writes; the other app-owned keys below are
+ * optional. See docs/maintainers/every-app.md.
  *
  * D1 and KV, one organization (EVERY_APP_ORG_ID, set by the deploy).
  *
@@ -111,8 +111,7 @@ export default {
     },
     {
       name: "AUTOGEO_QUEUE_MASTER_KEY_B64",
-      optional: true,
-      why: "Base64-encoded 256-bit key for encrypting project settings snapshots before they enter the durable outbox. Project, tracker, and question saves fail closed when it is unavailable.",
+      why: "Required base64-encoded 256-bit key for encrypting project settings snapshots before they enter the durable outbox.",
     },
     {
       name: "GOOGLE_DRIVE_ARCHIVE_CLIENT_ID",
