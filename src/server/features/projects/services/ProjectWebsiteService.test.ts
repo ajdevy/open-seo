@@ -299,4 +299,24 @@ describe("ProjectWebsiteService.save", () => {
       ]);
     },
   );
+
+  it("snapshots the saved competitor list when it appears after the service check", async () => {
+    await saveContext();
+    // Simulate a competitor being saved after the service's initial read.
+    listCompetitors.mockResolvedValue([]);
+
+    await ProjectWebsiteService.save(accepted, customer, "user");
+
+    const savedCompetitors = (
+      await client.execute(
+        "SELECT domain, name, notes FROM project_competitors",
+      )
+    ).rows;
+    expect(savedCompetitors).toEqual([
+      { domain: "rival.com", name: "User rival", notes: "User notes" },
+    ]);
+    expect(snapshots[0]?.context.competitors).toEqual([
+      { domain: "rival.com", name: "User rival", notes: "User notes" },
+    ]);
+  });
 });

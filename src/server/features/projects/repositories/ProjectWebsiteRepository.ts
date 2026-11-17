@@ -31,8 +31,9 @@ export async function saveWebsiteSetup(
     ...row,
     id: crypto.randomUUID(),
   }));
-  // These literals are server-generated UUIDs, never user input. Inlining
-  // them keeps the list guard below D1's bound-parameter limit for 100 rows.
+  // These UUIDs are generated here, never user input. Exclude rows from this
+  // seed batch so later D1-safe chunks don't block one another; any saved row
+  // outside the batch still prevents seeding the researched list.
   const insertedIds = sql.raw(competitors.map(({ id }) => `'${id}'`).join(","));
   await commitProjectSettingsMutation(input.projectId, async () => {
     const state = await readProjectSettingsRows(input.projectId);
@@ -74,8 +75,9 @@ export async function saveWebsiteSetup(
             },
           ],
       // Setup only seeds the researched competitor list when the project has
-      // no saved competitor rows. Keep that same insert-only rule in the
-      // snapshot projection so it describes the state written in this batch.
+      // no saved competitor rows. The batch repeats that all-or-nothing guard
+      // at write time to preserve a list saved after the service read; keep the
+      // same rule here so the snapshot describes the state the batch can seed.
       competitors:
         state.context.competitors.length > 0
           ? state.context.competitors
