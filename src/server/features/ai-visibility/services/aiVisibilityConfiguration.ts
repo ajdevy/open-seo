@@ -127,6 +127,7 @@ export function projectAiConfiguration(input: {
           scheduleTimeZone: null,
           nextCheckAt: firstWeeklyCheckAt(),
           lastSkipReason: null,
+          pendingScheduledRunId: null,
           createdAt: now,
         },
         prompts: [],

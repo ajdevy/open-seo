@@ -41,6 +41,9 @@ export const aiTrackers = sqliteTable(
     scheduleTimeZone: text("schedule_time_zone"),
     nextCheckAt: text("next_check_at"),
     lastSkipReason: text("last_skip_reason"),
+    // Durable outbox pointer for a scheduled run whose workflow start has not
+    // yet been confirmed. Cleared only after the workflow is known to exist.
+    pendingScheduledRunId: text("pending_scheduled_run_id"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [

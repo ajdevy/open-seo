@@ -3,7 +3,10 @@ import { pruneAiVisibility } from "./aiVisibilityRetention";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { AiVisibilityError } from "./aiVisibilityErrors";
 import { activeAiPrompts, trackerEngines } from "./aiVisibilityConfiguration";
-import { startRun } from "./aiVisibilityRuns";
+import {
+  resumePendingScheduledRuns,
+  startScheduledRun,
+} from "./aiVisibilityScheduledRuns";
 import { computeNextCheckAt } from "@/shared/rank-tracking";
 import {
   computeNextAiWallClockCheckAtSkippingUnresolved,
@@ -62,6 +65,14 @@ export async function runScheduledAiVisibility() {
   const deadline = Date.now() + TICK_DEADLINE_MS;
   let started = 0;
   let answersStarted = 0;
+  try {
+    await resumePendingScheduledRuns();
+  } catch (error) {
+    // A pending outbox item stays durable and is retried on the next tick.
+    console.error("[ai-visibility] scheduled outbox sweep failed", {
+      error: describeError(error),
+    });
+  }
   for (const { tracker, organizationId } of await repo.listDue(
     new Date().toISOString(),
   )) {
@@ -176,51 +187,54 @@ export async function runScheduledAiVisibility() {
         activeAiPrompts(config).length * trackerEngines(tracker).length;
       if (started > 0 && answersStarted + answers > SCHEDULED_ANSWER_BUDGET)
         break;
-      // Advance the schedule before starting, so a tracker that fails or is
-      // busy moves on instead of staying due and crowding out the rest.
-      const claimed = await repo.claimDueTracker({
+      const result = await startScheduledRun({
+        config,
+        billing: {
+          organizationId,
+          userId: "system",
+          userEmail: "system@openseo.so",
+          projectId: tracker.projectId,
+        },
         trackerId: tracker.id,
         observedNextCheckAt,
-        values: {
-          nextCheckAt,
-          lastSkipReason: scheduleSkipReason,
-        },
+        nextCheckAt,
+        lastSkipReason: scheduleSkipReason,
       });
-      if (!claimed) continue;
-      // Always queued: a baseline collects live only when a user starts it
-      // (onboarding or turning on the schedule) and waits for the answers.
-      await startRun(config, "scheduled", {
-        organizationId,
-        userId: "system",
-        userEmail: "system@openseo.so",
-        projectId: tracker.projectId,
-      });
+      if (result === "not-claimed") continue;
       started++;
       answersStarted += answers;
     } catch (error) {
-      // startRun records a credits skip on the tracker.
-      if (error instanceof AppError && error.code === "INSUFFICIENT_CREDITS") {
-        if (scheduleSkipReason)
-          await repo
-            .updateTracker(tracker.id, {
-              lastSkipReason: `INSUFFICIENT_CREDITS; ${scheduleSkipReason}`,
-            })
-            .catch(() => undefined);
-        continue;
-      }
       if (!(error instanceof AiVisibilityError))
         console.error("[ai-visibility] scheduled check failed to start", {
           trackerId: tracker.id,
           error: describeError(error),
         });
+      const reason =
+        error instanceof AppError && error.code === "INSUFFICIENT_CREDITS"
+          ? ["INSUFFICIENT_CREDITS", scheduleSkipReason]
+              .filter(Boolean)
+              .join("; ")
+          : error instanceof AiVisibilityError
+            ? error.message
+            : "The scheduled check could not start.";
+      // Validation errors and active-run conflicts become visible skips. If
+      // the atomic run claim committed but its reply was lost, this conditional
+      // update no longer matches and leaves the outbox pointer recoverable.
       await repo
-        .updateTracker(tracker.id, {
-          lastSkipReason:
-            error instanceof AiVisibilityError
-              ? error.message
-              : "The scheduled check could not start.",
+        .claimDueTracker({
+          trackerId: tracker.id,
+          observedNextCheckAt,
+          values: { nextCheckAt, lastSkipReason: reason },
         })
-        .catch(() => undefined);
+        .catch((claimError) => {
+          console.error(
+            "[ai-visibility] scheduled skip could not be recorded",
+            {
+              trackerId: tracker.id,
+              error: describeError(claimError),
+            },
+          );
+        });
     }
   }
 }
