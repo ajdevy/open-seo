@@ -20,6 +20,8 @@ vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
 vi.mock("@/server/lib/provider-access", () => ({ hasDataforseoAccess }));
 
 beforeEach(async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-16T06:00:00.000Z"));
   hasDataforseoAccess.mockResolvedValue(true);
   await testDb.seedProject();
   await repo.saveConfiguration(configuration());
