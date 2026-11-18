@@ -84,6 +84,7 @@ beforeAll(async () => {
       location_code INTEGER NOT NULL DEFAULT 2840,
       language_code TEXT NOT NULL DEFAULT 'en',
       schedule_interval TEXT NOT NULL DEFAULT 'weekly',
+      schedule_weekday INTEGER, schedule_hour INTEGER, schedule_minute INTEGER, schedule_time_zone TEXT, pending_scheduled_run_id TEXT,
       next_check_at TEXT,
       last_skip_reason TEXT,
       created_at TEXT NOT NULL

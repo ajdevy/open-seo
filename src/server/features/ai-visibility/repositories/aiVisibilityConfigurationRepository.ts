@@ -172,7 +172,7 @@ export async function updateTracker(id: string, values: Partial<TrackerRow>) {
         values.scheduleInterval ?? state.tracker.scheduleInterval,
     };
     if (values.enabled === true) {
-      if (!state.prompts.some((prompt) => !prompt.paused && !prompt.archived))
+      if (!state.questions.some((prompt) => !prompt.paused && !prompt.archived))
         throw new AiVisibilityError(
           "NO_ACTIVE_PROMPTS",
           "Add active prompts before enabling scheduled tracking.",

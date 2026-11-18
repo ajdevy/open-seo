@@ -79,6 +79,8 @@ it("cancels a queued scheduled run atomically when tracking is paused", async ()
     { projectId: "project", enabled: true, scheduleInterval: "weekly" },
     customer,
   );
+  const trackerId = enabled.state.tracker?.id;
+  if (!trackerId) throw new Error("Enabled tracker was not saved.");
   const config = await repo.getConfiguration("project");
   if (!config) throw new Error("Tracker fixture was not saved.");
   const prompt = config.prompts[0];
@@ -104,7 +106,7 @@ it("cancels a queued scheduled run atomically when tracking is paused", async ()
       },
     ],
   );
-  await repo.updateTracker(enabled.state.tracker.id, {
+  await repo.updateTracker(trackerId, {
     pendingScheduledRunId: runId,
   });
 
@@ -129,6 +131,8 @@ it("cancels a queued scheduled run when the saved prompt scope changes", async (
     { projectId: "project", enabled: true, scheduleInterval: "weekly" },
     customer,
   );
+  const trackerId = enabled.state.tracker?.id;
+  if (!trackerId) throw new Error("Enabled tracker was not saved.");
   const config = await repo.getConfiguration("project");
   if (!config) throw new Error("Tracker fixture was not saved.");
   const prompt = config.prompts[0];
@@ -154,7 +158,7 @@ it("cancels a queued scheduled run when the saved prompt scope changes", async (
       },
     ],
   );
-  await repo.updateTracker(enabled.state.tracker.id, {
+  await repo.updateTracker(trackerId, {
     pendingScheduledRunId: runId,
   });
 
@@ -167,18 +171,16 @@ it("cancels a queued scheduled run when the saved prompt scope changes", async (
     ),
   });
 
-  expect(await repo.getTracker("project")).toMatchObject({
+  const tracker = await repo.getTracker("project");
+  expect(tracker).toMatchObject({
     enabled: true,
     pendingScheduledRunId: null,
-    lastSkipReason: expect.stringMatching(/tracking settings changed/),
   });
+  expect(tracker?.lastSkipReason).toMatch(/tracking settings changed/);
   expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
-  expect(await repo.getObservations([runId])).toMatchObject([
-    {
-      status: "failed",
-      error: expect.stringMatching(/tracking settings changed/),
-    },
-  ]);
+  const [observation] = await repo.getObservations([runId]);
+  expect(observation?.status).toBe("failed");
+  expect(observation?.error).toMatch(/tracking settings changed/);
 });
 
 it("rejects a weekly timezone schedule without a weekday before saving", async () => {

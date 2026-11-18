@@ -26,6 +26,8 @@ const ACTIVE_WORKFLOW_STATUSES = new Set([
 ]);
 const SCHEDULED_RETRY_NOTICE =
   "The scheduled check is durably queued and will be retried automatically.";
+const SCHEDULED_PROVIDER_UNAVAILABLE_REASON =
+  "The configured provider is unavailable; the queued check was not started.";
 
 function withoutScheduledRetryNotice(reason: string | null | undefined) {
   if (reason === SCHEDULED_RETRY_NOTICE) return null;
@@ -70,8 +72,22 @@ async function scheduledRunAuthorizationError(run: RunRow) {
   )
     return "The saved prompt or model scope changed before the queued check started.";
   if (!(await hasDataforseoAccess()))
-    return "The configured provider is unavailable; the queued check was not started.";
+    return SCHEDULED_PROVIDER_UNAVAILABLE_REASON;
   return null;
+}
+
+async function pauseTrackingIfProviderUnavailable(
+  trackerId: string,
+  reason: string,
+) {
+  if (reason !== SCHEDULED_PROVIDER_UNAVAILABLE_REASON) return false;
+  // updateTracker serializes this settings mutation with project snapshots and
+  // cancels every queued scheduled run in the same transaction.
+  await repo.updateTracker(trackerId, {
+    enabled: false,
+    lastSkipReason: reason,
+  });
+  return true;
 }
 
 /**
@@ -108,13 +124,17 @@ export async function resumePendingScheduledRuns() {
 
     const authorizationError = await scheduledRunAuthorizationError(run);
     if (authorizationError) {
-      if (run.status === "queued")
+      const pausedForProvider = await pauseTrackingIfProviderUnavailable(
+        pending.trackerId,
+        authorizationError,
+      );
+      if (!pausedForProvider && run.status === "queued")
         await scheduledRepo.cancelQueuedScheduledRun({
           trackerId: pending.trackerId,
           runId,
           reason: authorizationError,
         });
-      else
+      else if (run.status !== "queued")
         await scheduledRepo.setPendingScheduledRunNotice({
           trackerId: pending.trackerId,
           runId,
@@ -213,11 +233,16 @@ export async function startScheduledRun(input: {
 
   const authorizationError = await scheduledRunAuthorizationError(claimed);
   if (authorizationError) {
-    await scheduledRepo.cancelQueuedScheduledRun({
-      trackerId: input.trackerId,
-      runId: id,
-      reason: authorizationError,
-    });
+    const pausedForProvider = await pauseTrackingIfProviderUnavailable(
+      input.trackerId,
+      authorizationError,
+    );
+    if (!pausedForProvider)
+      await scheduledRepo.cancelQueuedScheduledRun({
+        trackerId: input.trackerId,
+        runId: id,
+        reason: authorizationError,
+      });
     return "deferred";
   }
 
