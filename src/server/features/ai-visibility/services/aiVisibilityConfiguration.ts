@@ -5,10 +5,6 @@ import {
   type AiBrand,
   type AiEngine,
 } from "@/shared/ai-visibility";
-import {
-  computeNextAiWallClockCheckAt,
-  DEFAULT_AI_WEEKLY_SCHEDULE,
-} from "@/shared/ai-visibility-schedule";
 import { applyMarket } from "./aiVisibilityMarket";
 import type {
   ConfigurationRows,
@@ -100,27 +96,23 @@ export function projectAiConfiguration(input: {
   skipped: number;
 } {
   const { previous, patch, now } = input;
-  const firstWeeklyCheckAt = computeNextAiWallClockCheckAt(
-    DEFAULT_AI_WEEKLY_SCHEDULE,
-    now,
-  );
   const rows: ConfigurationRows = previous
     ? structuredClone(previous)
     : {
         tracker: {
           id: crypto.randomUUID(),
           projectId: input.projectId,
-          // New tracking uses the owner's default Wednesday Moscow slot.
-          // Creating a tracker stores only a future slot; it starts no run.
-          enabled: true,
+          // Saving setup never enables a schedule. The server validates the
+          // provider and active check scope before persisting a weekly slot.
+          enabled: false,
           ...engineColumns(["chatgpt", "gemini"]),
           ...input.projectMarket,
           scheduleInterval: "weekly",
-          scheduleWeekday: DEFAULT_AI_WEEKLY_SCHEDULE.weekday,
-          scheduleHour: DEFAULT_AI_WEEKLY_SCHEDULE.hour,
-          scheduleMinute: DEFAULT_AI_WEEKLY_SCHEDULE.minute,
-          scheduleTimeZone: DEFAULT_AI_WEEKLY_SCHEDULE.timeZone,
-          nextCheckAt: firstWeeklyCheckAt,
+          scheduleWeekday: null,
+          scheduleHour: null,
+          scheduleMinute: null,
+          scheduleTimeZone: null,
+          nextCheckAt: null,
           lastSkipReason: null,
           weeklyProviderBudgetCents:
             patch.weeklyProviderBudgetUsd === undefined
@@ -139,6 +131,9 @@ export function projectAiConfiguration(input: {
     );
   applyMarket(rows, patch, !previous, trackerEngines(rows.tracker));
   const counts = applyPrompts(rows, patch, now);
+  // A tracker with no usable prompt cannot produce observations. Keep it
+  // paused until the user saves an active prompt and explicitly resumes it.
+  if (!activeAiPrompts(rows).length) rows.tracker.enabled = false;
   const unarchived = rows.prompts.filter((p) => !p.archived);
   if (unarchived.length > PROMPT_LIMIT)
     throw new AiVisibilityError(

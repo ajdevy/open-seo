@@ -52,7 +52,7 @@ export function TrackerSetupReview({
         {enabled
           ? "These settings apply to your enabled schedule."
           : creating
-            ? "Tracking runs weekly. The first check is a week from now; use Run now for results sooner."
+            ? "Tracking runs at the next weekly slot. Use Run now to get results sooner."
             : "Track weekly to collect fresh answers once a week. A tracker that has never run on a schedule also runs its first check now."}
       </p>
       <dl className="grid grid-cols-2 gap-4 rounded-lg border p-4 text-sm border-border">
@@ -164,11 +164,13 @@ export function TrackerSetupReview({
           disabled={
             pending ||
             (creating &&
-              (!fitsWeeklyProviderBudget || review.estimate.observations === 0))
+              (!canSchedule ||
+                !fitsWeeklyProviderBudget ||
+                review.estimate.observations === 0))
           }
-          onClick={onSave}
+          onClick={creating ? onSaveAndSchedule : onSave}
         >
-          {pending && !scheduling && (
+          {pending && (creating ? scheduling : !scheduling) && (
             <Loader2 className="size-4 animate-spin" />
           )}
           {enabled

@@ -33,6 +33,8 @@ vi.mock("cloudflare:workflows", () => ({
 vi.mock("@/db", () => ({ db: testDb.db }));
 vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
 vi.mock("@/server/lib/runtime-env", () => ({
+  getOptionalEnvValue: async (name: string) =>
+    name === "AUTOGEO_QUEUE_MASTER_KEY_B64" ? btoa("k".repeat(32)) : undefined,
   isHostedServerAuthMode: async () => false,
 }));
 vi.mock("@/server/lib/dataforseo", () => ({
@@ -72,6 +74,7 @@ const providerFailure = {
 } as const;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -110,6 +113,55 @@ beforeEach(async () => {
 });
 
 describe("AI answer collection", () => {
+  it("stops a scheduled workflow before provider dispatch when tracking was paused", async () => {
+    await repo.updateRun(runId, { trigger: "scheduled", status: "queued" });
+
+    await expect(prepareAiRun(runId)).rejects.toThrow(
+      "Scheduled tracking was paused before provider dispatch.",
+    );
+
+    expect(await repo.getRunInternal(runId)).toMatchObject({
+      status: "queued",
+    });
+    expect(dataforseo.trackingTaskPost).not.toHaveBeenCalled();
+    expect(dataforseo.trackingLiveBatch).not.toHaveBeenCalled();
+    expect(dataforseo.llmResponse).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect a scheduled run canceled after its authorization read", async () => {
+    const tracker = await repo.getTracker("project");
+    if (!tracker) throw new Error("Tracker fixture was not saved.");
+    await repo.updateTracker(tracker.id, { enabled: true });
+    await repo.updateRun(runId, { trigger: "scheduled", status: "queued" });
+
+    const getConfiguration = repo.getConfiguration.bind(repo);
+    vi.spyOn(repo, "getConfiguration").mockImplementation(async (projectId) => {
+      const config = await getConfiguration(projectId);
+      if (config) {
+        await repo.updateTracker(config.tracker.id, {
+          enabled: false,
+          lastSkipReason: "Scheduled tracking is paused.",
+        });
+      }
+      return config;
+    });
+
+    await expect(prepareAiRun(runId)).rejects.toThrow(
+      "The scheduled check was canceled before provider dispatch.",
+    );
+
+    expect(await repo.getRunInternal(runId)).toMatchObject({
+      status: "failed",
+    });
+    expect(await repo.getObservations([runId])).toMatchObject([
+      { status: "failed", error: "Scheduled tracking is paused." },
+      { status: "failed", error: "Scheduled tracking is paused." },
+    ]);
+    expect(dataforseo.trackingTaskPost).not.toHaveBeenCalled();
+    expect(dataforseo.trackingLiveBatch).not.toHaveBeenCalled();
+    expect(dataforseo.llmResponse).not.toHaveBeenCalled();
+  });
+
   it("saves an answer with its citations and each brand's mention and citation", async () => {
     dataforseo.fetchTaskResult.mockResolvedValue({
       status: "completed",

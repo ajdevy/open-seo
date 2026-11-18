@@ -2,6 +2,7 @@ import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { runBatch } from "@/db/runBatch";
 import { aiObservations, aiRuns, aiTrackers, projects } from "@/db/schema";
+import { cancelQueuedScheduledRuns } from "./aiVisibilityConfigurationRepository";
 
 /**
  * Claims one scheduled occurrence and persists its queued run in the same
@@ -144,9 +145,20 @@ async function setPendingScheduledRunNotice(input: {
     );
 }
 
+async function cancelQueuedScheduledRun(input: {
+  trackerId: string;
+  runId: string;
+  reason: string;
+}) {
+  await runBatch((tx) =>
+    cancelQueuedScheduledRuns(tx, input.trackerId, input.reason, input.runId),
+  );
+}
+
 export const AiVisibilityScheduledRunRepository = {
   claimScheduledRun,
   listPendingScheduledRuns,
   clearPendingScheduledRun,
   setPendingScheduledRunNotice,
+  cancelQueuedScheduledRun,
 };

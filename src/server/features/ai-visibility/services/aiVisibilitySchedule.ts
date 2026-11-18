@@ -1,9 +1,10 @@
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { AiVisibilityError } from "./aiVisibilityErrors";
-import { activeAiPrompts } from "./aiVisibilityConfiguration";
+import { activeAiPrompts, trackerEngines } from "./aiVisibilityConfiguration";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import type { AiRun } from "@/shared/ai-visibility";
 import type { SetAiScheduleInput } from "@/types/schemas/ai-visibility";
+import type { ConfigurationRows } from "../repositories/AiVisibilityRepository";
 import { computeNextCheckAt } from "@/shared/rank-tracking";
 import {
   DEFAULT_AI_WEEKLY_SCHEDULE,
@@ -13,6 +14,47 @@ import {
 import { requireConfiguration } from "./aiVisibilityMutation";
 import { getTracker } from "./aiVisibilityState";
 import { hasDataforseoAccess } from "@/server/lib/provider-access";
+
+function validateScheduleTime(
+  input: SetAiScheduleInput,
+  scheduleInterval: string,
+) {
+  if (
+    input.scheduleTime?.timeZone !== undefined &&
+    scheduleInterval !== "weekly"
+  )
+    throw new AiVisibilityError(
+      "INVALID_SCHEDULE_TIME",
+      "A timezone is supported only for weekly schedules.",
+    );
+  if (
+    scheduleInterval === "weekly" &&
+    input.scheduleTime?.timeZone !== undefined &&
+    input.scheduleTime.weekday === undefined
+  )
+    throw new AiVisibilityError(
+      "INVALID_SCHEDULE_TIME",
+      "A weekday is required for a weekly schedule with a timezone.",
+    );
+}
+
+async function validateCanEnableSchedule(config: ConfigurationRows) {
+  if (!activeAiPrompts(config).length)
+    throw new AiVisibilityError(
+      "NO_ACTIVE_PROMPTS",
+      "Add active prompts before enabling scheduled tracking.",
+    );
+  if (!trackerEngines(config.tracker).length)
+    throw new AiVisibilityError(
+      "NO_ACTIVE_ENGINES",
+      "Select at least one AI engine before enabling scheduled tracking.",
+    );
+  if (!(await hasDataforseoAccess()))
+    throw new AiVisibilityError(
+      "PROVIDER_NOT_CONFIGURED",
+      "Configure DataForSEO before enabling collection. Setup remains available.",
+    );
+}
 
 /**
  * Enables, reschedules or pauses tracking. Enabling saves the next scheduled
@@ -28,32 +70,15 @@ export async function setSchedule(
   const config = await requireConfiguration(input.projectId);
   const { tracker } = config;
   if (!input.enabled) {
-    await repo.updateTracker(tracker.id, { enabled: false });
+    await repo.updateTracker(tracker.id, {
+      enabled: false,
+      lastSkipReason: "Scheduled tracking is paused.",
+    });
     return { state: await getTracker(input), run: null };
   }
   const scheduleInterval = input.scheduleInterval ?? tracker.scheduleInterval;
-  if (input.scheduleTime?.timeZone !== undefined) {
-    if (scheduleInterval !== "weekly")
-      throw new AiVisibilityError(
-        "INVALID_SCHEDULE_TIME",
-        "A timezone is supported only for weekly schedules.",
-      );
-    if (input.scheduleTime.weekday === undefined)
-      throw new AiVisibilityError(
-        "INVALID_SCHEDULE_TIME",
-        "A weekday is required for a weekly schedule with a timezone.",
-      );
-  }
-  if (!activeAiPrompts(config).length)
-    throw new AiVisibilityError(
-      "NO_ACTIVE_PROMPTS",
-      "Add active prompts before enabling scheduled tracking.",
-    );
-  if (!(await hasDataforseoAccess()))
-    throw new AiVisibilityError(
-      "PROVIDER_NOT_CONFIGURED",
-      "Configure DataForSEO before enabling collection. Setup remains available.",
-    );
+  validateScheduleTime(input, scheduleInterval);
+  await validateCanEnableSchedule(config);
   const savedWallClock =
     scheduleInterval === "weekly" &&
     tracker.scheduleWeekday !== null &&

@@ -35,7 +35,7 @@ export async function saveWebsiteSetup(
   // seed batch so later D1-safe chunks don't block one another; any saved row
   // outside the batch still prevents seeding the researched list.
   const insertedIds = sql.raw(competitors.map(({ id }) => `'${id}'`).join(","));
-  await commitProjectSettingsMutation(input.projectId, async () => {
+  return commitProjectSettingsMutation(input.projectId, async () => {
     const state = await readProjectSettingsRows(input.projectId);
     if (
       !state ||
@@ -148,7 +148,7 @@ export async function saveWebsiteSetup(
           ? writeResearchKeywords(tx, input.projectId, keywordNames)
           : []),
       ],
-      result: undefined,
+      result: trackingToWrite !== null,
     };
   });
 }

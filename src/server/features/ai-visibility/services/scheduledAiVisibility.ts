@@ -222,6 +222,13 @@ export async function runScheduledAiVisibility() {
           : error instanceof AiVisibilityError
             ? error.message
             : "The scheduled check could not start.";
+      const pauseForSetup =
+        error instanceof AiVisibilityError &&
+        [
+          "NO_ACTIVE_PROMPTS",
+          "NO_ACTIVE_ENGINES",
+          "PROVIDER_NOT_CONFIGURED",
+        ].includes(error.reason);
       // Validation errors and active-run conflicts become visible skips. If
       // the atomic run claim committed but its reply was lost, this conditional
       // update no longer matches and leaves the outbox pointer recoverable.
@@ -229,7 +236,11 @@ export async function runScheduledAiVisibility() {
         .claimDueTracker({
           trackerId: tracker.id,
           observedNextCheckAt,
-          values: { nextCheckAt, lastSkipReason: reason },
+          values: {
+            ...(pauseForSetup ? { enabled: false } : {}),
+            nextCheckAt,
+            lastSkipReason: reason,
+          },
         })
         .catch((claimError) => {
           console.error(

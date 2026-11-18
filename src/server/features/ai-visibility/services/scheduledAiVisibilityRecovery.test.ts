@@ -32,6 +32,9 @@ vi.mock("@/server/lib/runtime-env", () => ({
       : "dataforseo-key",
   isHostedServerAuthMode: hosted,
 }));
+vi.mock("@/server/lib/provider-access", () => ({
+  hasDataforseoAccess: async () => true,
+}));
 vi.mock("@/server/billing/subscription", () => ({
   getOrCreateOrganizationCustomer: async () => ({ id: "organization" }),
   getUsageCreditsRemaining: async () => ({
@@ -74,6 +77,11 @@ async function persistPendingScheduledRun(
     config = await repo.getConfiguration(projectId);
   }
   if (!config) throw new Error("test tracker configuration was not created");
+  if (!config.tracker.enabled)
+    await repo.updateTracker(config.tracker.id, {
+      enabled: true,
+      nextCheckAt: due,
+    });
   const prompt = config.prompts[0];
   if (!prompt) throw new Error("test prompt was not created");
   await repo.createRun(

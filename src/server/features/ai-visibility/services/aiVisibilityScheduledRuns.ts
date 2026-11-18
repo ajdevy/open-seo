@@ -13,6 +13,11 @@ import {
 } from "./aiVisibilityRuns";
 import { reserveProviderBudgetForRun } from "./aiVisibilityProviderBudget";
 import type { ConfigurationRows } from "../repositories/AiVisibilityRepository";
+import {
+  handleUnauthorizedScheduledRun,
+  pauseTrackingIfProviderUnavailable,
+  scheduledRunAuthorizationError,
+} from "./scheduledAiVisibilityAuthorization";
 
 const ACTIVE_WORKFLOW_STATUSES = new Set([
   "queued",
@@ -78,14 +83,30 @@ export async function resumePendingScheduledRuns(input: {
       const instanceStatus = await env.AI_VISIBILITY_WORKFLOW.get(run.id)
         .then((instance) => instance.status())
         .catch(() => null);
+      const authorizationError = await scheduledRunAuthorizationError(run);
       if (
         instanceStatus &&
         ACTIVE_WORKFLOW_STATUSES.has(instanceStatus.status)
       ) {
+        await pauseTrackingIfProviderUnavailable(
+          pending.trackerId,
+          authorizationError ?? "",
+          true,
+        );
         await scheduledRepo.clearPendingScheduledRun({
           trackerId: pending.trackerId,
           runId,
-          lastSkipReason: withoutScheduledRetryNotice(pending.lastSkipReason),
+          lastSkipReason:
+            authorizationError ??
+            withoutScheduledRetryNotice(pending.lastSkipReason),
+        });
+        continue;
+      }
+      if (authorizationError) {
+        await handleUnauthorizedScheduledRun({
+          trackerId: pending.trackerId,
+          run,
+          reason: authorizationError,
         });
         continue;
       }
@@ -242,6 +263,21 @@ export async function startScheduledRun(input: {
     throw error;
   }
   if (!claimed) return "not-claimed";
+
+  const authorizationError = await scheduledRunAuthorizationError(claimed);
+  if (authorizationError) {
+    const pausedForProvider = await pauseTrackingIfProviderUnavailable(
+      input.trackerId,
+      authorizationError,
+    );
+    if (!pausedForProvider)
+      await scheduledRepo.cancelQueuedScheduledRun({
+        trackerId: input.trackerId,
+        runId: id,
+        reason: authorizationError,
+      });
+    return pausedForProvider ? "deferred" : "skipped";
+  }
 
   let reservation: Awaited<ReturnType<typeof reserveProviderBudgetForRun>>;
   try {

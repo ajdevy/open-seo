@@ -26,6 +26,7 @@ import {
   readProjectSettingsRows,
 } from "@/server/features/project-settings-snapshots/snapshotRepository";
 import {
+  enableWebsiteTrackingSchedule,
   prepareWebsiteTracking,
   startWebsiteTrackingRun,
 } from "./websiteTrackingSetup";
@@ -196,30 +197,35 @@ export async function runAiResearchSetup(
     ...topics.map((topic) => topic.name),
     ...review.suggestedKeywords,
   ];
-  await commitProjectSettingsMutation(input.projectId, async () => {
-    const state = await readProjectSettingsRows(input.projectId);
-    if (!state) throw new AppError("NOT_FOUND");
-    const trackingToWrite = state.tracker ? null : tracking;
-    return {
-      snapshot: makeProjectSettingsSnapshot({
-        ...state,
-        project: {
-          ...state.project,
-          aiResearchKeywords:
-            state.project.aiResearchKeywords ??
-            researchKeywordsValue(keywordNames),
-        },
-        tracker: trackingToWrite?.tracker ?? state.tracker,
-        questions: trackingToWrite?.prompts ?? state.questions,
-      }),
-      write: (tx) => [
-        ...(trackingToWrite ? writeConfiguration(tx, trackingToWrite) : []),
-        ...writeResearchKeywords(tx, input.projectId, keywordNames),
-      ],
-      result: undefined,
-    };
-  });
-  if (tracking && runSeededTracking)
+  const trackingSaved = await commitProjectSettingsMutation(
+    input.projectId,
+    async () => {
+      const state = await readProjectSettingsRows(input.projectId);
+      if (!state) throw new AppError("NOT_FOUND");
+      const trackingToWrite = state.tracker ? null : tracking;
+      return {
+        snapshot: makeProjectSettingsSnapshot({
+          ...state,
+          project: {
+            ...state.project,
+            aiResearchKeywords:
+              state.project.aiResearchKeywords ??
+              researchKeywordsValue(keywordNames),
+          },
+          tracker: trackingToWrite?.tracker ?? state.tracker,
+          questions: trackingToWrite?.prompts ?? state.questions,
+        }),
+        write: (tx) => [
+          ...(trackingToWrite ? writeConfiguration(tx, trackingToWrite) : []),
+          ...writeResearchKeywords(tx, input.projectId, keywordNames),
+        ],
+        result: trackingToWrite !== null,
+      };
+    },
+  );
+  if (trackingSaved)
+    await enableWebsiteTrackingSchedule(input.projectId, customer);
+  if (trackingSaved && runSeededTracking)
     await startWebsiteTrackingRun(input.projectId, customer);
   return { review: null };
 }

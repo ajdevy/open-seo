@@ -25,7 +25,11 @@ import {
   type ParsedAiAnswer,
 } from "../providers/dataforseoEvidence";
 import type { AiPostedHold } from "./aiVisibilityBilling";
-import { aiBrands } from "./aiVisibilityConfiguration";
+import {
+  activeAiPrompts,
+  aiBrands,
+  trackerEngines,
+} from "./aiVisibilityConfiguration";
 import { AI_ANSWER_FAILURES } from "./aiVisibilityErrors";
 import { matchAiBrand } from "./aiVisibilityMatching";
 import { recordAiRunOutcome } from "./aiVisibilityRunOutcome";
@@ -94,11 +98,56 @@ export async function prepareAiRun(
   // Stale-run cleanup failed it already; a retry would find the same.
   if (!run || (run.status !== "queued" && run.status !== "running"))
     throw new NonRetryableError(`Run ${runId} is no longer active.`);
+  if (run.trigger === "scheduled") {
+    const config = await repo.getConfiguration(run.projectId);
+    if (!config || !config.tracker.enabled)
+      throw new NonRetryableError(
+        "Scheduled tracking was paused before provider dispatch.",
+      );
+    const prompts = activeAiPrompts(config);
+    const engines = trackerEngines(config.tracker);
+    if (!prompts.length || !engines.length)
+      throw new NonRetryableError(
+        "The saved scheduled tracking scope is no longer available.",
+      );
+    if (
+      config.tracker.locationCode !== run.locationCode ||
+      config.tracker.languageCode !== run.languageCode
+    )
+      throw new NonRetryableError(
+        "The saved market changed before scheduled provider dispatch.",
+      );
+    const expected = new Set(
+      prompts.flatMap((prompt) =>
+        engines.map((engine) => `${prompt.id}:${engine}`),
+      ),
+    );
+    const observations = await repo.getObservations([runId]);
+    const actual = new Set(
+      observations.map(
+        (observation) => `${observation.promptId}:${observation.engine}`,
+      ),
+    );
+    if (
+      actual.size !== expected.size ||
+      [...expected].some((observation) => !actual.has(observation))
+    )
+      throw new NonRetryableError(
+        "The saved prompt or model scope changed before scheduled provider dispatch.",
+      );
+  }
   const pending = (await repo.getObservations([runId])).filter(
     (row) => row.status === "pending",
   );
   const live = run.trigger !== "scheduled";
-  await repo.updateRun(runId, { status: "running" });
+  if (run.trigger === "scheduled" && run.status === "queued") {
+    if (!(await repo.startScheduledRunIfQueued(runId)))
+      throw new NonRetryableError(
+        "The scheduled check was canceled before provider dispatch.",
+      );
+  } else if (run.status === "queued") {
+    await repo.updateRun(runId, { status: "running" });
+  }
   const market = {
     locationCode: run.locationCode,
     languageCode: run.languageCode,

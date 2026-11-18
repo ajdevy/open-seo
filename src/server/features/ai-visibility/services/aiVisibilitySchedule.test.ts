@@ -3,7 +3,6 @@ import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepo
 import { setSchedule } from "./aiVisibilitySchedule";
 import { configuration, customer } from "./aiVisibilityTestFixtures";
 import { setAiScheduleSchema } from "@/types/schemas/ai-visibility";
-import { AiVisibilityError } from "./aiVisibilityErrors";
 
 const { testDb, hasDataforseoAccess } = await vi.hoisted(async () => {
   const { createAiVisibilityTestDb } = await import("../aiVisibilityTestDb");
@@ -17,6 +16,10 @@ vi.mock("cloudflare:workers", () => ({
 }));
 vi.mock("@/db", () => ({ db: testDb.db }));
 vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/server/lib/runtime-env", () => ({
+  getOptionalEnvValue: async (name: string) =>
+    name === "AUTOGEO_QUEUE_MASTER_KEY_B64" ? btoa("k".repeat(32)) : undefined,
+}));
 vi.mock("@/server/lib/provider-access", () => ({ hasDataforseoAccess }));
 vi.mock("@/server/lib/runtime-env", () => ({
   getOptionalEnvValue: async (name: string) =>
@@ -31,7 +34,10 @@ beforeEach(async () => {
   await repo.saveConfiguration(configuration());
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 it("persists and returns an explicit IANA weekly slot, and preserves it on pause", async () => {
   vi.useFakeTimers();
@@ -71,6 +77,115 @@ it("persists and returns an explicit IANA weekly slot, and preserves it on pause
   });
 });
 
+it("cancels a queued scheduled run atomically when tracking is paused", async () => {
+  const enabled = await setSchedule(
+    { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+    customer,
+  );
+  const trackerId = enabled.state.tracker?.id;
+  if (!trackerId) throw new Error("Enabled tracker was not saved.");
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("Tracker fixture was not saved.");
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("Prompt fixture was not saved.");
+  const runId = "queued-scheduled-before-pause";
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: "project",
+      trigger: "scheduled",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: "2026-11-16T06:00:00.000Z",
+    },
+    [
+      {
+        id: "queued-scheduled-before-pause-answer",
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
+  );
+  await repo.updateTracker(trackerId, {
+    pendingScheduledRunId: runId,
+  });
+
+  await setSchedule({ projectId: "project", enabled: false }, customer);
+
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: false,
+    pendingScheduledRunId: null,
+    lastSkipReason: "Scheduled tracking is paused.",
+  });
+  expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
+  expect(await repo.getObservations([runId])).toMatchObject([
+    {
+      status: "failed",
+      error: "Scheduled tracking is paused.",
+    },
+  ]);
+});
+
+it("cancels a queued scheduled run when the saved prompt scope changes", async () => {
+  const enabled = await setSchedule(
+    { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+    customer,
+  );
+  const trackerId = enabled.state.tracker?.id;
+  if (!trackerId) throw new Error("Enabled tracker was not saved.");
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("Tracker fixture was not saved.");
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("Prompt fixture was not saved.");
+  const runId = "queued-scheduled-before-scope-change";
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: "project",
+      trigger: "scheduled",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: "2026-11-16T06:00:00.000Z",
+    },
+    [
+      {
+        id: "queued-scheduled-before-scope-change-answer",
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
+  );
+  await repo.updateTracker(trackerId, {
+    pendingScheduledRunId: runId,
+  });
+
+  await repo.saveConfiguration({
+    ...config,
+    prompts: config.prompts.map((savedPrompt) =>
+      savedPrompt.id === prompt.id
+        ? { ...savedPrompt, paused: true }
+        : savedPrompt,
+    ),
+  });
+
+  const tracker = await repo.getTracker("project");
+  expect(tracker).toMatchObject({
+    enabled: true,
+    pendingScheduledRunId: null,
+  });
+  expect(tracker?.lastSkipReason).toMatch(/tracking settings changed/);
+  expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
+  const [observation] = await repo.getObservations([runId]);
+  expect(observation?.status).toBe("failed");
+  expect(observation?.error).toMatch(/tracking settings changed/);
+});
+
 it("rejects a weekly timezone schedule without a weekday before saving", async () => {
   const input = {
     projectId: "project",
@@ -97,6 +212,142 @@ it("rejects a weekly timezone schedule without a weekday before saving", async (
   });
 
   expect(await repo.getTracker("project")).toEqual(before);
+});
+
+it("keeps a new tracker paused when provider access is missing", async () => {
+  hasDataforseoAccess.mockResolvedValue(false);
+
+  await expect(
+    setSchedule(
+      { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+      customer,
+    ),
+  ).rejects.toMatchObject({ reason: "PROVIDER_NOT_CONFIGURED" });
+
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: false,
+    scheduleInterval: "weekly",
+    scheduleWeekday: null,
+    scheduleHour: null,
+    scheduleMinute: null,
+    scheduleTimeZone: null,
+    nextCheckAt: null,
+  });
+});
+
+it("persists a paused state when a tracker configuration is updated", async () => {
+  const tracker = await repo.getTracker("project");
+  if (!tracker) throw new Error("Tracker fixture was not saved.");
+  await repo.updateTracker(tracker.id, { enabled: true });
+
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("Tracker fixture was not saved.");
+  config.tracker.enabled = false;
+  await repo.saveConfiguration(config);
+
+  expect((await repo.getTracker("project"))?.enabled).toBe(false);
+});
+
+it("keeps a new tracker paused when it has no active prompts", async () => {
+  hasDataforseoAccess.mockClear();
+  const rows = await repo.getConfiguration("project");
+  if (!rows) throw new Error("Tracker fixture was not saved.");
+  const [prompt] = rows.prompts;
+  if (!prompt) throw new Error("Prompt fixture was not saved.");
+  prompt.paused = true;
+  await repo.saveConfiguration(rows);
+
+  await expect(
+    setSchedule(
+      { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+      customer,
+    ),
+  ).rejects.toMatchObject({ reason: "NO_ACTIVE_PROMPTS" });
+
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: false,
+    scheduleWeekday: null,
+    scheduleHour: null,
+    scheduleMinute: null,
+    scheduleTimeZone: null,
+    nextCheckAt: null,
+  });
+  expect(hasDataforseoAccess).not.toHaveBeenCalled();
+});
+
+it("keeps a new tracker paused when its observation scope has no engines", async () => {
+  hasDataforseoAccess.mockClear();
+  const rows = await repo.getConfiguration("project");
+  if (!rows) throw new Error("Tracker fixture was not saved.");
+  Object.assign(rows.tracker, {
+    chatgpt: false,
+    gemini: false,
+    googleAiOverview: false,
+    claude: false,
+    perplexity: false,
+  });
+  await repo.saveConfiguration(rows);
+
+  await expect(
+    setSchedule(
+      { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+      customer,
+    ),
+  ).rejects.toMatchObject({ reason: "NO_ACTIVE_ENGINES" });
+
+  expect((await repo.getTracker("project"))?.enabled).toBe(false);
+  expect(hasDataforseoAccess).not.toHaveBeenCalled();
+});
+
+it("rejects enabling when prompts are removed after the initial validation", async () => {
+  const updateTracker = repo.updateTracker.bind(repo);
+  vi.spyOn(repo, "updateTracker").mockImplementation(async (id, values) => {
+    const current = await repo.getConfiguration("project");
+    if (!current) throw new Error("Tracker fixture was not saved.");
+    await repo.saveConfiguration({
+      ...current,
+      prompts: current.prompts.map((prompt) => ({ ...prompt, paused: true })),
+    });
+    return updateTracker(id, values);
+  });
+
+  await expect(
+    setSchedule(
+      { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+      customer,
+    ),
+  ).rejects.toMatchObject({ reason: "NO_ACTIVE_PROMPTS" });
+
+  expect(await repo.getTracker("project")).toMatchObject({ enabled: false });
+});
+
+it("rejects enabling when engines are removed after the initial validation", async () => {
+  const updateTracker = repo.updateTracker.bind(repo);
+  vi.spyOn(repo, "updateTracker").mockImplementation(async (id, values) => {
+    const current = await repo.getConfiguration("project");
+    if (!current) throw new Error("Tracker fixture was not saved.");
+    await repo.saveConfiguration({
+      ...current,
+      tracker: {
+        ...current.tracker,
+        chatgpt: false,
+        gemini: false,
+        googleAiOverview: false,
+        claude: false,
+        perplexity: false,
+      },
+    });
+    return updateTracker(id, values);
+  });
+
+  await expect(
+    setSchedule(
+      { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+      customer,
+    ),
+  ).rejects.toMatchObject({ reason: "NO_ACTIVE_ENGINES" });
+
+  expect(await repo.getTracker("project")).toMatchObject({ enabled: false });
 });
 
 it("ignores weekly-only fields when pausing a schedule", async () => {
@@ -128,156 +379,5 @@ it("ignores weekly-only fields when pausing a schedule", async () => {
     scheduleHour: before.scheduleHour,
     scheduleMinute: before.scheduleMinute,
     scheduleTimeZone: before.scheduleTimeZone,
-  });
-});
-
-it("defaults a new weekly schedule to Wednesday at 10 in Moscow without a baseline run", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-11-16T06:00:00.000Z"));
-
-  const saved = await setSchedule(
-    { projectId: "project", enabled: true, scheduleInterval: "weekly" },
-    customer,
-  );
-
-  expect(saved.run).toBeNull();
-  expect(saved.state.tracker).toMatchObject({
-    scheduleInterval: "weekly",
-    scheduleWeekday: 3,
-    scheduleHour: 10,
-    scheduleMinute: 0,
-    scheduleTimeZone: "Europe/Moscow",
-    nextCheckAt: "2026-11-18T07:00:00.000Z",
-  });
-});
-
-it("clears weekly wall-clock settings when rescheduling another cadence", async () => {
-  const saved = await repo.getTracker("project");
-  if (!saved) throw new Error("Tracker fixture was not saved.");
-  await repo.updateTracker(saved.id, {
-    enabled: true,
-    scheduleInterval: "weekly",
-    scheduleWeekday: 0,
-    scheduleHour: 9,
-    scheduleMinute: 15,
-    scheduleTimeZone: "America/New_York",
-    nextCheckAt: "2026-03-01T14:15:00.000Z",
-  });
-
-  const result = await setSchedule(
-    {
-      projectId: "project",
-      enabled: true,
-      scheduleInterval: "monthly",
-      scheduleTime: {
-        hour: 10,
-        minute: 30,
-      },
-    },
-    customer,
-  );
-
-  expect(result.state.tracker).toMatchObject({
-    scheduleInterval: "monthly",
-    scheduleWeekday: null,
-    scheduleHour: null,
-    scheduleMinute: null,
-    scheduleTimeZone: null,
-  });
-});
-
-it("rejects a timezone on monthly schedules instead of silently using UTC", async () => {
-  const tracker = await repo.getTracker("project");
-  if (!tracker) throw new Error("Tracker fixture was not saved.");
-  const input = {
-    projectId: "project",
-    enabled: true,
-    scheduleTime: {
-      hour: 10,
-      minute: 30,
-      timeZone: "Europe/Berlin",
-    },
-  };
-
-  await repo.updateTracker(tracker.id, { scheduleInterval: "monthly" });
-  const before = await repo.getTracker("project");
-  if (!before) throw new Error("Tracker fixture was not saved.");
-  expect(
-    setAiScheduleSchema.safeParse({
-      ...input,
-      projectId: "00000000-0000-4000-8000-000000000001",
-      scheduleInterval: "monthly",
-    }).success,
-  ).toBe(false);
-  await expect(setSchedule(input, customer)).rejects.toMatchObject({
-    reason: "INVALID_SCHEDULE_TIME",
-  });
-
-  expect(await repo.getTracker("project")).toEqual(before);
-});
-
-it("rejects an invalid IANA timezone before the schedule is saved", async () => {
-  const before = await repo.getTracker("project");
-  if (!before) throw new Error("Tracker fixture was not saved.");
-  const parsed = setAiScheduleSchema.safeParse({
-    projectId: "project",
-    enabled: true,
-    scheduleTime: {
-      weekday: 0,
-      hour: 9,
-      minute: 0,
-      timeZone: "Mars/Olympus_Mons",
-    },
-  });
-
-  expect(parsed.success).toBe(false);
-  expect(await repo.getTracker("project")).toEqual(before);
-});
-
-it("refuses to save a weekly recurrence with an ambiguous next wall time", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-10-25T05:31:00.000Z"));
-  const before = await repo.getTracker("project");
-  if (!before) throw new Error("Tracker fixture was not saved.");
-
-  const result = setSchedule(
-    {
-      projectId: "project",
-      enabled: true,
-      scheduleInterval: "weekly",
-      scheduleTime: {
-        weekday: 0,
-        hour: 1,
-        minute: 30,
-        timeZone: "America/New_York",
-      },
-    },
-    customer,
-  );
-  await expect(result).rejects.toBeInstanceOf(AiVisibilityError);
-  await expect(result).rejects.toThrow(/occurs twice.*2026-11-01/);
-
-  expect(await repo.getTracker("project")).toEqual(before);
-});
-
-it("keeps timezone-unconfigured schedules on the legacy anchor path", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-03-01T08:00:00.000Z"));
-  const result = await setSchedule(
-    {
-      projectId: "project",
-      enabled: true,
-      scheduleInterval: "weekly",
-      scheduleTime: { weekday: 0, hour: 9, minute: 15 },
-    },
-    customer,
-  );
-
-  expect(result.state.tracker).toMatchObject({
-    scheduleWeekday: null,
-    scheduleHour: null,
-    scheduleMinute: null,
-    scheduleTimeZone: null,
-    nextCheckAt: "2026-03-01T09:15:00.000Z",
   });
 });

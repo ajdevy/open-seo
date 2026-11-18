@@ -1,22 +1,26 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { projects } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { aiPrompts, aiTrackers, projects } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { runScheduledAiVisibility } from "./scheduledAiVisibility";
 import { configuration } from "./aiVisibilityTestFixtures";
 
-const { testDb, workflow, hosted } = await vi.hoisted(async () => {
-  const { createAiVisibilityTestDb } = await import("../aiVisibilityTestDb");
-  return {
-    testDb: await createAiVisibilityTestDb(),
-    workflow: {
-      create: vi.fn(),
-      get: vi.fn(async () => ({
-        status: async () => ({ status: "queued" }),
-      })),
-    },
-    hosted: vi.fn(),
-  };
-});
+const { testDb, workflow, hosted, providerAccess } = await vi.hoisted(
+  async () => {
+    const { createAiVisibilityTestDb } = await import("../aiVisibilityTestDb");
+    return {
+      testDb: await createAiVisibilityTestDb(),
+      workflow: {
+        create: vi.fn(),
+        get: vi.fn(async () => ({
+          status: async () => ({ status: "queued" }),
+        })),
+      },
+      hosted: vi.fn(),
+      providerAccess: vi.fn(),
+    };
+  },
+);
 vi.mock("cloudflare:workers", () => ({
   env: { DATABASE_PROVIDER: "d1", AI_VISIBILITY_WORKFLOW: workflow },
 }));
@@ -28,6 +32,9 @@ vi.mock("@/server/lib/runtime-env", () => ({
       ? btoa("k".repeat(32))
       : "dataforseo-key",
   isHostedServerAuthMode: hosted,
+}));
+vi.mock("@/server/lib/provider-access", () => ({
+  hasDataforseoAccess: providerAccess,
 }));
 vi.mock("@/server/billing/subscription", () => ({
   getOrCreateOrganizationCustomer: async () => ({ id: "organization" }),
@@ -57,7 +64,7 @@ async function dueTracker(
 ) {
   const { engine = "chatgpt", ...trackerSchedule } = schedule;
   const rows = configuration(
-    { engines: [engine], prompts: [{ text: "Which SEO tools?", paused }] },
+    { engines: [engine], prompts: [{ text: "Which SEO tools?" }] },
     projectId,
   );
   await repo.saveConfiguration(rows);
@@ -66,10 +73,23 @@ async function dueTracker(
     nextCheckAt: due,
     ...trackerSchedule,
   });
+  if (paused) {
+    const current = await repo.getConfiguration(projectId);
+    if (!current) throw new Error("test tracker configuration was not created");
+    await repo.saveConfiguration({
+      ...current,
+      prompts: current.prompts.map((prompt) => ({ ...prompt, paused: true })),
+    });
+  }
 }
 
 beforeEach(async () => {
   hosted.mockResolvedValue(false);
+  providerAccess.mockResolvedValue(true);
+  workflow.create.mockReset().mockResolvedValue(undefined);
+  workflow.get
+    .mockReset()
+    .mockRejectedValue(new Error("workflow instance not found"));
   await testDb.seedProject();
   await testDb.db.insert(projects).values({
     id: "paused-project",
@@ -90,6 +110,7 @@ it("moves every due tracker on, including one whose check cannot start", async (
   await runScheduledAiVisibility();
 
   const skipped = await repo.getTracker("paused-project");
+  expect(skipped?.enabled).toBe(false);
   expect(skipped?.nextCheckAt).not.toBe(due);
   expect(skipped?.lastSkipReason).toMatch(/unpause prompts/);
   expect((await repo.getTracker("project"))?.nextCheckAt).not.toBe(due);
@@ -131,244 +152,180 @@ it("skips a scheduled run when its shared rolling provider budget is exhausted",
   expect(workflow.create).not.toHaveBeenCalled();
 });
 
-it("keeps both the skipped DST slot and insufficient-credit notices", async () => {
-  hosted.mockResolvedValue(true);
+it("resumes the same scheduled run after the cron stops after its durable claim", async () => {
   vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-10-25T05:31:00.000Z"));
-  await dueTracker("project", false, {
-    scheduleInterval: "weekly",
-    nextCheckAt: "2026-10-25T05:30:00.000Z",
-    scheduleWeekday: 0,
-    scheduleHour: 1,
-    scheduleMinute: 30,
-    scheduleTimeZone: "America/New_York",
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
+  await dueTracker("project", false);
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("test tracker configuration was not created");
+  const runId = "scheduled-outbox-recovery";
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("test prompt was not created");
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: config.tracker.projectId,
+      trigger: "scheduled",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: new Date().toISOString(),
+    },
+    [
+      {
+        id: "scheduled-outbox-recovery-answer",
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
+  );
+  await repo.updateTracker(config.tracker.id, {
+    nextCheckAt: "2026-09-08T06:00:00.000Z",
+    pendingScheduledRunId: runId,
   });
 
   await runScheduledAiVisibility();
 
-  expect((await repo.getTracker("project"))?.lastSkipReason).toMatch(
-    /^INSUFFICIENT_CREDITS; Skipped unresolved weekly local-time occurrence\(s\): 2026-11-01\./,
-  );
-  expect(await repo.listRuns("project")).toEqual([]);
-});
-
-it("advances a saved weekly wall-clock slot across spring DST", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-03-01T14:01:00.000Z"));
-  const observed = "2026-03-01T14:00:00.000Z";
-  await dueTracker("project", false, {
-    scheduleInterval: "weekly",
-    nextCheckAt: observed,
-    scheduleWeekday: 0,
-    scheduleHour: 9,
-    scheduleMinute: 0,
-    scheduleTimeZone: "America/New_York",
-  });
-
-  await runScheduledAiVisibility();
-
-  expect((await repo.getTracker("project"))?.nextCheckAt).toBe(
-    "2026-03-08T13:00:00.000Z",
-  );
-  expect((await repo.getTracker("project"))?.lastSkipReason).toBeNull();
   expect(await repo.listRuns("project")).toMatchObject([
-    { trigger: "scheduled", status: "queued" },
+    { id: runId, trigger: "scheduled", status: "queued" },
   ]);
   expect(workflow.create).toHaveBeenCalledTimes(1);
+  expect(workflow.create.mock.calls[0]?.[0]).toMatchObject({ id: runId });
+  expect((await repo.getTracker("project"))?.pendingScheduledRunId).toBeNull();
 });
 
-it("skips missed weekly occurrences and keeps the next future wall-clock slot", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-03-11T12:01:00.000Z"));
-  await dueTracker("project", false, {
-    scheduleInterval: "weekly",
-    nextCheckAt: "2026-03-01T14:00:00.000Z",
-    scheduleWeekday: 0,
-    scheduleHour: 9,
-    scheduleMinute: 0,
-    scheduleTimeZone: "America/New_York",
+it("does not resume a queued scheduled run after the tracker was paused", async () => {
+  workflow.create.mockClear();
+  await dueTracker("project", false);
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("test tracker configuration was not created");
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("test prompt was not created");
+  const runId = "scheduled-outbox-paused";
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: "project",
+      trigger: "scheduled",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: new Date().toISOString(),
+    },
+    [
+      {
+        id: `${runId}-answer`,
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
+  );
+  await repo.updateTracker(config.tracker.id, {
+    pendingScheduledRunId: runId,
   });
+  // Simulate a pause racing the scheduler after the run was claimed.
+  await testDb.db
+    .update(aiTrackers)
+    .set({ enabled: false })
+    .where(eq(aiTrackers.id, config.tracker.id));
 
   await runScheduledAiVisibility();
 
-  const tracker = await repo.getTracker("project");
-  expect(tracker?.nextCheckAt).toBe("2026-03-15T13:00:00.000Z");
-  expect(tracker?.lastSkipReason).toContain(
-    "Skipped missed weekly check slot(s): 2026-03-01 at 09:00 America/New_York; 2026-03-08 at 09:00 America/New_York.",
-  );
-  expect(tracker?.lastSkipReason).toContain(
-    "No automatic catch-up check was started.",
-  );
-  expect(await repo.listRuns("project")).toEqual([]);
   expect(workflow.create).not.toHaveBeenCalled();
+  expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: false,
+    pendingScheduledRunId: null,
+  });
 });
 
-it("advances a due monthly schedule after its month-end occurrence", async () => {
+it("does not resume a queued scheduled run after its prompt scope is removed", async () => {
   vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-04-01T12:01:00.000Z"));
-  const observed = "2026-03-31T08:00:00.000Z";
-  await dueTracker("project", false, {
-    scheduleInterval: "monthly",
-    nextCheckAt: observed,
-    scheduleWeekday: null,
-    scheduleHour: 4,
-    scheduleMinute: 0,
-    scheduleTimeZone: "America/New_York",
-  });
-
-  await runScheduledAiVisibility();
-
-  expect((await repo.getTracker("project"))?.nextCheckAt).toBe(
-    "2026-04-30T08:00:00.000Z",
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
+  workflow.create.mockClear();
+  await dueTracker("project", false);
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("test tracker configuration was not created");
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("test prompt was not created");
+  const runId = "scheduled-outbox-scope-removed";
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: "project",
+      trigger: "scheduled",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: new Date().toISOString(),
+    },
+    [
+      {
+        id: `${runId}-answer`,
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
   );
-  expect(await repo.listRuns("project")).toMatchObject([
-    { trigger: "scheduled", status: "queued" },
-  ]);
-});
-
-it("runs the due occurrence and reports a skipped ambiguous next week", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-10-25T05:31:00.000Z"));
-  const observed = "2026-10-25T05:30:00.000Z";
-  await dueTracker("project", false, {
-    scheduleInterval: "weekly",
-    nextCheckAt: observed,
-    scheduleWeekday: 0,
-    scheduleHour: 1,
-    scheduleMinute: 30,
-    scheduleTimeZone: "America/New_York",
+  await repo.updateTracker(config.tracker.id, {
+    pendingScheduledRunId: runId,
+    nextCheckAt: "2026-09-08T06:00:00.000Z",
   });
+  // Simulate a scope removal racing the scheduler after the run was claimed.
+  await testDb.db
+    .update(aiPrompts)
+    .set({ paused: true })
+    .where(eq(aiPrompts.id, prompt.id));
 
   await runScheduledAiVisibility();
 
+  expect(workflow.create).not.toHaveBeenCalled();
+  expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
   const tracker = await repo.getTracker("project");
-  expect(tracker?.nextCheckAt).toBe("2026-11-08T06:30:00.000Z");
-  expect(tracker?.lastSkipReason).toMatch(
-    /Skipped unresolved weekly local-time occurrence\(s\): 2026-11-01/,
-  );
-  expect(await repo.listRuns("project")).toMatchObject([
-    { trigger: "scheduled", status: "queued" },
-  ]);
-  expect(workflow.create).toHaveBeenCalledTimes(1);
+  expect(tracker).toMatchObject({
+    enabled: true,
+    pendingScheduledRunId: null,
+  });
+  expect(tracker?.lastSkipReason).toMatch(/no longer has active prompts/);
 });
 
-it("runs the due occurrence and reports a skipped nonexistent spring slot", async () => {
+it("retains a visible outbox claim when workflow creation cannot be confirmed", async () => {
   vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-03-01T07:31:00.000Z"));
-  const observed = "2026-03-01T07:30:00.000Z";
-  await dueTracker("project", false, {
-    scheduleInterval: "weekly",
-    nextCheckAt: observed,
-    scheduleWeekday: 0,
-    scheduleHour: 2,
-    scheduleMinute: 30,
-    scheduleTimeZone: "America/New_York",
-  });
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
+  workflow.create.mockRejectedValue(new Error("workflow endpoint unavailable"));
+  workflow.get.mockRejectedValue(new Error("workflow lookup unavailable"));
+  await dueTracker("project", false);
 
-  await runScheduledAiVisibility();
+  const firstTick = runScheduledAiVisibility();
+  await vi.advanceTimersByTimeAsync(2_500);
+  await firstTick;
 
+  const queued = await repo.listRuns("project");
+  expect(queued).toMatchObject([{ trigger: "scheduled", status: "queued" }]);
+  const latestRun = queued[0];
+  if (!latestRun) throw new Error("scheduled run was not persisted");
+  const runId = latestRun.id;
   const tracker = await repo.getTracker("project");
-  expect(tracker?.nextCheckAt).toBe("2026-03-15T06:30:00.000Z");
-  expect(tracker?.lastSkipReason).toMatch(
-    /Skipped unresolved weekly local-time occurrence\(s\): 2026-03-08/,
+  expect(tracker?.pendingScheduledRunId).toBe(runId);
+  expect(tracker?.lastSkipReason).toContain(
+    "durably queued and will be retried automatically",
   );
-  expect(await repo.listRuns("project")).toMatchObject([
-    { trigger: "scheduled", status: "queued" },
-  ]);
-});
 
-it.each([
-  {
-    label: "spring gap after a later day",
-    dueAt: "2026-03-01T07:30:00.000Z",
-    now: "2026-03-11T07:31:00.000Z",
-    hour: 2,
-    minute: 30,
-    expectedNext: "2026-03-15T06:30:00.000Z",
-    skippedDate: "2026-03-08",
-    skippedExplanation: "did not exist because of the daylight-saving gap",
-  },
-  {
-    label: "fall fold after a later day",
-    dueAt: "2026-10-25T05:30:00.000Z",
-    now: "2026-11-03T06:31:00.000Z",
-    hour: 1,
-    minute: 30,
-    expectedNext: "2026-11-08T06:30:00.000Z",
-    skippedDate: "2026-11-01",
-    skippedExplanation: "occurred twice because of the daylight-saving fold",
-  },
-])(
-  "skips overdue weekly slots when processing resumes after the $label",
-  async ({
-    dueAt,
-    now,
-    hour,
-    minute,
-    expectedNext,
-    skippedDate,
-    skippedExplanation,
-  }) => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(now));
-    await dueTracker("project", false, {
-      scheduleInterval: "weekly",
-      nextCheckAt: dueAt,
-      scheduleWeekday: 0,
-      scheduleHour: hour,
-      scheduleMinute: minute,
-      scheduleTimeZone: "America/New_York",
-    });
-
-    await runScheduledAiVisibility();
-
-    const tracker = await repo.getTracker("project");
-    expect(tracker?.nextCheckAt).toBe(expectedNext);
-    expect(tracker?.lastSkipReason).toContain(skippedDate);
-    expect(tracker?.lastSkipReason).toContain(skippedExplanation);
-    expect(tracker?.lastSkipReason).toContain(
-      "No automatic catch-up check was started.",
-    );
-    expect(await repo.listRuns("project")).toEqual([]);
-    expect(workflow.create).not.toHaveBeenCalled();
-  },
-);
-
-it("pauses an incomplete saved weekly local-time schedule instead of retrying it forever", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-03-01T14:01:00.000Z"));
-  await dueTracker("project", false, {
-    scheduleInterval: "weekly",
-    nextCheckAt: "2026-03-01T14:00:00.000Z",
-    scheduleHour: 9,
-    scheduleMinute: null,
-    scheduleTimeZone: "America/New_York",
+  workflow.create.mockReset().mockResolvedValue(undefined);
+  workflow.get.mockReset().mockResolvedValue({
+    status: async () => ({ status: "queued" }),
   });
-
   await runScheduledAiVisibility();
 
-  const tracker = await repo.getTracker("project");
-  expect(tracker?.enabled).toBe(false);
-  expect(tracker?.nextCheckAt).toBe("2026-03-01T14:00:00.000Z");
-  expect(tracker?.lastSkipReason).toMatch(/schedule is incomplete/i);
-  expect(await repo.listRuns("project")).toEqual([]);
-});
-
-it("keeps legacy trackers on the fixed UTC-anchor recurrence", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-03-01T14:01:00.000Z"));
-  await dueTracker("project", false, {
-    scheduleInterval: "weekly",
-    nextCheckAt: "2026-03-01T14:00:00.000Z",
-    scheduleWeekday: null,
-    scheduleHour: null,
-    scheduleMinute: null,
-    scheduleTimeZone: null,
-  });
-
-  await runScheduledAiVisibility();
-
-  expect((await repo.getTracker("project"))?.nextCheckAt).toBe(
-    "2026-03-08T14:00:00.000Z",
-  );
+  expect(await repo.listRuns("project")).toHaveLength(1);
+  expect(workflow.create).not.toHaveBeenCalled();
+  expect(workflow.get).toHaveBeenCalledWith(runId);
+  expect((await repo.getTracker("project"))?.pendingScheduledRunId).toBeNull();
+  expect((await repo.getTracker("project"))?.lastSkipReason).toBeNull();
 });
