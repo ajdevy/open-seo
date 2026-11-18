@@ -305,6 +305,20 @@ export const AiVisibilityRepository = {
     )[0] ?? null,
   updateRun: (id: string, values: Partial<RunRow>) =>
     db.update(aiRuns).set(values).where(eq(aiRuns.id, id)),
+  startScheduledRunIfQueued: async (id: string) =>
+    (
+      await db
+        .update(aiRuns)
+        .set({ status: "running" })
+        .where(
+          and(
+            eq(aiRuns.id, id),
+            eq(aiRuns.trigger, "scheduled"),
+            eq(aiRuns.status, "queued"),
+          ),
+        )
+        .returning({ id: aiRuns.id })
+    ).length > 0,
   getObservations,
   getObservation,
   listAnsweredPromptIds,

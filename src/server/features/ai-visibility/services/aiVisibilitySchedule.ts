@@ -47,7 +47,10 @@ export async function setSchedule(
   const config = await requireConfiguration(input.projectId);
   const { tracker } = config;
   if (!input.enabled) {
-    await repo.updateTracker(tracker.id, { enabled: false });
+    await repo.updateTracker(tracker.id, {
+      enabled: false,
+      lastSkipReason: "Scheduled tracking is paused.",
+    });
     return { state: await getTracker(input), run: null };
   }
   const scheduleInterval = input.scheduleInterval ?? tracker.scheduleInterval;

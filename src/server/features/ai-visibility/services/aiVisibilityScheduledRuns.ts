@@ -10,7 +10,12 @@ import {
   rowsForRun,
   startWorkflowForRun,
 } from "./aiVisibilityRuns";
-import type { ConfigurationRows } from "../repositories/AiVisibilityRepository";
+import { activeAiPrompts, trackerEngines } from "./aiVisibilityConfiguration";
+import { hasDataforseoAccess } from "@/server/lib/provider-access";
+import type {
+  ConfigurationRows,
+  RunRow,
+} from "../repositories/AiVisibilityRepository";
 
 const ACTIVE_WORKFLOW_STATUSES = new Set([
   "queued",
@@ -31,6 +36,42 @@ function withoutScheduledRetryNotice(reason: string | null | undefined) {
 function withScheduledRetryNotice(reason: string | null | undefined) {
   const base = withoutScheduledRetryNotice(reason);
   return [base, SCHEDULED_RETRY_NOTICE].filter(Boolean).join("\n");
+}
+
+async function scheduledRunAuthorizationError(run: RunRow) {
+  const config = await repo.getConfiguration(run.projectId);
+  if (!config || !config.tracker.enabled)
+    return "Scheduled tracking was paused before the queued check started.";
+
+  const prompts = activeAiPrompts(config);
+  const engines = trackerEngines(config.tracker);
+  if (!prompts.length || !engines.length)
+    return "The saved tracking scope no longer has active prompts and models.";
+  if (
+    config.tracker.locationCode !== run.locationCode ||
+    config.tracker.languageCode !== run.languageCode
+  )
+    return "The saved market changed before the queued check started.";
+
+  const expected = new Set(
+    prompts.flatMap((prompt) =>
+      engines.map((engine) => `${prompt.id}:${engine}`),
+    ),
+  );
+  const observations = await repo.getObservations([run.id]);
+  const actual = new Set(
+    observations.map(
+      (observation) => `${observation.promptId}:${observation.engine}`,
+    ),
+  );
+  if (
+    actual.size !== expected.size ||
+    [...expected].some((observation) => !actual.has(observation))
+  )
+    return "The saved prompt or model scope changed before the queued check started.";
+  if (!(await hasDataforseoAccess()))
+    return "The configured provider is unavailable; the queued check was not started.";
+  return null;
 }
 
 /**
@@ -62,6 +103,23 @@ export async function resumePendingScheduledRuns() {
         runId,
         lastSkipReason: withoutScheduledRetryNotice(pending.lastSkipReason),
       });
+      continue;
+    }
+
+    const authorizationError = await scheduledRunAuthorizationError(run);
+    if (authorizationError) {
+      if (run.status === "queued")
+        await scheduledRepo.cancelQueuedScheduledRun({
+          trackerId: pending.trackerId,
+          runId,
+          reason: authorizationError,
+        });
+      else
+        await scheduledRepo.setPendingScheduledRunNotice({
+          trackerId: pending.trackerId,
+          runId,
+          lastSkipReason: authorizationError,
+        });
       continue;
     }
 
@@ -152,6 +210,16 @@ export async function startScheduledRun(input: {
     throw error;
   }
   if (!claimed) return "not-claimed";
+
+  const authorizationError = await scheduledRunAuthorizationError(claimed);
+  if (authorizationError) {
+    await scheduledRepo.cancelQueuedScheduledRun({
+      trackerId: input.trackerId,
+      runId: id,
+      reason: authorizationError,
+    });
+    return "deferred";
+  }
 
   try {
     await startWorkflowForRun(id, prepared.project.id, input.billing);

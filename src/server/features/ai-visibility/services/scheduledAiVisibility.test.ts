@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { projects } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { aiPrompts, aiTrackers, projects } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { runScheduledAiVisibility } from "./scheduledAiVisibility";
 import { configuration } from "./aiVisibilityTestFixtures";
@@ -55,7 +56,7 @@ async function dueTracker(
   } = {},
 ) {
   const rows = configuration(
-    { engines: ["chatgpt"], prompts: [{ text: "Which SEO tools?", paused }] },
+    { engines: ["chatgpt"], prompts: [{ text: "Which SEO tools?" }] },
     projectId,
   );
   await repo.saveConfiguration(rows);
@@ -64,6 +65,14 @@ async function dueTracker(
     nextCheckAt: due,
     ...schedule,
   });
+  if (paused) {
+    const current = await repo.getConfiguration(projectId);
+    if (!current) throw new Error("test tracker configuration was not created");
+    await repo.saveConfiguration({
+      ...current,
+      prompts: current.prompts.map((prompt) => ({ ...prompt, paused: true })),
+    });
+  }
 }
 
 beforeEach(async () => {
@@ -153,6 +162,101 @@ it("resumes the same scheduled run after the cron stops after its durable claim"
   expect(workflow.create).toHaveBeenCalledTimes(1);
   expect(workflow.create.mock.calls[0]?.[0]).toMatchObject({ id: runId });
   expect((await repo.getTracker("project"))?.pendingScheduledRunId).toBeNull();
+});
+
+it("does not resume a queued scheduled run after the tracker was paused", async () => {
+  workflow.create.mockClear();
+  await dueTracker("project", false);
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("test tracker configuration was not created");
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("test prompt was not created");
+  const runId = "scheduled-outbox-paused";
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: "project",
+      trigger: "scheduled",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: new Date().toISOString(),
+    },
+    [
+      {
+        id: `${runId}-answer`,
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
+  );
+  await repo.updateTracker(config.tracker.id, {
+    pendingScheduledRunId: runId,
+  });
+  // Simulate a pause racing the scheduler after the run was claimed.
+  await testDb.db
+    .update(aiTrackers)
+    .set({ enabled: false })
+    .where(eq(aiTrackers.id, config.tracker.id));
+
+  await runScheduledAiVisibility();
+
+  expect(workflow.create).not.toHaveBeenCalled();
+  expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: false,
+    pendingScheduledRunId: null,
+  });
+});
+
+it("does not resume a queued scheduled run after its prompt scope is removed", async () => {
+  workflow.create.mockClear();
+  await dueTracker("project", false);
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("test tracker configuration was not created");
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("test prompt was not created");
+  const runId = "scheduled-outbox-scope-removed";
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: "project",
+      trigger: "scheduled",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: new Date().toISOString(),
+    },
+    [
+      {
+        id: `${runId}-answer`,
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
+  );
+  await repo.updateTracker(config.tracker.id, {
+    pendingScheduledRunId: runId,
+  });
+  // Simulate a scope removal racing the scheduler after the run was claimed.
+  await testDb.db
+    .update(aiPrompts)
+    .set({ paused: true })
+    .where(eq(aiPrompts.id, prompt.id));
+
+  await runScheduledAiVisibility();
+
+  expect(workflow.create).not.toHaveBeenCalled();
+  expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: true,
+    pendingScheduledRunId: null,
+    lastSkipReason: expect.stringMatching(/no longer has active prompts/),
+  });
 });
 
 it("retains a visible outbox claim when workflow creation cannot be confirmed", async () => {

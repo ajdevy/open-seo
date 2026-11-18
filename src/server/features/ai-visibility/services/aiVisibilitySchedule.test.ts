@@ -31,7 +31,10 @@ beforeEach(async () => {
   await repo.saveConfiguration(configuration());
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 it("persists and returns an explicit IANA weekly slot, and preserves it on pause", async () => {
   vi.useFakeTimers();
@@ -69,6 +72,113 @@ it("persists and returns an explicit IANA weekly slot, and preserves it on pause
     scheduleMinute: 15,
     scheduleTimeZone: "America/New_York",
   });
+});
+
+it("cancels a queued scheduled run atomically when tracking is paused", async () => {
+  const enabled = await setSchedule(
+    { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+    customer,
+  );
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("Tracker fixture was not saved.");
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("Prompt fixture was not saved.");
+  const runId = "queued-scheduled-before-pause";
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: "project",
+      trigger: "scheduled",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: "2026-11-16T06:00:00.000Z",
+    },
+    [
+      {
+        id: "queued-scheduled-before-pause-answer",
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
+  );
+  await repo.updateTracker(enabled.state.tracker.id, {
+    pendingScheduledRunId: runId,
+  });
+
+  await setSchedule({ projectId: "project", enabled: false }, customer);
+
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: false,
+    pendingScheduledRunId: null,
+    lastSkipReason: "Scheduled tracking is paused.",
+  });
+  expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
+  expect(await repo.getObservations([runId])).toMatchObject([
+    {
+      status: "failed",
+      error: "Scheduled tracking is paused.",
+    },
+  ]);
+});
+
+it("cancels a queued scheduled run when the saved prompt scope changes", async () => {
+  const enabled = await setSchedule(
+    { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+    customer,
+  );
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("Tracker fixture was not saved.");
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("Prompt fixture was not saved.");
+  const runId = "queued-scheduled-before-scope-change";
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: "project",
+      trigger: "scheduled",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: "2026-11-16T06:00:00.000Z",
+    },
+    [
+      {
+        id: "queued-scheduled-before-scope-change-answer",
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
+  );
+  await repo.updateTracker(enabled.state.tracker.id, {
+    pendingScheduledRunId: runId,
+  });
+
+  await repo.saveConfiguration({
+    ...config,
+    prompts: config.prompts.map((savedPrompt) =>
+      savedPrompt.id === prompt.id
+        ? { ...savedPrompt, paused: true }
+        : savedPrompt,
+    ),
+  });
+
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: true,
+    pendingScheduledRunId: null,
+    lastSkipReason: expect.stringMatching(/tracking settings changed/),
+  });
+  expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
+  expect(await repo.getObservations([runId])).toMatchObject([
+    {
+      status: "failed",
+      error: expect.stringMatching(/tracking settings changed/),
+    },
+  ]);
 });
 
 it("rejects a weekly timezone schedule without a weekday before saving", async () => {
@@ -177,6 +287,57 @@ it("keeps a new tracker paused when its observation scope has no engines", async
 
   expect((await repo.getTracker("project"))?.enabled).toBe(false);
   expect(hasDataforseoAccess).not.toHaveBeenCalled();
+});
+
+it("rejects enabling when prompts are removed after the initial validation", async () => {
+  const updateTracker = repo.updateTracker.bind(repo);
+  vi.spyOn(repo, "updateTracker").mockImplementation(async (id, values) => {
+    const current = await repo.getConfiguration("project");
+    if (!current) throw new Error("Tracker fixture was not saved.");
+    await repo.saveConfiguration({
+      ...current,
+      prompts: current.prompts.map((prompt) => ({ ...prompt, paused: true })),
+    });
+    return updateTracker(id, values);
+  });
+
+  await expect(
+    setSchedule(
+      { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+      customer,
+    ),
+  ).rejects.toMatchObject({ reason: "NO_ACTIVE_PROMPTS" });
+
+  expect(await repo.getTracker("project")).toMatchObject({ enabled: false });
+});
+
+it("rejects enabling when engines are removed after the initial validation", async () => {
+  const updateTracker = repo.updateTracker.bind(repo);
+  vi.spyOn(repo, "updateTracker").mockImplementation(async (id, values) => {
+    const current = await repo.getConfiguration("project");
+    if (!current) throw new Error("Tracker fixture was not saved.");
+    await repo.saveConfiguration({
+      ...current,
+      tracker: {
+        ...current.tracker,
+        chatgpt: false,
+        gemini: false,
+        googleAiOverview: false,
+        claude: false,
+        perplexity: false,
+      },
+    });
+    return updateTracker(id, values);
+  });
+
+  await expect(
+    setSchedule(
+      { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+      customer,
+    ),
+  ).rejects.toMatchObject({ reason: "NO_ACTIVE_ENGINES" });
+
+  expect(await repo.getTracker("project")).toMatchObject({ enabled: false });
 });
 
 it("ignores weekly-only fields when pausing a schedule", async () => {
