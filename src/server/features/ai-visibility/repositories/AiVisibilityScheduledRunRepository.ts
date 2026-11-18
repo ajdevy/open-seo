@@ -88,6 +88,7 @@ async function listPendingScheduledRuns() {
     .select({
       trackerId: aiTrackers.id,
       pendingScheduledRunId: aiTrackers.pendingScheduledRunId,
+      weeklyProviderBudgetCents: aiTrackers.weeklyProviderBudgetCents,
       organizationId: projects.organizationId,
       lastSkipReason: aiTrackers.lastSkipReason,
       run: aiRuns,

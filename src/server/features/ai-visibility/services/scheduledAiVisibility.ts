@@ -66,7 +66,12 @@ export async function runScheduledAiVisibility() {
   let started = 0;
   let answersStarted = 0;
   try {
-    await resumePendingScheduledRuns();
+    const resumed = await resumePendingScheduledRuns({
+      answerBudget: SCHEDULED_ANSWER_BUDGET,
+      deadline,
+    });
+    started += resumed.started;
+    answersStarted += resumed.answersStarted;
   } catch (error) {
     // A pending outbox item stays durable and is retried on the next tick.
     console.error("[ai-visibility] scheduled outbox sweep failed", {
@@ -200,7 +205,7 @@ export async function runScheduledAiVisibility() {
         nextCheckAt,
         lastSkipReason: scheduleSkipReason,
       });
-      if (result === "not-claimed") continue;
+      if (result === "not-claimed" || result === "skipped") continue;
       started++;
       answersStarted += answers;
     } catch (error) {

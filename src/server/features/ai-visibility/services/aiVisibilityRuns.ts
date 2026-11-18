@@ -20,11 +20,9 @@ import { requireConfiguration } from "./aiVisibilityMutation";
 import { aiPromptIsBranded } from "./aiVisibilityMatching";
 import { aiRunView } from "./aiVisibilityResults";
 import { aiCostForAnswers } from "./aiVisibilityCost";
+import { reserveProviderBudgetForRun } from "./aiVisibilityProviderBudget";
 import { hasDataforseoAccess } from "@/server/lib/provider-access";
-import {
-  markAiProviderRunBudgetUnknown,
-  reserveAiProviderRunBudget,
-} from "../repositories/AiProviderRunBudgetRepository";
+import { markAiProviderRunBudgetUnknown } from "../repositories/AiProviderRunBudgetRepository";
 import {
   startWorkflow,
   STUCK_RUN_AFTER_MS,
@@ -241,8 +239,8 @@ export async function startRun(
   // Two attempts: once normally, once after failing a stale blocker.
   for (let attempt = 0; attempt < 2; attempt++) {
     const id = crypto.randomUUID();
+    const rows = rowsForRun(prepared, id);
     try {
-      const rows = rowsForRun(prepared, id);
       await repo.createRun(rows.run, rows.observations);
     } catch (error) {
       // The one-active-run index rejected the insert, or it truly failed.
@@ -256,40 +254,22 @@ export async function startRun(
         blocker.id,
       );
     }
-    const createdAt = new Date().toISOString();
-    const reservationCost = aiCostForAnswers(
-      scope.prompts.flatMap(() => scope.engines),
-      false,
-      trigger === "scheduled" ? "queued" : "live",
-    ).providerCostUsd;
-    let admission: Awaited<ReturnType<typeof reserveAiProviderRunBudget>>;
+    let reservation: Awaited<ReturnType<typeof reserveProviderBudgetForRun>>;
     try {
-      admission = await reserveAiProviderRunBudget({
-        id: crypto.randomUUID(),
-        projectId: project.id,
-        runId: id,
+      reservation = await reserveProviderBudgetForRun({
+        run: rows.run,
         limitUsdCents: config.tracker.weeklyProviderBudgetCents,
-        reserveUsdMicros: Math.round(reservationCost * 1e6),
-        createdAt,
+        engines: rows.observations.map((observation) => observation.engine),
       });
     } catch (error) {
       // A dropped database response can hide a committed reservation. Preserve
       // that outcome as unknown and fail closed before starting the workflow.
-      await markAiProviderRunBudgetUnknown(id).catch(() => undefined);
-      await failAiRun(id, AI_ANSWER_FAILURES.notStarted);
+      await failAiRun(id, AI_ANSWER_FAILURES.notStarted).catch(() => undefined);
       throw error;
     }
-    if (!admission.admitted) {
-      const message =
-        admission.reason === "run_in_progress"
-          ? "Another provider run already holds this project's active reservation. No provider request was started."
-          : admission.reason === "unknown_outcome"
-            ? "This run has an unresolved provider outcome and cannot be started again until that outcome is reconciled."
-            : admission.reason === "reservation_mismatch"
-              ? "A different provider-cost ceiling is already reserved for this run. No new provider request was started."
-              : admission.reason === "global_budget_exceeded"
-                ? `This run may use up to $${reservationCost.toFixed(4)} in provider charges, but only $${(admission.remainingUsdMicros / 1e6).toFixed(4)} remains in the installation-wide rolling 7-day provider budget. No provider request was started.`
-                : `This run may use up to $${reservationCost.toFixed(4)} in provider charges, but only $${(admission.remainingUsdMicros / 1e6).toFixed(4)} remains in this project's rolling 7-day budget. No provider request was started.`;
+    if (!reservation.admission.admitted) {
+      const message = reservation.message;
+      if (!message) throw new Error("Provider budget refusal had no message.");
       await failAiRun(id, AI_ANSWER_FAILURES.notStarted);
       await repo.updateTracker(config.tracker.id, {
         lastSkipReason: message,
