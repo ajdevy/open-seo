@@ -155,6 +155,12 @@ export function TrackingCostReview({
   const fitsWeeklyProviderBudget = Boolean(
     cost && providerRunCostUsd <= cost.weeklyProviderBudgetAvailableUsd,
   );
+  const exceedsInstallationBudget = Boolean(
+    cost && providerRunCostUsd > cost.weeklyProviderBudgetGlobalAvailableUsd,
+  );
+  const exceedsProjectBudget = Boolean(
+    cost && providerRunCostUsd > cost.weeklyProjectProviderBudgetAvailableUsd,
+  );
   const start = useMutation({
     mutationFn: async () => {
       if (!cost) throw new Error("Review the estimate before starting.");
@@ -291,9 +297,17 @@ export function TrackingCostReview({
               <FieldDescription>
                 {`This run reserves up to ${aiMoney(providerRunCostUsd)} for all selected provider routes, including retry allowance.`}
               </FieldDescription>
-              {!fitsWeeklyProviderBudget && (
+              {exceedsProjectBudget && (
                 <FieldDescription className="text-destructive">
-                  The estimate exceeds the remaining weekly provider budget.
+                  This run exceeds the remaining project budget. Increase the
+                  project cap or reduce the run scope.
+                </FieldDescription>
+              )}
+              {exceedsInstallationBudget && (
+                <FieldDescription className="text-destructive">
+                  This run exceeds the remaining installation-wide rolling
+                  7-day budget. Reduce the run scope or wait until the rolling
+                  window has room.
                 </FieldDescription>
               )}
             </Field>

@@ -39,6 +39,12 @@ export function TrackerSetupReview({
   const fitsWeeklyProviderBudget =
     review.estimate.providerCostUsd <=
     review.estimate.weeklyProviderBudgetAvailableUsd;
+  const exceedsInstallationBudget =
+    review.estimate.providerCostUsd >
+    review.estimate.weeklyProviderBudgetGlobalAvailableUsd;
+  const exceedsProjectBudget =
+    review.estimate.providerCostUsd >
+    review.estimate.weeklyProjectProviderBudgetAvailableUsd;
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
@@ -128,10 +134,17 @@ export function TrackerSetupReview({
           available; this check needs room for up to{" "}
           {aiMoney(review.estimate.providerCostUsd)}.
         </p>
-        {!fitsWeeklyProviderBudget && (
+        {exceedsProjectBudget && (
           <p className="font-medium text-destructive">
-            The estimated provider cost exceeds the remaining weekly budget.
-            Increase the budget before enabling scheduled checks.
+            This run exceeds the remaining project budget. Increase the project
+            cap or reduce the run scope before enabling scheduled checks.
+          </p>
+        )}
+        {exceedsInstallationBudget && (
+          <p className="font-medium text-destructive">
+            This run exceeds the remaining installation-wide rolling 7-day
+            budget. Reduce the run scope or wait until the rolling window has
+            room before enabling scheduled checks.
           </p>
         )}
       </div>
