@@ -1,4 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { runBatch as RunBatch } from "@/db/runBatch";
+import type { ProjectContextRepository } from "@/server/features/project-context/repositories/ProjectContextRepository";
+import type * as SnapshotRepositoryModule from "@/server/features/project-settings-snapshots/snapshotRepository";
+import type {
+  commitProjectSettingsMutation,
+  readProjectSettingsRows,
+  ProjectSettingsSnapshot,
+} from "@/server/features/project-settings-snapshots/snapshotRepository";
 import {
   applyContextUpdates,
   getProjectContext,
@@ -6,19 +14,37 @@ import {
 } from "./ProjectContextService";
 
 const mocks = vi.hoisted(() => ({
-  listSections: vi.fn(),
+  listSections:
+    vi.fn<
+      (
+        projectId: string,
+      ) => ReturnType<typeof ProjectContextRepository.listSections>
+    >(),
   upsertSection: vi.fn(),
   deleteSection: vi.fn(),
-  listCompetitors: vi.fn(),
+  listCompetitors:
+    vi.fn<
+      (
+        projectId: string,
+      ) => ReturnType<typeof ProjectContextRepository.listCompetitors>
+    >(),
   upsertCompetitors: vi.fn(),
   deleteCompetitors: vi.fn(),
-  listKeyPages: vi.fn(),
+  listKeyPages:
+    vi.fn<
+      (
+        projectId: string,
+      ) => ReturnType<typeof ProjectContextRepository.listKeyPages>
+    >(),
   upsertKeyPages: vi.fn(),
   deleteKeyPages: vi.fn(),
   listResearchLog: vi.fn(),
   appendResearchLogEntry: vi.fn(),
   pruneResearchLogBefore: vi.fn(),
   listTemplates: vi.fn(),
+  readProjectSettingsRows: vi.fn<typeof readProjectSettingsRows>(),
+  commitProjectSettingsMutation: vi.fn<typeof commitProjectSettingsMutation>(),
+  snapshots: [] as ProjectSettingsSnapshot[],
 }));
 
 vi.mock(
@@ -33,14 +59,34 @@ vi.mock(
   }),
 );
 
+vi.mock("@/db", () => ({ db: {} }));
+
+vi.mock(
+  "@/server/features/project-settings-snapshots/snapshotRepository",
+  async () => {
+    const actual = await vi.importActual<typeof SnapshotRepositoryModule>(
+      "@/server/features/project-settings-snapshots/snapshotRepository",
+    );
+    return {
+      ...actual,
+      readProjectSettingsRows: mocks.readProjectSettingsRows,
+      commitProjectSettingsMutation: mocks.commitProjectSettingsMutation,
+    };
+  },
+);
+
 // The real runBatch needs a Workers runtime; executing the built statements
 // directly preserves what the tests assert on (which repository writes ran).
+type Tx = Parameters<Parameters<typeof RunBatch>[0]>[0];
 const runBatch = vi.hoisted(() =>
-  vi.fn(async (build: (tx: unknown) => readonly Promise<unknown>[]) => {
-    for (const statement of build({})) await statement;
+  vi.fn(async (build: Parameters<typeof RunBatch>[0]) => {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- repositories are mocked and only the transaction-shaped argument is used
+    const tx = {} as Tx;
+    for (const statement of build(tx)) await statement;
   }),
 );
 
+vi.mock("cloudflare:workers", () => ({ env: { DATABASE_PROVIDER: "d1" } }));
 vi.mock("@/db/runBatch", () => ({ runBatch }));
 
 const section = (
@@ -48,6 +94,7 @@ const section = (
   content: string,
   title: string | null = null,
 ) => ({
+  projectId: "project_1",
   key,
   title,
   content,
@@ -62,6 +109,36 @@ describe("project context service", () => {
     mocks.listKeyPages.mockResolvedValue([]);
     mocks.listResearchLog.mockResolvedValue([]);
     mocks.listTemplates.mockResolvedValue([]);
+    mocks.snapshots.length = 0;
+    mocks.readProjectSettingsRows.mockImplementation(async (projectId) => ({
+      project: {
+        id: projectId,
+        organizationId: "org_1",
+        name: "Project",
+        domain: null,
+        locationCode: 2840,
+        languageCode: "en",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        archivedAt: null,
+        aiResearchKeywords: null,
+        indexnowKey: null,
+      },
+      tracker: null,
+      questions: [],
+      context: {
+        sections: await mocks.listSections(projectId),
+        competitors: await mocks.listCompetitors(projectId),
+        keyPages: await mocks.listKeyPages(projectId),
+      },
+    }));
+    mocks.commitProjectSettingsMutation.mockImplementation(
+      async (_projectId, prepare) => {
+        const prepared = await prepare();
+        mocks.snapshots.push(prepared.snapshot);
+        await runBatch((tx) => prepared.write(tx));
+        return prepared.result;
+      },
+    );
   });
 
   it("splits typed from custom sections and reports the empty typed ones", async () => {
@@ -194,7 +271,13 @@ describe("project context service", () => {
 
   describe("caps", () => {
     const fullCompetitorList = Array.from({ length: 100 }, (_, index) => ({
+      id: `competitor${index}.com`,
+      projectId: "project_1",
       domain: `competitor${index}.com`,
+      name: null,
+      notes: null,
+      updatedAt: "2026-08-15T10:00:00.000Z",
+      updatedBy: "user" as const,
     }));
 
     it("still updates a competitor it already stores at the cap", async () => {

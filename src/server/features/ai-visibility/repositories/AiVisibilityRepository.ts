@@ -13,10 +13,12 @@ import {
   projects,
   projectCompetitors,
 } from "@/db/schema";
+import { getProjectSettingsSnapshotStatus } from "@/server/features/project-settings-snapshots/snapshotRepository";
 import {
   getTracker,
   getConfiguration,
   saveConfiguration,
+  updateTracker,
   type ObservationRow,
   type RunRow,
   type TrackerRow,
@@ -267,8 +269,8 @@ export const AiVisibilityRepository = {
   getTracker,
   getConfiguration,
   saveConfiguration,
-  updateTracker: (id: string, values: Partial<TrackerRow>) =>
-    db.update(aiTrackers).set(values).where(eq(aiTrackers.id, id)),
+  getProjectSettingsSnapshotStatus,
+  updateTracker,
   claimDueTracker,
   /** Oldest due first; every processed tracker advances its next check. */
   listDue: (now: string) =>

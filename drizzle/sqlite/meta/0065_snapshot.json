@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d352d2ad-dd91-4e5e-94f1-f6e7eabd5bde",
+  "id": "3e049d97-93c3-4671-8abd-4cbed6f0d092",
   "prevId": "fdfa4082-33dc-4bd5-8390-4c5c27158e29",
   "tables": {
     "backlink_snapshots": {
@@ -583,6 +583,180 @@
         "project_activation_state_project_id_projects_id_fk": {
           "name": "project_activation_state_project_id_projects_id_fk",
           "tableFrom": "project_activation_state",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "project_settings_snapshot_outbox": {
+      "name": "project_settings_snapshot_outbox",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "algorithm": {
+          "name": "algorithm",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "schema_version": {
+          "name": "schema_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "iv": {
+          "name": "iv",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "ciphertext": {
+          "name": "ciphertext",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'unconfirmed'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(current_timestamp)"
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "project_settings_snapshot_outbox_revision_idx": {
+          "name": "project_settings_snapshot_outbox_revision_idx",
+          "columns": [
+            "project_id",
+            "revision"
+          ],
+          "isUnique": true
+        },
+        "project_settings_snapshot_outbox_idempotency_idx": {
+          "name": "project_settings_snapshot_outbox_idempotency_idx",
+          "columns": [
+            "idempotency_key"
+          ],
+          "isUnique": true
+        },
+        "project_settings_snapshot_outbox_status_idx": {
+          "name": "project_settings_snapshot_outbox_status_idx",
+          "columns": [
+            "status",
+            "project_id",
+            "revision"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "project_settings_snapshot_outbox_project_id_projects_id_fk": {
+          "name": "project_settings_snapshot_outbox_project_id_projects_id_fk",
+          "tableFrom": "project_settings_snapshot_outbox",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "project_settings_snapshot_revisions": {
+      "name": "project_settings_snapshot_revisions",
+      "columns": {
+        "project_id": {
+          "name": "project_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(current_timestamp)"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "project_settings_snapshot_revisions_project_id_projects_id_fk": {
+          "name": "project_settings_snapshot_revisions_project_id_projects_id_fk",
+          "tableFrom": "project_settings_snapshot_revisions",
           "tableTo": "projects",
           "columnsFrom": [
             "project_id"
@@ -5287,34 +5461,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'weekly'"
-        },
-        "schedule_weekday": {
-          "name": "schedule_weekday",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "schedule_hour": {
-          "name": "schedule_hour",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "schedule_minute": {
-          "name": "schedule_minute",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "schedule_time_zone": {
-          "name": "schedule_time_zone",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         },
         "next_check_at": {
           "name": "next_check_at",

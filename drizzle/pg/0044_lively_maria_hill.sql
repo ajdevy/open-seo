@@ -1,0 +1,1 @@
+ALTER TABLE "project_settings_snapshot_outbox" ADD COLUMN "archive_file_id" text;
