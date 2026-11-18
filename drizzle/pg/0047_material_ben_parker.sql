@@ -1,3 +1,8 @@
+CREATE TABLE "ai_provider_run_budget_locks" (
+	"id" text PRIMARY KEY NOT NULL,
+	"version" integer DEFAULT 0 NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "ai_provider_run_reservations" (
 	"id" text PRIMARY KEY NOT NULL,
 	"project_id" text NOT NULL,
@@ -6,7 +11,9 @@ CREATE TABLE "ai_provider_run_reservations" (
 	"accounted_usd_micros" bigint,
 	"status" text DEFAULT 'reserved' NOT NULL,
 	"created_at" text NOT NULL,
-	"settled_at" text
+	"settled_at" text,
+	"reconciliation_reference" text,
+	"reconciled_at" text
 );
 --> statement-breakpoint
 ALTER TABLE "ai_trackers" ADD COLUMN "weekly_provider_budget_cents" integer DEFAULT 800 NOT NULL;--> statement-breakpoint

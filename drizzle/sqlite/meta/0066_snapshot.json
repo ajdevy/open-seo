@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "284ec5d2-0581-474f-a32c-11e19a4f7bd8",
-  "prevId": "d352d2ad-dd91-4e5e-94f1-f6e7eabd5bde",
+  "id": "b0793261-93dc-4244-ac4d-004aec3ef0a8",
+  "prevId": "3e049d97-93c3-4671-8abd-4cbed6f0d092",
   "tables": {
     "backlink_snapshots": {
       "name": "backlink_snapshots",
@@ -583,6 +583,187 @@
         "project_activation_state_project_id_projects_id_fk": {
           "name": "project_activation_state_project_id_projects_id_fk",
           "tableFrom": "project_activation_state",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "project_settings_snapshot_outbox": {
+      "name": "project_settings_snapshot_outbox",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "algorithm": {
+          "name": "algorithm",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "schema_version": {
+          "name": "schema_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "iv": {
+          "name": "iv",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "ciphertext": {
+          "name": "ciphertext",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "archive_file_id": {
+          "name": "archive_file_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'unconfirmed'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(current_timestamp)"
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "project_settings_snapshot_outbox_revision_idx": {
+          "name": "project_settings_snapshot_outbox_revision_idx",
+          "columns": [
+            "project_id",
+            "revision"
+          ],
+          "isUnique": true
+        },
+        "project_settings_snapshot_outbox_idempotency_idx": {
+          "name": "project_settings_snapshot_outbox_idempotency_idx",
+          "columns": [
+            "idempotency_key"
+          ],
+          "isUnique": true
+        },
+        "project_settings_snapshot_outbox_status_idx": {
+          "name": "project_settings_snapshot_outbox_status_idx",
+          "columns": [
+            "status",
+            "project_id",
+            "revision"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "project_settings_snapshot_outbox_project_id_projects_id_fk": {
+          "name": "project_settings_snapshot_outbox_project_id_projects_id_fk",
+          "tableFrom": "project_settings_snapshot_outbox",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "project_settings_snapshot_revisions": {
+      "name": "project_settings_snapshot_revisions",
+      "columns": {
+        "project_id": {
+          "name": "project_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(current_timestamp)"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "project_settings_snapshot_revisions_project_id_projects_id_fk": {
+          "name": "project_settings_snapshot_revisions_project_id_projects_id_fk",
+          "tableFrom": "project_settings_snapshot_revisions",
           "tableTo": "projects",
           "columnsFrom": [
             "project_id"
@@ -5007,124 +5188,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "ai_provider_run_reservations": {
-      "name": "ai_provider_run_reservations",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "reserved_usd_micros": {
-          "name": "reserved_usd_micros",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "accounted_usd_micros": {
-          "name": "accounted_usd_micros",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'reserved'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "settled_at": {
-          "name": "settled_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "ai_provider_run_reservations_run_idx": {
-          "name": "ai_provider_run_reservations_run_idx",
-          "columns": [
-            "run_id"
-          ],
-          "isUnique": true
-        },
-        "ai_provider_run_reservations_project_active_idx": {
-          "name": "ai_provider_run_reservations_project_active_idx",
-          "columns": [
-            "project_id"
-          ],
-          "isUnique": true,
-          "where": "\"ai_provider_run_reservations\".\"status\" = 'reserved'"
-        },
-        "ai_provider_run_reservations_project_created_idx": {
-          "name": "ai_provider_run_reservations_project_created_idx",
-          "columns": [
-            "project_id",
-            "created_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "ai_provider_run_reservations_project_id_projects_id_fk": {
-          "name": "ai_provider_run_reservations_project_id_projects_id_fk",
-          "tableFrom": "ai_provider_run_reservations",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_provider_run_reservations_run_id_ai_runs_id_fk": {
-          "name": "ai_provider_run_reservations_run_id_ai_runs_id_fk",
-          "tableFrom": "ai_provider_run_reservations",
-          "tableTo": "ai_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "ai_runs": {
       "name": "ai_runs",
       "columns": {
@@ -5406,34 +5469,6 @@
           "autoincrement": false,
           "default": "'weekly'"
         },
-        "schedule_weekday": {
-          "name": "schedule_weekday",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "schedule_hour": {
-          "name": "schedule_hour",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "schedule_minute": {
-          "name": "schedule_minute",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "schedule_time_zone": {
-          "name": "schedule_time_zone",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "next_check_at": {
           "name": "next_check_at",
           "type": "text",
@@ -5447,14 +5482,6 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
-        },
-        "weekly_provider_budget_cents": {
-          "name": "weekly_provider_budget_cents",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 800
         },
         "created_at": {
           "name": "created_at",

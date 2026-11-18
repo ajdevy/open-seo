@@ -1,3 +1,8 @@
+CREATE TABLE `ai_provider_run_budget_locks` (
+	`id` text PRIMARY KEY NOT NULL,
+	`version` integer DEFAULT 0 NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE `ai_provider_run_reservations` (
 	`id` text PRIMARY KEY NOT NULL,
 	`project_id` text NOT NULL,
@@ -7,6 +12,8 @@ CREATE TABLE `ai_provider_run_reservations` (
 	`status` text DEFAULT 'reserved' NOT NULL,
 	`created_at` text NOT NULL,
 	`settled_at` text,
+	`reconciliation_reference` text,
+	`reconciled_at` text,
 	FOREIGN KEY (`project_id`) REFERENCES `projects`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`run_id`) REFERENCES `ai_runs`(`id`) ON UPDATE no action ON DELETE cascade
 );
