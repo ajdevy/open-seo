@@ -1,0 +1,1 @@
+ALTER TABLE `ai_trackers` ADD `pending_scheduled_run_id` text;

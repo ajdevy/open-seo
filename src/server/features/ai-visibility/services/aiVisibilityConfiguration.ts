@@ -126,6 +126,7 @@ export function projectAiConfiguration(input: {
             patch.weeklyProviderBudgetUsd === undefined
               ? 800
               : Math.round(patch.weeklyProviderBudgetUsd * 100),
+          pendingScheduledRunId: null,
           createdAt: now,
         },
         prompts: [],

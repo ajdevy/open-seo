@@ -44,6 +44,9 @@ export const aiTrackers = sqliteTable(
     weeklyProviderBudgetCents: integer("weekly_provider_budget_cents")
       .notNull()
       .default(800),
+    // Durable outbox pointer for a scheduled run whose workflow start has not
+    // yet been confirmed. Cleared only after the workflow is known to exist.
+    pendingScheduledRunId: text("pending_scheduled_run_id"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [

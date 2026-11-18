@@ -131,6 +131,84 @@ it("skips a scheduled run when its shared rolling provider budget is exhausted",
   expect(workflow.create).not.toHaveBeenCalled();
 });
 
+it("resumes the same scheduled run after the cron stops after its durable claim", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
+  await dueTracker("project", false);
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("test tracker configuration was not created");
+  const runId = "scheduled-outbox-recovery";
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("test prompt was not created");
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: config.tracker.projectId,
+      trigger: "scheduled",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: new Date().toISOString(),
+    },
+    [
+      {
+        id: "scheduled-outbox-recovery-answer",
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
+  );
+  await repo.updateTracker(config.tracker.id, {
+    nextCheckAt: "2026-09-08T06:00:00.000Z",
+    pendingScheduledRunId: runId,
+  });
+
+  await runScheduledAiVisibility();
+
+  expect(await repo.listRuns("project")).toMatchObject([
+    { id: runId, trigger: "scheduled", status: "queued" },
+  ]);
+  expect(workflow.create).toHaveBeenCalledTimes(1);
+  expect(workflow.create.mock.calls[0]?.[0]).toMatchObject({ id: runId });
+  expect((await repo.getTracker("project"))?.pendingScheduledRunId).toBeNull();
+});
+
+it("retains a visible outbox claim when workflow creation cannot be confirmed", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
+  workflow.create.mockRejectedValue(new Error("workflow endpoint unavailable"));
+  workflow.get.mockRejectedValue(new Error("workflow lookup unavailable"));
+  await dueTracker("project", false);
+
+  const firstTick = runScheduledAiVisibility();
+  await vi.advanceTimersByTimeAsync(2_500);
+  await firstTick;
+
+  const queued = await repo.listRuns("project");
+  expect(queued).toMatchObject([{ trigger: "scheduled", status: "queued" }]);
+  const latestRun = queued[0];
+  if (!latestRun) throw new Error("scheduled run was not persisted");
+  const runId = latestRun.id;
+  const tracker = await repo.getTracker("project");
+  expect(tracker?.pendingScheduledRunId).toBe(runId);
+  expect(tracker?.lastSkipReason).toContain(
+    "durably queued and will be retried automatically",
+  );
+
+  workflow.create.mockReset().mockResolvedValue(undefined);
+  workflow.get.mockReset().mockResolvedValue({
+    status: async () => ({ status: "queued" }),
+  });
+  await runScheduledAiVisibility();
+
+  expect(await repo.listRuns("project")).toHaveLength(1);
+  expect(workflow.create.mock.calls.at(-1)?.[0]).toMatchObject({ id: runId });
+  expect((await repo.getTracker("project"))?.pendingScheduledRunId).toBeNull();
+  expect((await repo.getTracker("project"))?.lastSkipReason).toBeNull();
+});
+
 it("keeps both the skipped DST slot and insufficient-credit notices", async () => {
   hosted.mockResolvedValue(true);
   vi.useFakeTimers();

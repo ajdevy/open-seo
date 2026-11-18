@@ -39,6 +39,124 @@ const ACTIVE_WORKFLOW_STATUSES = new Set([
   "paused",
 ]);
 const STARTUP_GRACE_MS = 60_000;
+export type PreparedRun = {
+  config: ConfigurationRows;
+  trigger: RunRow["trigger"];
+  project: { id: string; name: string; domain: string };
+  prompts: ReturnType<typeof aiScope>["prompts"];
+  engines: ReturnType<typeof aiScope>["engines"];
+};
+
+export async function prepareRun(
+  config: ConfigurationRows,
+  trigger: RunRow["trigger"],
+  billing: BillingCustomerContext,
+  promptIds?: string[],
+): Promise<PreparedRun> {
+  if (!(await hasDataforseoAccess()))
+    throw new AiVisibilityError(
+      "PROVIDER_NOT_CONFIGURED",
+      "An operator must configure DATAFORSEO_API_KEY before collection. Your saved tracker remains available.",
+    );
+  const project = await repo.getProject(config.tracker.projectId);
+  if (
+    !project?.domain ||
+    project.archivedAt ||
+    project.organizationId !== billing.organizationId
+  )
+    throw new AiVisibilityError(
+      "PROJECT_NOT_FOUND",
+      "The selected project is not available for collection.",
+    );
+  const scope = aiScope(config, promptIds);
+  if (!scope.prompts.length || !scope.engines.length)
+    throw new AiVisibilityError(
+      "NO_ACTIVE_PROMPTS",
+      "Add or unpause prompts before starting a check.",
+    );
+  // Hosted checks need credits for every answer before they start, like rank
+  // checks. The tracker says why no check ran, whichever path started it.
+  if (await isHostedServerAuthMode()) {
+    const required = aiCostForAnswers(
+      scope.prompts.flatMap(() => scope.engines),
+      true,
+      trigger === "scheduled" ? "queued" : "live",
+    ).costCredits;
+    // getOrCreate: an org's first check can come before its Autumn customer.
+    const { id } = await getOrCreateOrganizationCustomer(billing);
+    const credits = await getUsageCreditsRemaining(id);
+    // Clamp at 0: research setup can overdraw monthly credits, and top-up
+    // credits still pay for the check.
+    const available =
+      Math.max(credits.monthlyRemaining, 0) +
+      Math.max(credits.topupRemaining, 0);
+    if (available < required) {
+      await repo.updateTracker(config.tracker.id, {
+        lastSkipReason: "INSUFFICIENT_CREDITS",
+      });
+      await sendCreditsExhaustedEvent(billing);
+      throw new AppError(
+        "INSUFFICIENT_CREDITS",
+        "Not enough credits for this AI visibility check.",
+      );
+    }
+  }
+  return {
+    config,
+    trigger,
+    project: { id: project.id, name: project.name, domain: project.domain },
+    prompts: scope.prompts,
+    engines: scope.engines,
+  };
+}
+
+export function rowsForRun(prepared: PreparedRun, id: string) {
+  const { config, trigger, project, prompts, engines } = prepared;
+  return {
+    run: {
+      id,
+      trackerId: config.tracker.id,
+      projectId: project.id,
+      trigger,
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: new Date().toISOString(),
+    } satisfies Parameters<typeof repo.createRun>[0],
+    observations: prompts.flatMap((prompt) =>
+      engines.map((engine) => ({
+        id: crypto.randomUUID(),
+        runId: id,
+        promptId: prompt.id,
+        engine,
+        branded: aiPromptIsBranded(prompt.text, project),
+      })),
+    ),
+  };
+}
+
+export async function startWorkflowForRun(
+  runId: string,
+  projectId: string,
+  billing: BillingCustomerContext,
+) {
+  await startWorkflow(
+    env.AI_VISIBILITY_WORKFLOW,
+    {
+      id: runId,
+      // Only the billing fields: the request context is not serializable.
+      params: {
+        runId,
+        customer: {
+          organizationId: billing.organizationId,
+          userId: billing.userId,
+          userEmail: billing.userEmail,
+          projectId,
+        },
+      },
+    },
+    "AI visibility check",
+  );
+}
 
 /**
  * Why an active run's workflow is no longer collecting it, or null while it
@@ -119,79 +237,13 @@ export async function startRun(
   billing: BillingCustomerContext,
   promptIds?: string[],
 ): Promise<AiRun> {
-  if (!(await hasDataforseoAccess()))
-    throw new AiVisibilityError(
-      "PROVIDER_NOT_CONFIGURED",
-      "An operator must configure DATAFORSEO_API_KEY before collection. Your saved tracker remains available.",
-    );
-  const project = await repo.getProject(config.tracker.projectId);
-  if (
-    !project?.domain ||
-    project.archivedAt ||
-    project.organizationId !== billing.organizationId
-  )
-    throw new AiVisibilityError(
-      "PROJECT_NOT_FOUND",
-      "The selected project is not available for collection.",
-    );
-  const scope = aiScope(config, promptIds);
-  if (!scope.prompts.length || !scope.engines.length)
-    throw new AiVisibilityError(
-      "NO_ACTIVE_PROMPTS",
-      "Add or unpause prompts before starting a check.",
-    );
-  // Hosted checks need credits for every answer before they start, like rank
-  // checks. The tracker says why no check ran, whichever path started it.
-  if (await isHostedServerAuthMode()) {
-    const required = aiCostForAnswers(
-      scope.prompts.flatMap(() => scope.engines),
-      true,
-      trigger === "scheduled" ? "queued" : "live",
-    ).costCredits;
-    // getOrCreate: an org's first check can come before its Autumn customer.
-    const { id } = await getOrCreateOrganizationCustomer(billing);
-    const credits = await getUsageCreditsRemaining(id);
-    // Clamp at 0: research setup can overdraw monthly credits, and top-up
-    // credits still pay for the check.
-    const available =
-      Math.max(credits.monthlyRemaining, 0) +
-      Math.max(credits.topupRemaining, 0);
-    if (available < required) {
-      await repo.updateTracker(config.tracker.id, {
-        lastSkipReason: "INSUFFICIENT_CREDITS",
-      });
-      await sendCreditsExhaustedEvent(billing);
-      throw new AppError(
-        "INSUFFICIENT_CREDITS",
-        "Not enough credits for this AI visibility check.",
-      );
-    }
-  }
-  const own = { name: project.name, domain: project.domain };
+  const prepared = await prepareRun(config, trigger, billing, promptIds);
   // Two attempts: once normally, once after failing a stale blocker.
   for (let attempt = 0; attempt < 2; attempt++) {
     const id = crypto.randomUUID();
     try {
-      await repo.createRun(
-        {
-          id,
-          trackerId: config.tracker.id,
-          projectId: project.id,
-          trigger,
-          locationCode: config.tracker.locationCode,
-          languageCode: config.tracker.languageCode,
-          createdAt: new Date().toISOString(),
-        },
-        scope.prompts.flatMap((prompt) =>
-          scope.engines.map((engine) => ({
-            id: crypto.randomUUID(),
-            runId: id,
-            promptId: prompt.id,
-            engine,
-            branded: aiPromptIsBranded(prompt.text, own),
-          })),
-        ),
-      );
+      const rows = rowsForRun(prepared, id);
+      await repo.createRun(rows.run, rows.observations);
     } catch (error) {
       // The one-active-run index rejected the insert, or it truly failed.
       const blocker = await repo.getActiveRun(config.tracker.id);
@@ -245,29 +297,13 @@ export async function startRun(
       throw new AiVisibilityError("PROVIDER_BUDGET_EXCEEDED", message, id);
     }
     try {
-      await startWorkflow(
-        env.AI_VISIBILITY_WORKFLOW,
-        {
-          id,
-          // Only the billing fields: the request context is not serializable.
-          params: {
-            runId: id,
-            customer: {
-              organizationId: billing.organizationId,
-              userId: billing.userId,
-              userEmail: billing.userEmail,
-              projectId: project.id,
-            },
-          },
-        },
-        "AI visibility check",
-      );
+      await startWorkflowForRun(id, prepared.project.id, billing);
     } catch (error) {
       await markAiProviderRunBudgetUnknown(id);
       await failAiRun(id, AI_ANSWER_FAILURES.notStarted);
       throw error;
     }
-    return getRun({ projectId: project.id, runId: id });
+    return getRun({ projectId: prepared.project.id, runId: id });
   }
   throw new AiVisibilityError(
     "RUN_IN_PROGRESS",

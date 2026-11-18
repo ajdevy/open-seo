@@ -1,5 +1,5 @@
 {
-  "id": "fe76ffea-8ec5-42dc-a27c-7d633f9f2579",
+  "id": "1325e2aa-58b9-46dc-86d4-cf55f5586f2e",
   "prevId": "a2be2778-48bb-47ed-b1be-751557dc0171",
   "version": "7",
   "dialect": "postgresql",
@@ -5901,186 +5901,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.ai_provider_run_budget_locks": {
-      "name": "ai_provider_run_budget_locks",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.ai_provider_run_reservations": {
-      "name": "ai_provider_run_reservations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reserved_usd_micros": {
-          "name": "reserved_usd_micros",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "accounted_usd_micros": {
-          "name": "accounted_usd_micros",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'reserved'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "settled_at": {
-          "name": "settled_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "reconciliation_reference": {
-          "name": "reconciliation_reference",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "reconciled_at": {
-          "name": "reconciled_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "ai_provider_run_reservations_run_idx": {
-          "name": "ai_provider_run_reservations_run_idx",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "ai_provider_run_reservations_project_active_idx": {
-          "name": "ai_provider_run_reservations_project_active_idx",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"ai_provider_run_reservations\".\"status\" = 'reserved'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "ai_provider_run_reservations_project_created_idx": {
-          "name": "ai_provider_run_reservations_project_created_idx",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "ai_provider_run_reservations_project_id_projects_id_fk": {
-          "name": "ai_provider_run_reservations_project_id_projects_id_fk",
-          "tableFrom": "ai_provider_run_reservations",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_provider_run_reservations_run_id_ai_runs_id_fk": {
-          "name": "ai_provider_run_reservations_run_id_ai_runs_id_fk",
-          "tableFrom": "ai_provider_run_reservations",
-          "tableTo": "ai_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.ai_runs": {
       "name": "ai_runs",
       "schema": "",
@@ -6408,12 +6228,11 @@
           "primaryKey": false,
           "notNull": false
         },
-        "weekly_provider_budget_cents": {
-          "name": "weekly_provider_budget_cents",
-          "type": "integer",
+        "pending_scheduled_run_id": {
+          "name": "pending_scheduled_run_id",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": 800
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
