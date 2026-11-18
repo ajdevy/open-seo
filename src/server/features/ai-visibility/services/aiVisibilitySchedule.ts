@@ -1,9 +1,10 @@
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { AiVisibilityError } from "./aiVisibilityErrors";
-import { activeAiPrompts } from "./aiVisibilityConfiguration";
+import { activeAiPrompts, trackerEngines } from "./aiVisibilityConfiguration";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import type { AiRun } from "@/shared/ai-visibility";
 import type { SetAiScheduleInput } from "@/types/schemas/ai-visibility";
+import type { ConfigurationRows } from "../repositories/AiVisibilityRepository";
 import { computeNextCheckAt } from "@/shared/rank-tracking";
 import {
   DEFAULT_AI_WEEKLY_SCHEDULE,
@@ -13,6 +14,24 @@ import {
 import { requireConfiguration } from "./aiVisibilityMutation";
 import { getTracker } from "./aiVisibilityState";
 import { hasDataforseoAccess } from "@/server/lib/provider-access";
+
+async function validateCanEnableSchedule(config: ConfigurationRows) {
+  if (!activeAiPrompts(config).length)
+    throw new AiVisibilityError(
+      "NO_ACTIVE_PROMPTS",
+      "Add active prompts before enabling scheduled tracking.",
+    );
+  if (!trackerEngines(config.tracker).length)
+    throw new AiVisibilityError(
+      "NO_ACTIVE_ENGINES",
+      "Select at least one AI engine before enabling scheduled tracking.",
+    );
+  if (!(await hasDataforseoAccess()))
+    throw new AiVisibilityError(
+      "PROVIDER_NOT_CONFIGURED",
+      "Configure DataForSEO before enabling collection. Setup remains available.",
+    );
+}
 
 /**
  * Enables, reschedules or pauses tracking. Enabling saves the next scheduled
@@ -41,16 +60,7 @@ export async function setSchedule(
       "INVALID_SCHEDULE_TIME",
       "A weekday is required for a weekly schedule with a timezone.",
     );
-  if (!activeAiPrompts(config).length)
-    throw new AiVisibilityError(
-      "NO_ACTIVE_PROMPTS",
-      "Add active prompts before enabling scheduled tracking.",
-    );
-  if (!(await hasDataforseoAccess()))
-    throw new AiVisibilityError(
-      "PROVIDER_NOT_CONFIGURED",
-      "Configure DataForSEO before enabling collection. Setup remains available.",
-    );
+  await validateCanEnableSchedule(config);
   const savedWallClock =
     scheduleInterval === "weekly" &&
     tracker.scheduleWeekday !== null &&

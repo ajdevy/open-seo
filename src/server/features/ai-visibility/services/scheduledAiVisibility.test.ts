@@ -88,6 +88,7 @@ it("moves every due tracker on, including one whose check cannot start", async (
   await runScheduledAiVisibility();
 
   const skipped = await repo.getTracker("paused-project");
+  expect(skipped?.enabled).toBe(false);
   expect(skipped?.nextCheckAt).not.toBe(due);
   expect(skipped?.lastSkipReason).toMatch(/unpause prompts/);
   expect((await repo.getTracker("project"))?.nextCheckAt).not.toBe(due);

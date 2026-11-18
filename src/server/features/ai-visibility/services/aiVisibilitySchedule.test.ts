@@ -17,6 +17,10 @@ vi.mock("cloudflare:workers", () => ({
 }));
 vi.mock("@/db", () => ({ db: testDb.db }));
 vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/server/lib/runtime-env", () => ({
+  getOptionalEnvValue: async (name: string) =>
+    name === "AUTOGEO_QUEUE_MASTER_KEY_B64" ? btoa("k".repeat(32)) : undefined,
+}));
 vi.mock("@/server/lib/provider-access", () => ({ hasDataforseoAccess }));
 
 beforeEach(async () => {
@@ -90,6 +94,91 @@ it("rejects a weekly timezone schedule without a weekday before saving", async (
   expect(await repo.getTracker("project")).toEqual(before);
 });
 
+it("keeps a new tracker paused when provider access is missing", async () => {
+  hasDataforseoAccess.mockResolvedValue(false);
+
+  await expect(
+    setSchedule(
+      { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+      customer,
+    ),
+  ).rejects.toMatchObject({ reason: "PROVIDER_NOT_CONFIGURED" });
+
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: false,
+    scheduleInterval: "weekly",
+    scheduleWeekday: null,
+    scheduleHour: null,
+    scheduleMinute: null,
+    scheduleTimeZone: null,
+    nextCheckAt: null,
+  });
+});
+
+it("persists a paused state when a tracker configuration is updated", async () => {
+  const tracker = await repo.getTracker("project");
+  if (!tracker) throw new Error("Tracker fixture was not saved.");
+  await repo.updateTracker(tracker.id, { enabled: true });
+
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("Tracker fixture was not saved.");
+  config.tracker.enabled = false;
+  await repo.saveConfiguration(config);
+
+  expect((await repo.getTracker("project"))?.enabled).toBe(false);
+});
+
+it("keeps a new tracker paused when it has no active prompts", async () => {
+  hasDataforseoAccess.mockClear();
+  const rows = await repo.getConfiguration("project");
+  if (!rows) throw new Error("Tracker fixture was not saved.");
+  const [prompt] = rows.prompts;
+  if (!prompt) throw new Error("Prompt fixture was not saved.");
+  prompt.paused = true;
+  await repo.saveConfiguration(rows);
+
+  await expect(
+    setSchedule(
+      { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+      customer,
+    ),
+  ).rejects.toMatchObject({ reason: "NO_ACTIVE_PROMPTS" });
+
+  expect(await repo.getTracker("project")).toMatchObject({
+    enabled: false,
+    scheduleWeekday: null,
+    scheduleHour: null,
+    scheduleMinute: null,
+    scheduleTimeZone: null,
+    nextCheckAt: null,
+  });
+  expect(hasDataforseoAccess).not.toHaveBeenCalled();
+});
+
+it("keeps a new tracker paused when its observation scope has no engines", async () => {
+  hasDataforseoAccess.mockClear();
+  const rows = await repo.getConfiguration("project");
+  if (!rows) throw new Error("Tracker fixture was not saved.");
+  Object.assign(rows.tracker, {
+    chatgpt: false,
+    gemini: false,
+    googleAiOverview: false,
+    claude: false,
+    perplexity: false,
+  });
+  await repo.saveConfiguration(rows);
+
+  await expect(
+    setSchedule(
+      { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+      customer,
+    ),
+  ).rejects.toMatchObject({ reason: "NO_ACTIVE_ENGINES" });
+
+  expect((await repo.getTracker("project"))?.enabled).toBe(false);
+  expect(hasDataforseoAccess).not.toHaveBeenCalled();
+});
+
 it("ignores weekly-only fields when pausing a schedule", async () => {
   const before = await repo.getTracker("project");
   if (!before) throw new Error("Tracker fixture was not saved.");
@@ -133,6 +222,7 @@ it("defaults a new weekly schedule to Wednesday at 10 in Moscow without a baseli
 
   expect(saved.run).toBeNull();
   expect(saved.state.tracker).toMatchObject({
+    enabled: true,
     scheduleInterval: "weekly",
     scheduleWeekday: 3,
     scheduleHour: 10,

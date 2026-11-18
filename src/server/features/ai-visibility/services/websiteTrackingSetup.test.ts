@@ -1,15 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getConfiguration, startRun } = vi.hoisted(() => ({
+const { getConfiguration, startRun, setSchedule } = vi.hoisted(() => ({
   getConfiguration: vi.fn(),
   startRun: vi.fn(),
+  setSchedule: vi.fn(),
 }));
 vi.mock("../repositories/AiVisibilityRepository", () => ({
   AiVisibilityRepository: { getConfiguration },
 }));
 vi.mock("./aiVisibilityRuns", () => ({ startRun }));
+vi.mock("./aiVisibilitySchedule", () => ({ setSchedule }));
 
 import {
+  enableWebsiteTrackingSchedule,
   prepareWebsiteTracking,
   startWebsiteTrackingRun,
 } from "./websiteTrackingSetup";
@@ -46,7 +49,25 @@ describe("prepareWebsiteTracking", () => {
       "backlink checker",
     ]);
     expect(tracking?.prompts).toHaveLength(15);
+    expect(tracking?.tracker).toMatchObject({
+      enabled: false,
+      scheduleInterval: "weekly",
+      scheduleWeekday: null,
+      scheduleHour: null,
+      scheduleMinute: null,
+      scheduleTimeZone: null,
+      nextCheckAt: null,
+    });
   });
+});
+
+it("enables seeded schedules through the server validator", async () => {
+  await enableWebsiteTrackingSchedule("project", customer);
+
+  expect(setSchedule).toHaveBeenCalledWith(
+    { projectId: "project", enabled: true, scheduleInterval: "weekly" },
+    customer,
+  );
 });
 
 describe("startWebsiteTrackingRun", () => {

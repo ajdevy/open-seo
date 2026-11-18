@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { AiTrackerPatch } from "@/types/schemas/ai-visibility";
 import type { ConfigurationRows } from "../repositories/AiVisibilityRepository";
 import { aiScope, projectAiConfiguration } from "./aiVisibilityConfiguration";
@@ -24,15 +24,16 @@ const saved = () =>
   }).rows;
 
 describe("AI configuration projection", () => {
-  it("creates a weekly tracker, first check at least a week out, in the project market with two consumer engines and General prompts", () => {
-    // Late in the UTC day, past the scheduler's 04:00–10:00 UTC slots.
-    vi.useFakeTimers({ now: new Date("2026-09-05T23:00:00.000Z") });
+  it("creates a paused weekly tracker in the project market with two consumer engines and General prompts", () => {
     const rows = saved();
-    vi.useRealTimers();
-    expect(rows.tracker.nextCheckAt).toMatch(/^2026-09-13T0/);
     expect(rows.tracker).toMatchObject({
-      enabled: true,
+      enabled: false,
       scheduleInterval: "weekly",
+      scheduleWeekday: null,
+      scheduleHour: null,
+      scheduleMinute: null,
+      scheduleTimeZone: null,
+      nextCheckAt: null,
       locationCode: 2100,
       languageCode: "bg",
       chatgpt: true,
@@ -92,6 +93,24 @@ describe("AI configuration projection", () => {
     expect(created).toBe(1);
     expect(rows.prompts).toHaveLength(2);
     expect(rows.prompts[0]).toMatchObject({ id: prompt.id, archived: false });
+  });
+
+  it("pauses an enabled tracker when a save leaves no active prompts", () => {
+    const before = saved();
+    before.tracker.enabled = true;
+
+    const { rows } = project(
+      {
+        prompts: before.prompts.map((prompt) => ({
+          id: prompt.id,
+          text: prompt.text,
+          paused: true,
+        })),
+      },
+      before,
+    );
+
+    expect(rows.tracker.enabled).toBe(false);
   });
 
   it("skips a new duplicate but rejects an edit into another prompt's text", () => {

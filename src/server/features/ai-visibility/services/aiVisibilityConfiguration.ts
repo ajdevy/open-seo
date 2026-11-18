@@ -5,7 +5,6 @@ import {
   type AiBrand,
   type AiEngine,
 } from "@/shared/ai-visibility";
-import { computeNextCheckAt } from "@/shared/rank-tracking";
 import { applyMarket } from "./aiVisibilityMarket";
 import type {
   ConfigurationRows,
@@ -84,18 +83,6 @@ export function aiBrands(
   return [...brands.values()];
 }
 
-/**
- * A new tracker's first check, at least a full week out. The shared weekly
- * slot is seven calendar days ahead at 04:00–10:00 UTC, which lands short of
- * a week for trackers created later in the UTC day.
- */
-function firstWeeklyCheckAt() {
-  const next = new Date(computeNextCheckAt("weekly"));
-  if (next.getTime() < Date.now() + 7 * 86_400_000)
-    next.setUTCDate(next.getUTCDate() + 1);
-  return next.toISOString();
-}
-
 export function projectAiConfiguration(input: {
   previous: ConfigurationRows | null;
   projectId: string;
@@ -115,9 +102,9 @@ export function projectAiConfiguration(input: {
         tracker: {
           id: crypto.randomUUID(),
           projectId: input.projectId,
-          // New tracking runs weekly. The first check is a week out, so
-          // creating a tracker never charges on its own.
-          enabled: true,
+          // Saving setup never enables a schedule. The server validates the
+          // provider and active check scope before persisting a weekly slot.
+          enabled: false,
           ...engineColumns(["chatgpt", "gemini"]),
           ...input.projectMarket,
           scheduleInterval: "weekly",
@@ -125,7 +112,7 @@ export function projectAiConfiguration(input: {
           scheduleHour: null,
           scheduleMinute: null,
           scheduleTimeZone: null,
-          nextCheckAt: firstWeeklyCheckAt(),
+          nextCheckAt: null,
           lastSkipReason: null,
           pendingScheduledRunId: null,
           createdAt: now,
@@ -136,6 +123,9 @@ export function projectAiConfiguration(input: {
     Object.assign(rows.tracker, engineColumns([...new Set(patch.engines)]));
   applyMarket(rows, patch, !previous, trackerEngines(rows.tracker));
   const counts = applyPrompts(rows, patch, now);
+  // A tracker with no usable prompt cannot produce observations. Keep it
+  // paused until the user saves an active prompt and explicitly resumes it.
+  if (!activeAiPrompts(rows).length) rows.tracker.enabled = false;
   const unarchived = rows.prompts.filter((p) => !p.archived);
   if (unarchived.length > PROMPT_LIMIT)
     throw new AiVisibilityError(

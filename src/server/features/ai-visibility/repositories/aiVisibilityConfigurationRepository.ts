@@ -106,7 +106,7 @@ export async function updateTracker(id: string, values: Partial<TrackerRow>) {
   });
 }
 
-/** Upserts the tracker's collection settings and every prompt. */
+/** Upserts collection settings and pauses trackers whose saved scope is empty. */
 export function writeConfiguration(tx: Tx, rows: ConfigurationRows) {
   const { tracker } = rows;
   return [
@@ -116,6 +116,7 @@ export function writeConfiguration(tx: Tx, rows: ConfigurationRows) {
       .onConflictDoUpdate({
         target: aiTrackers.id,
         set: {
+          enabled: tracker.enabled,
           chatgpt: tracker.chatgpt,
           gemini: tracker.gemini,
           googleAiOverview: tracker.googleAiOverview,
