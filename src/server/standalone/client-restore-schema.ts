@@ -11,7 +11,6 @@ const projectRow = z
     createdAt: z.string(),
     archivedAt: z.string().nullable(),
     aiResearchKeywords: z.string().nullable(),
-    indexnowKey: z.string().nullable(),
   })
   .strict();
 const projectContextRow = z
@@ -153,7 +152,7 @@ const nativeResultRow = z
     requestedModel: z.string(),
     observedModel: z.string().nullable(),
     route: z.string(),
-    resultStatus: z.string(),
+    resultStatus: z.enum(["completed", "failed"]),
     answer: z.string().nullable(),
     searchStatus: z.string(),
     eligibleForVisibility: z.boolean().nullable(),

@@ -42,8 +42,23 @@ export async function loadPayload(
         inArray(projects.id, onlyProjectIds),
       )
     : eq(projects.organizationId, organizationId);
+  // Select only portable client settings. IndexNow keys are configured on the
+  // target installation and must never be copied in a client restore archive.
   const projectRows = ordered(
-    await db.select().from(projects).where(projectFilter),
+    await db
+      .select({
+        id: projects.id,
+        organizationId: projects.organizationId,
+        name: projects.name,
+        domain: projects.domain,
+        locationCode: projects.locationCode,
+        languageCode: projects.languageCode,
+        createdAt: projects.createdAt,
+        archivedAt: projects.archivedAt,
+        aiResearchKeywords: projects.aiResearchKeywords,
+      })
+      .from(projects)
+      .where(projectFilter),
     (row) => row.id,
   );
   const projectIds = ids(projectRows, (row) => row.id);
@@ -105,6 +120,19 @@ export async function loadPayload(
         .where(inArray(aiNativeResults.projectId, projectIds))
     : [];
 
+  if (
+    nativeRowsRaw.some(
+      (row) =>
+        row.resultStatus !== "pending" &&
+        row.resultStatus !== "completed" &&
+        row.resultStatus !== "failed",
+    )
+  )
+    throw new ClientRestoreError(
+      409,
+      "Client restore cannot export an unsupported AI result state",
+    );
+
   const activeRunIds = new Set(
     runRowsRaw
       .filter((row) => row.status === "queued" || row.status === "running")
@@ -115,7 +143,10 @@ export async function loadPayload(
       .filter((row) => row.status === "completed")
       .map((row) => row.runId),
     ...nativeRowsRaw
-      .filter((row) => row.resultStatus !== "pending")
+      .filter(
+        (row) =>
+          row.resultStatus === "completed" || row.resultStatus === "failed",
+      )
       .map((row) => row.runId),
   ]);
   const latestKnownRunEvent = new Map<string, string>();
@@ -126,7 +157,7 @@ export async function loadPayload(
         maxIso(latestKnownRunEvent.get(row.runId), row.collectedAt),
       );
   for (const row of nativeRowsRaw)
-    if (row.resultStatus !== "pending")
+    if (row.resultStatus === "completed" || row.resultStatus === "failed")
       latestKnownRunEvent.set(
         row.runId,
         maxIso(latestKnownRunEvent.get(row.runId), row.collectedAt),
@@ -217,7 +248,10 @@ export async function loadPayload(
   );
   const confirmedNativeIds = new Set(
     nativeRowsRaw
-      .filter((row) => row.resultStatus !== "pending")
+      .filter(
+        (row) =>
+          row.resultStatus === "completed" || row.resultStatus === "failed",
+      )
       .map((row) => row.id),
   );
 

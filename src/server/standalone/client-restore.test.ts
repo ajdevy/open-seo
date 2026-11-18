@@ -35,7 +35,7 @@ vi.mock("@/db/runBatch", () => ({
 
 import { seedClientRows } from "./client-restore-fixtures";
 import { handleClientRestore } from "./client-restore";
-import { clientRestoreArchiveSchema } from "./client-restore-schema";
+import { clientRestoreArchiveSchema, sha256Json } from "./client-restore-schema";
 
 const importResultSchema = z.object({
   verified: z.boolean(),
@@ -86,7 +86,12 @@ describe("selective client restore", () => {
   });
 
   it("imports Client A twice with question versions and answers while preserving Client B and all memberships", async () => {
+    await testDb.db
+      .update(projects)
+      .set({ indexnowKey: "synthetic-indexnow-key" })
+      .where(eq(projects.id, "project"));
     const archive = await exportArchive();
+    expect(archive.payload.projects[0]).not.toHaveProperty("indexnowKey");
     const bProjectBefore = await testDb.db
       .select()
       .from(projects)
@@ -132,6 +137,7 @@ describe("selective client restore", () => {
       name: "Client A",
       domain: "client-a.example",
     });
+    expect(importedProject[0]?.indexnowKey).toBeNull();
 
     const importedPrompts = await testDb.db
       .select()
@@ -225,6 +231,46 @@ describe("selective client restore", () => {
         .from(projects)
         .where(eq(projects.organizationId, "target-a")),
     ).toHaveLength(1);
+  });
+
+  it("rejects unrecognized native result states before importing any project", async () => {
+    const archive = await exportArchive();
+    Object.defineProperty(archive.payload.aiNativeResults[0], "resultStatus", {
+      value: "unknown",
+      enumerable: true,
+    });
+    archive.contentSha256 = await sha256Json(archive.payload);
+
+    const response = await postRestore({
+      command: "import",
+      targetOrganizationId: "target-a",
+      archive,
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: "Invalid client restore archive",
+    });
+    expect(
+      await testDb.db
+        .select()
+        .from(projects)
+        .where(eq(projects.organizationId, "target-a")),
+    ).toHaveLength(1);
+  });
+
+  it("refuses to export unknown native result states", async () => {
+    await testDb.db
+      .update(aiNativeResults)
+      .set({ resultStatus: "future_state" })
+      .where(eq(aiNativeResults.id, "native-a-complete"));
+    const response = await postRestore({
+      command: "export",
+      organizationId: "organization",
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: "Client restore cannot export an unsupported AI result state",
+    });
   });
 
   it("rejects a row that crosses the source client boundary even with a valid checksum", async () => {
