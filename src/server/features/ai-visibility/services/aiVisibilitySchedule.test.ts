@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
+import { aiProviderRunReservations } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { setSchedule } from "./aiVisibilitySchedule";
 import { configuration, customer } from "./aiVisibilityTestFixtures";
@@ -112,6 +114,14 @@ it("cancels a queued scheduled run atomically when tracking is paused", async ()
   await repo.updateTracker(trackerId, {
     pendingScheduledRunId: runId,
   });
+  await testDb.db.insert(aiProviderRunReservations).values({
+    id: "queued-scheduled-before-pause-reservation",
+    projectId: "project",
+    runId,
+    reservedUsdMicros: 1_000_000,
+    status: "reserved",
+    createdAt: "2026-11-16T06:00:00.000Z",
+  });
 
   await setSchedule({ projectId: "project", enabled: false }, customer);
 
@@ -127,6 +137,12 @@ it("cancels a queued scheduled run atomically when tracking is paused", async ()
       error: "Scheduled tracking is paused.",
     },
   ]);
+  expect(await repo.startScheduledRunIfQueued(runId)).toBe(false);
+  const [reservation] = await testDb.db
+    .select()
+    .from(aiProviderRunReservations)
+    .where(eq(aiProviderRunReservations.runId, runId));
+  expect(reservation?.status).toBe("released");
 });
 
 it("cancels a queued scheduled run when the saved prompt scope changes", async () => {

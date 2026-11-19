@@ -52,30 +52,39 @@ export function cancelQueuedScheduledRuns(
   reason = SCHEDULED_RUN_SCOPE_CHANGED_REASON,
   runId?: string,
 ) {
-  const queuedRuns = tx
-    .select({ id: aiRuns.id })
-    .from(aiRuns)
-    .where(
-      and(
-        eq(aiRuns.trackerId, trackerId),
-        eq(aiRuns.trigger, "scheduled"),
-        eq(aiRuns.status, "queued"),
-        runId ? eq(aiRuns.id, runId) : undefined,
-      ),
-    );
+  // Cancellation and workflow dispatch both compete to transition the run out
+  // of `queued`. Record cancellation first; only runs whose compare-and-set
+  // succeeds here may have their provider reservation released.
+  const cancelledAt = new Date().toISOString();
   const queuedRun = and(
     eq(aiRuns.trackerId, trackerId),
     eq(aiRuns.trigger, "scheduled"),
     eq(aiRuns.status, "queued"),
     runId ? eq(aiRuns.id, runId) : undefined,
   );
+  const cancelledRuns = tx
+    .select({ id: aiRuns.id })
+    .from(aiRuns)
+    .where(
+      and(
+        eq(aiRuns.trackerId, trackerId),
+        eq(aiRuns.trigger, "scheduled"),
+        eq(aiRuns.status, "failed"),
+        eq(aiRuns.completedAt, cancelledAt),
+        runId ? eq(aiRuns.id, runId) : undefined,
+      ),
+    );
   return [
+    tx
+      .update(aiRuns)
+      .set({ status: "failed", completedAt: cancelledAt })
+      .where(queuedRun),
     tx
       .update(aiObservations)
       .set({ status: "failed", error: reason })
       .where(
         and(
-          inArray(aiObservations.runId, queuedRuns),
+          inArray(aiObservations.runId, cancelledRuns),
           eq(aiObservations.status, "pending"),
         ),
       ),
@@ -85,29 +94,24 @@ export function cancelQueuedScheduledRuns(
       .where(
         and(
           eq(aiTrackers.id, trackerId),
-          inArray(aiTrackers.pendingScheduledRunId, queuedRuns),
+          inArray(aiTrackers.pendingScheduledRunId, cancelledRuns),
         ),
       ),
     tx
       .update(aiTrackers)
       .set({ lastSkipReason: reason })
-      .where(and(eq(aiTrackers.id, trackerId), exists(queuedRuns))),
-    // These runs are still queued, so their provider workflows have not
-    // dispatched. Release their reservations in the same transaction as the
-    // cancellation so a deferred run cannot strand the project's active hold.
+      .where(and(eq(aiTrackers.id, trackerId), exists(cancelledRuns))),
+    // Only a run transitioned by the cancellation compare-and-set can match
+    // this marker. A dispatch that won the transition keeps its reservation.
     tx
       .update(aiProviderRunReservations)
       .set({ status: "released" })
       .where(
         and(
-          inArray(aiProviderRunReservations.runId, queuedRuns),
+          inArray(aiProviderRunReservations.runId, cancelledRuns),
           eq(aiProviderRunReservations.status, "reserved"),
         ),
       ),
-    tx
-      .update(aiRuns)
-      .set({ status: "failed", completedAt: new Date().toISOString() })
-      .where(queuedRun),
   ];
 }
 

@@ -3,6 +3,7 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import { pgStep } from "./pgStep";
 import { yieldingStep } from "./yieldingStep";
 import {
@@ -22,7 +23,6 @@ import {
   settleAiRun,
   type AiPostedHold,
 } from "@/server/features/ai-visibility/services/aiVisibilityBilling";
-import { runAiResearchSetup } from "@/server/features/ai-visibility/services/aiResearchKeywords";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { AI_TRACKING_HOLD_TTL_MS } from "@/server/lib/dataforseo";
 import { describeError } from "@/server/lib/errors";
@@ -96,17 +96,10 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     const step = yieldingStep(engineStep);
     const { payload } = event;
     if ("setupProjectId" in payload)
-      // No retries: each attempt is a paid model call. The user can retry.
-      return pgStep(
-        step,
-        "research-setup",
-        { retries: { limit: 0, delay: "1 second" }, timeout: "5 minutes" },
-        () =>
-          runAiResearchSetup(
-            { projectId: payload.setupProjectId },
-            payload.customer,
-            { runSeededTracking: payload.runSeededTracking },
-          ),
+      // Setup can call OpenRouter and live search, but has no shared provider-
+      // budget reservation/accounting path. Fail closed before dispatch.
+      throw new NonRetryableError(
+        "AI research setup is paused because it has no provider-budget reservation; no provider request was started.",
       );
     const { runId, customer } = payload;
     let pending: AiPendingTask[] = [];
@@ -203,6 +196,8 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
           );
         } catch (error) {
           // Its answers fail at finalize.
+          // The request may have reached the provider before the step failed.
+          providerCostKnown = false;
           console.warn(
             `[ai-visibility] ${runId} repost-${name}: ${describeError(error)}`,
           );
@@ -251,6 +246,8 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
             ),
           );
         } catch (error) {
+          // The request may have reached the provider before the step failed.
+          providerCostKnown = false;
           console.warn(
             `[ai-visibility] ${runId} post-${index}: ${describeError(error)}`,
           );

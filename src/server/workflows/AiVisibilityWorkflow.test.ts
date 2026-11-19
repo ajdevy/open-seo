@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowStep } from "cloudflare:workers";
+import { runAiResearchSetup } from "@/server/features/ai-visibility/services/aiResearchKeywords";
 import { AiVisibilityWorkflow } from "./AiVisibilityWorkflow";
 
 const mocks = vi.hoisted(() => ({
   prepare: vi.fn(),
+  runSetup: vi.fn(),
   post: vi.fn(),
   live: vi.fn(),
   model: vi.fn(),
@@ -20,8 +22,11 @@ const mocks = vi.hoisted(() => ({
   steps: vi.fn(),
 }));
 vi.mock("cloudflare:workers", () => ({ WorkflowEntrypoint: vi.fn() }));
+vi.mock("cloudflare:workflows", () => ({
+  NonRetryableError: class extends Error {},
+}));
 vi.mock("@/server/features/ai-visibility/services/aiResearchKeywords", () => ({
-  runAiResearchSetup: vi.fn(),
+  runAiResearchSetup: mocks.runSetup,
 }));
 vi.mock(
   "@/server/features/ai-visibility/services/aiVisibilityCollection",
@@ -71,7 +76,15 @@ const customer = {
 };
 const task = { tag: "answer", taskId: "task", engine: "chatgpt" };
 const hold = { hold: { lockId: "lock" }, path: [], tasks: [task] };
-function execute() {
+function execute(
+  payload:
+    | { runId: string; customer: typeof customer }
+    | {
+        setupProjectId: string;
+        runSeededTracking?: boolean;
+        customer: typeof customer;
+      } = { runId: "run", customer },
+) {
   // The mocked base and pgStep use no execution context, bindings, or step methods besides the sleeps.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- minimal test runtime boundary
   const workflow = new AiVisibilityWorkflow({} as ExecutionContext, {} as Env);
@@ -82,7 +95,7 @@ function execute() {
   } as unknown as WorkflowStep;
   return workflow.run(
     {
-      payload: { runId: "run", customer },
+      payload,
       instanceId: "run",
       timestamp: new Date(),
     },
@@ -114,6 +127,14 @@ beforeEach(() => {
 });
 
 describe("AI visibility workflow", () => {
+  it("fails closed before the unmetered research setup can call providers", async () => {
+    await expect(
+      execute({ setupProjectId: "project", customer }),
+    ).rejects.toThrow("no provider request was started");
+    expect(runAiResearchSetup).not.toHaveBeenCalled();
+    expect(mocks.steps).not.toHaveBeenCalled();
+  });
+
   it("posts each batch in a step that never retries, then collects and finalizes", async () => {
     await execute();
     expect(mocks.post).toHaveBeenCalledTimes(2);
@@ -269,6 +290,30 @@ describe("AI visibility workflow", () => {
       expect.anything(),
       false,
     );
+  });
+
+  it("keeps the reservation unknown when a post step fails after dispatch may have started", async () => {
+    mocks.post.mockRejectedValueOnce(new Error("workflow response was lost"));
+
+    await execute();
+
+    expect(mocks.markProviderBudgetUnknown).toHaveBeenCalledExactlyOnceWith(
+      "run",
+    );
+    expect(mocks.settleProviderBudget).not.toHaveBeenCalled();
+  });
+
+  it("keeps the reservation unknown when a repost step fails after dispatch may have started", async () => {
+    const batch = { engine: "chatgpt", tasks: [{ tag: "answer", prompt: "" }] };
+    mocks.collect.mockResolvedValueOnce({ pending: [], retry: [batch] });
+    mocks.post.mockRejectedValueOnce(new Error("workflow response was lost"));
+
+    await execute();
+
+    expect(mocks.markProviderBudgetUnknown).toHaveBeenCalledExactlyOnceWith(
+      "run",
+    );
+    expect(mocks.settleProviderBudget).not.toHaveBeenCalled();
   });
 
   it("holds the provider budget for reconciliation when a paid batch has an unknown outcome", async () => {
