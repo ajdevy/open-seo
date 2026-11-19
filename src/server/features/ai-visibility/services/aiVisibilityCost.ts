@@ -34,8 +34,9 @@ function aiAnswerUsd(engine: AiEngine, mode: "live" | "queued") {
 }
 
 /**
- * Conservative ceiling for a check: three attempts per answer, in credits
- * when hosted or provider USD when self-hosted.
+ * Forecast for a check: three attempts per answer, in credits when hosted or
+ * provider USD when self-hosted. `providerCostBounded` tells admission whether
+ * this forecast is a verifiable ceiling for every selected route.
  */
 export function aiCostForAnswers(
   engines: AiEngine[],
@@ -53,6 +54,9 @@ export function aiCostForAnswers(
     Math.round(providerUsd * 1e6 * AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER) / 1e6;
   return {
     providerCostUsd,
+    // DataForSEO LLM Responses pricing varies with tokens and web-search
+    // work. Historical per-answer observations are forecasts, not a hard cap.
+    providerCostBounded: !engines.some(aiEngineUsesModelApi),
     costCredits: hosted ? costCredits * AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER : 0,
     costUsd: hosted
       ? (costCredits * AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER) /
@@ -122,6 +126,7 @@ export async function estimateCost(
     observations: answers.length,
     ...cost,
     runNowProviderCostUsd: runNow.providerCostUsd,
+    providerCostBounded: cost.providerCostBounded,
     runNowCostUsd: runNow.costUsd,
     runNowCostCredits: runNow.costCredits,
     scheduleInterval,
@@ -153,6 +158,11 @@ export async function estimateCost(
       ...(liveEngines.length
         ? [
             `${liveEngines.map((e) => AI_ENGINE_LABELS[e]).join(" and ")} ${liveEngines.length === 1 ? "uses" : "use"} live API pricing, which costs more per answer.`,
+          ]
+        : []),
+      ...(!cost.providerCostBounded
+        ? [
+            "This selection includes an LLM Responses route whose token and web-search charges have no enforceable per-run ceiling. The forecast is informational and paid runs are disabled for this selection.",
           ]
         : []),
       ...(!(await hasDataforseoAccess())

@@ -34,9 +34,18 @@ export const AI_TRACKING_HOLD_TTL_MS = 24 * 60 * 60_000 - 60_000;
 export async function postAiTrackingTasksOnHold(
   customer: BillingCustomerContext,
   input: Parameters<typeof postAiTrackingTasks>[0],
-): Promise<{ tasks: PostedAiTrackingTask[]; hold: AiTrackingHold | null }> {
+): Promise<{
+  tasks: PostedAiTrackingTask[];
+  hold: AiTrackingHold | null;
+  providerCostUsd: number;
+}> {
   if (!(await isHostedServerAuthMode())) {
-    return { tasks: (await postAiTrackingTasks(input)).data, hold: null };
+    const response = await postAiTrackingTasks(input);
+    return {
+      tasks: response.data,
+      hold: null,
+      providerCostUsd: response.billing.costUsd,
+    };
   }
   const billingCustomer = await getOrCreateOrganizationCustomer(customer);
   // One call gets one hold, or INSUFFICIENT_CREDITS.
@@ -56,6 +65,7 @@ export async function postAiTrackingTasksOnHold(
     return {
       tasks: response.data,
       hold: { hold, path: response.billing.path },
+      providerCostUsd: response.billing.costUsd,
     };
   } catch (error) {
     // No task came back, so no answer will arrive to pay for.

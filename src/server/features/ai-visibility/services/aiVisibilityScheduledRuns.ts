@@ -12,6 +12,7 @@ import {
   startWorkflowForRun,
 } from "./aiVisibilityRuns";
 import { reserveProviderBudgetForRun } from "./aiVisibilityProviderBudget";
+import { releaseAiProviderRunBudget } from "../repositories/AiProviderRunBudgetRepository";
 import type { ConfigurationRows } from "../repositories/AiVisibilityRepository";
 import {
   handleUnauthorizedScheduledRun,
@@ -177,6 +178,8 @@ export async function resumePendingScheduledRuns(input: {
         const message = reservation.message;
         if (!message)
           throw new Error("Provider budget refusal had no message.");
+        if (reservation.admission.reason === "cost_ceiling_unavailable")
+          await releaseAiProviderRunBudget(run.id);
         await failAiRun(run.id, AI_ANSWER_FAILURES.notStarted);
         await scheduledRepo.clearPendingScheduledRun({
           trackerId: pending.trackerId,

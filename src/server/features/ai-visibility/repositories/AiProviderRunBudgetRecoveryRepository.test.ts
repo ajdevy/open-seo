@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { aiProviderRunReservations, aiRuns } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "./AiVisibilityRepository";
 import {
+  listUnknownAiProviderRunBudgets,
   markAiProviderRunBudgetUnknown,
   reconcileAiProviderRunBudget,
   reserveAiProviderRunBudget,
@@ -121,7 +122,7 @@ describe("provider run budget recovery", () => {
     });
   });
 
-  it("retains unknown holds unless the evidence and amount permit reconciliation", async () => {
+  it("accounts evidenced charges above the estimate and keeps invalid evidence held", async () => {
     await createRun("unknown-stays-held");
     await reserve("unknown-stays-held", 4_000_000);
     await markAiProviderRunBudgetUnknown("unknown-stays-held");
@@ -131,12 +132,9 @@ describe("provider run budget recovery", () => {
         outcome: "settled",
         accountedUsdMicros: 4_000_001,
         settledAt: now.toISOString(),
-        evidenceReference: "provider-usage:too-high",
+        evidenceReference: "provider-usage:overrun",
       }),
-    ).resolves.toEqual({
-      reconciled: false,
-      reason: "accounted_amount_exceeds_reservation",
-    });
+    ).resolves.toEqual({ reconciled: true, status: "settled" });
     await expect(
       reconcileAiProviderRunBudget({
         runId: "unknown-stays-held",
@@ -146,7 +144,7 @@ describe("provider run budget recovery", () => {
     ).rejects.toThrow("Provider budget evidence reference is invalid.");
     await expect(
       getAiProviderBudgetUsage(projectId, now.getTime()),
-    ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 4_000_000 });
+    ).resolves.toEqual({ accountedUsdMicros: 4_000_001, heldUsdMicros: 0 });
 
     await createRun("still-reserved");
     await reserve("still-reserved", 2_000_000);
@@ -160,5 +158,29 @@ describe("provider run budget recovery", () => {
       reconciled: false,
       reason: "reservation_not_unknown",
     });
+  });
+
+  it("lists only bounded reservation metadata for operator reconciliation", async () => {
+    await createRun("unknown-list-one");
+    await createRun("unknown-list-two");
+    await reserve("unknown-list-one", 4_000_000);
+    await reserve("unknown-list-two", 2_000_000);
+    await markAiProviderRunBudgetUnknown("unknown-list-one");
+    await markAiProviderRunBudgetUnknown("unknown-list-two");
+
+    const reservations = await listUnknownAiProviderRunBudgets(1);
+    expect(reservations).toHaveLength(1);
+    expect(reservations[0]).toMatchObject({
+      projectId,
+    });
+    expect(["unknown-list-one", "unknown-list-two"]).toContain(
+      reservations[0]?.runId,
+    );
+    expect(new Set(Object.keys(reservations[0]))).toEqual(
+      new Set(["createdAt", "projectId", "reservedUsdMicros", "runId"]),
+    );
+    await expect(listUnknownAiProviderRunBudgets(0)).rejects.toThrow(
+      "Provider budget queue limit is invalid.",
+    );
   });
 });

@@ -8,10 +8,8 @@ import {
   type PostedAiTrackingTask,
 } from "@/server/lib/dataforseo";
 import { DataforseoChargedTaskError } from "@/server/lib/dataforseo/envelope";
-import { resolveLatestLlmModelName } from "@/server/lib/dataforseo/llm-models";
 import { AppError, asAppError } from "@/server/lib/errors";
 import type { ErrorCode } from "@/shared/error-codes";
-import { getIsoCountryCode } from "@/shared/keyword-locations";
 import {
   AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER,
   aiEngineUsesModelApi,
@@ -21,10 +19,13 @@ import {
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import {
   parseDataforseoAnswer,
-  parseLlmResponseAnswer,
   type ParsedAiAnswer,
 } from "../providers/dataforseoEvidence";
 import type { AiPostedHold } from "./aiVisibilityBilling";
+import {
+  fetchAiLiveAnswersWithCosts,
+  type AiProviderCostOutcome,
+} from "./aiVisibilityLiveAnswerCosts";
 import {
   activeAiPrompts,
   aiBrands,
@@ -74,10 +75,6 @@ const AI_RETRY_DELAY_MS = 3_000;
 
 const waitBeforeRetry = () =>
   new Promise((resolve) => setTimeout(resolve, AI_RETRY_DELAY_MS));
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
 
 /**
  * Marks the run running and groups its answers into batches. Manual and
@@ -139,6 +136,10 @@ export async function prepareAiRun(
   const pending = (await repo.getObservations([runId])).filter(
     (row) => row.status === "pending",
   );
+  if (pending.some((row) => aiEngineUsesModelApi(row.engine)))
+    throw new NonRetryableError(
+      "This run has an LLM Responses route without an enforceable provider-cost ceiling; no provider request was started.",
+    );
   const live = run.trigger !== "scheduled";
   if (run.trigger === "scheduled" && run.status === "queued") {
     if (!(await repo.startScheduledRunIfQueued(runId)))
@@ -199,9 +200,16 @@ export async function postAiBatch(
   customer: BillingCustomerContext,
   market: AiRunMarket,
   batch: AiTaskBatch,
-): Promise<{ pending: AiPendingTask[]; hold: AiPostedHold | null }> {
+): Promise<
+  {
+    pending: AiPendingTask[];
+    hold: AiPostedHold | null;
+  } & AiProviderCostOutcome
+> {
   let posted: PostedAiTrackingTask[] = [];
   let hold: AiPostedHold | null = null;
+  let providerCostUsd = 0;
+  let providerCostKnown = false;
   // A rejected entry is logged where it is parsed.
   let error: ErrorCode = "INTERNAL_ERROR";
   try {
@@ -214,8 +222,16 @@ export async function postAiBatch(
     });
     posted = result.tasks;
     if (result.hold) hold = { ...result.hold, tasks: posted };
+    providerCostUsd = result.providerCostUsd;
+    providerCostKnown =
+      Number.isFinite(providerCostUsd) && providerCostUsd >= 0;
   } catch (cause) {
     error = asAppError(cause)?.code ?? "INTERNAL_ERROR";
+    if (cause instanceof DataforseoChargedTaskError) {
+      providerCostUsd = cause.billing.costUsd;
+      providerCostKnown =
+        Number.isFinite(providerCostUsd) && providerCostUsd >= 0;
+    }
     console.warn(`[ai-visibility] ${runId} task_post failed:`, cause);
   }
   const postedByTag = new Map(posted.map((task) => [task.tag, task]));
@@ -230,7 +246,7 @@ export async function postAiBatch(
     const attempts = (task.attempts ?? 0) + 1;
     return [{ ...task, ...postedTask, engine: batch.engine, attempts }];
   });
-  return { pending, hold };
+  return { pending, hold, providerCostUsd, providerCostKnown };
 }
 
 /**
@@ -243,19 +259,27 @@ export async function collectAiLiveBatch(
   customer: BillingCustomerContext,
   market: AiRunMarket,
   tasks: AiLiveTask[],
-) {
+): Promise<AiProviderCostOutcome> {
   const brands = await runBrands(runId);
-  if (!brands) return;
+  if (!brands) return { providerCostUsd: 0, providerCostKnown: true };
   let remaining = tasks;
+  let providerCostUsd = 0;
+  let providerCostKnown = true;
   for (let attempt = 1; remaining.length > 0; attempt++) {
     if (attempt > 1) await waitBeforeRetry();
-    const answers = await fetchLiveAnswers(customer, market, remaining);
+    const answers = await fetchAiLiveAnswersWithCosts(
+      customer,
+      market,
+      remaining,
+    );
     const retry: AiLiveTask[] = [];
     for (const [index, result] of answers.entries()) {
+      if (result.providerCostKnown) providerCostUsd += result.providerCostUsd;
+      else providerCostKnown = false;
       const task = remaining[index];
       if (
-        result.status === "failed" &&
-        result.retryable &&
+        result.answer.status === "failed" &&
+        result.answer.retryable &&
         attempt < AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER
       ) {
         retry.push(task);
@@ -265,7 +289,7 @@ export async function collectAiLiveBatch(
       // one failed write must not drop the rest. finalizeAiRun fails the
       // answer that stays pending.
       try {
-        await saveAiOutcome(runId, task, result, brands);
+        await saveAiOutcome(runId, task, result.answer, brands);
       } catch (error) {
         console.error(
           `[ai-visibility] ${runId} could not save answer ${task.tag}:`,
@@ -275,99 +299,25 @@ export async function collectAiLiveBatch(
     }
     remaining = retry;
   }
+  return { providerCostUsd, providerCostKnown };
 }
 
-/** A call that throws becomes a failed answer that is not retried. */
-async function fetchLiveAnswers(
-  customer: BillingCustomerContext,
-  market: AiRunMarket,
-  tasks: AiLiveTask[],
-): Promise<AiTrackingAnswer[]> {
-  let settled: PromiseSettledResult<AiTrackingAnswer>[];
-  try {
-    settled = await createDataforseoClient(customer).aiSearch.trackingLiveBatch(
-      tasks.map((task) => ({ engine: task.engine, task, ...market })),
-    );
-  } catch (error) {
-    settled = tasks.map(() => ({ status: "rejected", reason: error }));
-  }
-  return settled.map((outcome) =>
-    outcome.status === "fulfilled"
-      ? outcome.value
-      : {
-          status: "failed",
-          message: errorMessage(outcome.reason),
-          code: asAppError(outcome.reason)?.code ?? "INTERNAL_ERROR",
-          retryable: false,
-        },
-  );
-}
-
-/**
- * Asks each prompt of a Claude or Perplexity batch through the metered model
- * API client, which bills each answer, and saves each answer as soon as it
- * arrives, so a slow call that hits the step timeout cannot discard answers
- * already paid for. An answer that DataForSEO's backend failed is asked again,
- * up to AI_ANSWER_ATTEMPTS. Model answers have no language setting: only the
- * country guides the web search.
- */
+/** Refuses legacy model batches until the provider exposes a hard cost ceiling. */
 export async function collectAiModelBatch(
   runId: string,
   customer: BillingCustomerContext,
   market: AiRunMarket,
   batch: AiTaskBatch,
 ): Promise<void> {
+  void customer;
+  void market;
   const modelSlug = batch.engine;
   if (!aiEngineUsesModelApi(modelSlug))
     throw new AppError("INTERNAL_ERROR", `${modelSlug} has no model API batch`);
-  const brands = await runBrands(runId);
-  if (!brands) return;
-  const client = createDataforseoClient(customer);
-  const modelName = await resolveLatestLlmModelName(modelSlug);
-  const country = getIsoCountryCode(market.locationCode).toUpperCase();
-  await Promise.all(
-    batch.tasks.map(async (task) => {
-      for (let attempt = 1; ; attempt++) {
-        try {
-          const result = await client.aiSearch.llmResponse({
-            modelSlug,
-            modelName,
-            userPrompt: task.prompt,
-            webSearch: true,
-            // Saving the tracker rejects countries the engine cannot search.
-            webSearchCountryCode: country,
-            maxOutputTokens: MODEL_MAX_OUTPUT_TOKENS,
-          });
-          await saveAiAnswer(task.tag, parseLlmResponseAnswer(result), brands);
-          return;
-        } catch (cause) {
-          // A charged task error is a task DataForSEO returned with its cost.
-          if (
-            cause instanceof DataforseoChargedTaskError &&
-            cause.code === "UPSTREAM_UNAVAILABLE" &&
-            attempt < AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER
-          ) {
-            await waitBeforeRetry();
-            continue;
-          }
-          console.warn(
-            `[ai-visibility] ${runId} answer ${task.tag} failed:`,
-            cause,
-          );
-          const code = asAppError(cause)?.code ?? "INTERNAL_ERROR";
-          await repo.failPendingObservations(runId, code, [task.tag]);
-          return;
-        }
-      }
-    }),
+  throw new NonRetryableError(
+    `Run ${runId} uses an LLM Responses route with no enforceable provider-cost ceiling; no provider request was started.`,
   );
 }
-
-/**
- * Like Prompt Explorer: reasoning models count hidden reasoning against this
- * budget, and a smaller one can leave the visible answer empty.
- */
-const MODEL_MAX_OUTPUT_TOKENS = 4096;
 
 /** Concurrent task_get requests within a collect step. */
 const TASK_GET_CONCURRENCY = 25;

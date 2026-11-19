@@ -37,8 +37,9 @@ export function TrackerSetupReview({
 }) {
   const paused = !enabled && !creating;
   const fitsWeeklyProviderBudget =
+    review.estimate.providerCostBounded &&
     review.estimate.providerCostUsd <=
-    review.estimate.weeklyProviderBudgetAvailableUsd;
+      review.estimate.weeklyProviderBudgetAvailableUsd;
   const exceedsInstallationBudget =
     review.estimate.providerCostUsd >
     review.estimate.weeklyProviderBudgetGlobalAvailableUsd;
@@ -110,10 +111,19 @@ export function TrackerSetupReview({
         <p>
           Each run collects <strong>{review.estimate.observations}</strong>{" "}
           {review.estimate.observations === 1 ? "answer" : "answers"} with a
-          conservative cost ceiling of{" "}
+          {review.estimate.providerCostBounded
+            ? " conservative cost ceiling of "
+            : " forecast of "}
           <strong>{aiMoney(review.estimate.costUsd)}</strong>, including up to
           three provider attempts per answer.
         </p>
+        {!review.estimate.providerCostBounded && (
+          <p className="font-medium text-destructive">
+            This estimate is informational. A selected LLM Responses route has
+            variable token or web-search charges without an enforceable run
+            ceiling, so paid runs and scheduling are disabled.
+          </p>
+        )}
         <p>
           <strong>{aiMoney(review.estimate.monthlyCostUsd)}</strong> estimated
           per month if it runs {review.estimate.scheduleInterval}.

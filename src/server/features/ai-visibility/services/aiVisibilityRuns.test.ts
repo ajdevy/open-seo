@@ -23,7 +23,10 @@ vi.mock("cloudflare:workers", () => ({
 vi.mock("@/db", () => ({ db: testDb.db }));
 vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
 vi.mock("@/server/lib/runtime-env", () => ({
-  getOptionalEnvValue: async () => "dataforseo-key",
+  getOptionalEnvValue: async (name: string) =>
+    name === "AUTOGEO_QUEUE_MASTER_KEY_B64"
+      ? btoa("k".repeat(32))
+      : "dataforseo-key",
   isHostedServerAuthMode: hosted,
 }));
 vi.mock("@/server/billing/subscription", () => ({
@@ -155,6 +158,26 @@ describe("AI visibility checks", () => {
     expect((await repo.getTracker(projectId))?.lastSkipReason).toContain(
       "rolling 7-day budget",
     );
+  });
+
+  it("reports an unbounded provider forecast and refuses paid model API runs", async () => {
+    const tracker = await repo.getTracker(projectId);
+    if (!tracker) throw new Error("Tracker fixture was not saved.");
+    await repo.updateTracker(tracker.id, { claude: true });
+
+    const estimate = await estimateCost({ projectId });
+    expect(estimate.providerCostBounded).toBe(false);
+    expect(estimate.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("no enforceable per-run ceiling"),
+      ]),
+    );
+
+    await expect(
+      runCheck({ projectId, maxCostUsd: 100 }, customer),
+    ).rejects.toMatchObject({ reason: "PROVIDER_COST_CEILING_UNAVAILABLE" });
+    expect(workflow.create).not.toHaveBeenCalled();
+    expect(await repo.listRuns(projectId)).toEqual([]);
   });
 
   it("includes an admitted run hold in the customer-facing budget estimate", async () => {

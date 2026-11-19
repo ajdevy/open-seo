@@ -28,6 +28,7 @@ const review: TrackerSetupReviewData = {
     engineCount: 1,
     observations: 1,
     providerCostUsd: 0,
+    providerCostBounded: true,
     runNowProviderCostUsd: 0,
     costUsd: 0,
     costCredits: 0,

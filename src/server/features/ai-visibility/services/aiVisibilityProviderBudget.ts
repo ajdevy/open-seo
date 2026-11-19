@@ -9,6 +9,8 @@ export function providerBudgetDenialMessage(
   admission: Awaited<ReturnType<typeof reserveAiProviderRunBudget>>,
 ) {
   if (admission.admitted) return null;
+  if (admission.reason === "cost_ceiling_unavailable")
+    return "This selection includes a provider route with variable token or web-search charges and no enforceable run ceiling. No provider request was started.";
   if (admission.reason === "run_in_progress")
     return "Another provider run already holds this project's active reservation. No provider request was started.";
   if (admission.reason === "unknown_outcome")
@@ -29,11 +31,26 @@ export async function reserveProviderBudgetForRun(input: {
   limitUsdCents: number;
   engines: AiEngine[];
 }) {
-  const reservationCost = aiCostForAnswers(
+  const cost = aiCostForAnswers(
     input.engines,
     false,
     input.run.trigger === "scheduled" ? "queued" : "live",
-  ).providerCostUsd;
+  );
+  const reservationCost = cost.providerCostUsd;
+  if (!cost.providerCostBounded) {
+    const admission = {
+      admitted: false as const,
+      reason: "cost_ceiling_unavailable" as const,
+      heldUsdMicros: 0,
+      usedUsdMicros: 0,
+      remainingUsdMicros: 0,
+    };
+    return {
+      admission,
+      reservationCost,
+      message: providerBudgetDenialMessage(reservationCost, admission),
+    };
+  }
   try {
     const admission = await reserveAiProviderRunBudget({
       id: crypto.randomUUID(),

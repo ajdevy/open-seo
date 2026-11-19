@@ -84,7 +84,7 @@ export interface AiCapability {
   unsupportedLocationCodes: number[];
   maxPromptLength: number;
   note: string;
-  /** Every run asks the model's API, at live API pricing. */
+  /** This engine uses a variable-cost model route that may not be run yet. */
   modelApi: boolean;
 }
 export interface AiRun {
@@ -141,6 +141,8 @@ export interface AiCostEstimate {
   engineCount: number;
   observations: number;
   providerCostUsd: number;
+  /** False when a selected provider route has no enforceable maximum charge. */
+  providerCostBounded: boolean;
   runNowProviderCostUsd: number;
   costUsd: number;
   costCredits: number;

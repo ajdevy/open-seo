@@ -48,10 +48,7 @@ export type AiProviderRunBudgetReconciliationResult =
   | { reconciled: true; status: "settled" | "released" }
   | {
       reconciled: false;
-      reason:
-        | "reservation_not_found"
-        | "reservation_not_unknown"
-        | "accounted_amount_exceeds_reservation";
+      reason: "reservation_not_found" | "reservation_not_unknown";
     };
 
 function normalizeReconciliationTime(value: string | undefined) {
@@ -118,14 +115,6 @@ export async function reconcileAiProviderRunBudget(
   if (isAlreadyReconciled) return { reconciled: true, status: input.outcome };
   if (reservation.status !== "unknown")
     return { reconciled: false, reason: "reservation_not_unknown" };
-  if (
-    input.outcome === "settled" &&
-    input.accountedUsdMicros > reservation.reservedUsdMicros
-  )
-    return {
-      reconciled: false,
-      reason: "accounted_amount_exceeds_reservation",
-    };
 
   const common = {
     reconciliationReference: evidenceReference,
@@ -170,4 +159,21 @@ export async function reconcileAiProviderRunBudget(
   )
     return { reconciled: true, status: input.outcome };
   return { reconciled: false, reason: "reservation_not_unknown" };
+}
+
+/** Operator queue metadata only; never includes prompts, answers, or credentials. */
+export async function listUnknownAiProviderRunBudgets(limit = 100) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+    throw new Error("Provider budget queue limit is invalid.");
+  return db
+    .select({
+      runId: aiProviderRunReservations.runId,
+      projectId: aiProviderRunReservations.projectId,
+      reservedUsdMicros: aiProviderRunReservations.reservedUsdMicros,
+      createdAt: aiProviderRunReservations.createdAt,
+    })
+    .from(aiProviderRunReservations)
+    .where(eq(aiProviderRunReservations.status, "unknown"))
+    .orderBy(aiProviderRunReservations.createdAt)
+    .limit(limit);
 }

@@ -32,7 +32,8 @@ export type AiProviderRunBudgetAdmission =
         | "global_budget_exceeded"
         | "run_in_progress"
         | "unknown_outcome"
-        | "reservation_mismatch";
+        | "reservation_mismatch"
+        | "cost_ceiling_unavailable";
       heldUsdMicros: number;
       usedUsdMicros: number;
       remainingUsdMicros: number;
@@ -101,7 +102,7 @@ async function getBudgetUsage(projectId: string | undefined, now: number) {
   );
 }
 
-/** Settled upper bounds count for seven days; unresolved holds never expire. */
+/** Provider-reported totals count for seven days; unresolved holds never expire. */
 export async function getAiProviderBudgetUsage(
   projectId: string,
   now = Date.now(),
@@ -370,11 +371,14 @@ export async function reserveAiProviderRunBudget(input: {
   return { admitted: false, reason: "run_in_progress", ...common };
 }
 
-/** A confirmed workflow completion settles at the reserved upper bound. */
+/** A confirmed workflow completion settles at the provider-reported charge. */
 export async function settleAiProviderRunBudget(
   runId: string,
+  accountedUsdMicros: number,
   settledAt: string,
 ) {
+  if (!Number.isSafeInteger(accountedUsdMicros) || accountedUsdMicros < 0)
+    throw new Error("Provider budget settled amount is invalid.");
   const reservation = await db
     .select()
     .from(aiProviderRunReservations)
@@ -385,7 +389,7 @@ export async function settleAiProviderRunBudget(
     .update(aiProviderRunReservations)
     .set({
       status: "settled",
-      accountedUsdMicros: reservation[0].reservedUsdMicros,
+      accountedUsdMicros,
       settledAt,
     })
     .where(
@@ -398,6 +402,7 @@ export async function settleAiProviderRunBudget(
 
 export {
   markAiProviderRunBudgetUnknown,
+  listUnknownAiProviderRunBudgets,
   reconcileAiProviderRunBudget,
   releaseAiProviderRunBudget,
   type AiProviderRunBudgetReconciliationInput,

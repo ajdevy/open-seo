@@ -153,7 +153,9 @@ export function TrackingCostReview({
     (mode === "check" ? cost?.runNowProviderCostUsd : cost?.providerCostUsd) ??
     0;
   const fitsWeeklyProviderBudget = Boolean(
-    cost && providerRunCostUsd <= cost.weeklyProviderBudgetAvailableUsd,
+    cost &&
+    cost.providerCostBounded &&
+    providerRunCostUsd <= cost.weeklyProviderBudgetAvailableUsd,
   );
   const exceedsInstallationBudget = Boolean(
     cost && providerRunCostUsd > cost.weeklyProviderBudgetGlobalAvailableUsd,
@@ -282,9 +284,15 @@ export function TrackingCostReview({
                 {aiMoney(runCostUsd)}
               </span>
               <FieldDescription>
-                This is the conservative run ceiling, including up to three
-                provider attempts per answer.
+                {cost.providerCostBounded
+                  ? "This is the conservative run ceiling, including up to three provider attempts per answer."
+                  : "This is an informational forecast only. A selected LLM Responses route has variable token or web-search charges without an enforceable run ceiling."}
               </FieldDescription>
+              {!cost.providerCostBounded && (
+                <FieldDescription className="text-destructive">
+                  Paid runs and scheduling are disabled for this selection.
+                </FieldDescription>
+              )}
               <FieldDescription>
                 {`${cost.observations} ${cost.observations === 1 ? "answer" : "answers"}${mode === "schedule" ? ` · about ${aiMoney(cost.monthlyCostUsd)} a month (${cost.checksPerMonth} ${cost.checksPerMonth === 1 ? "run" : "runs"})` : " · live answers, ready in a few minutes"}`}
               </FieldDescription>
@@ -305,9 +313,9 @@ export function TrackingCostReview({
               )}
               {exceedsInstallationBudget && (
                 <FieldDescription className="text-destructive">
-                  This run exceeds the remaining installation-wide rolling
-                  7-day budget. Reduce the run scope or wait until the rolling
-                  window has room.
+                  This run exceeds the remaining installation-wide rolling 7-day
+                  budget. Reduce the run scope or wait until the rolling window
+                  has room.
                 </FieldDescription>
               )}
             </Field>

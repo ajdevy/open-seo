@@ -8,6 +8,7 @@ import {
   aiRuns,
   aiObservations,
   projects,
+  aiProviderRunReservations,
 } from "@/db/schema";
 import {
   commitProjectSettingsMutation,
@@ -91,6 +92,18 @@ export function cancelQueuedScheduledRuns(
       .update(aiTrackers)
       .set({ lastSkipReason: reason })
       .where(and(eq(aiTrackers.id, trackerId), exists(queuedRuns))),
+    // These runs are still queued, so their provider workflows have not
+    // dispatched. Release their reservations in the same transaction as the
+    // cancellation so a deferred run cannot strand the project's active hold.
+    tx
+      .update(aiProviderRunReservations)
+      .set({ status: "released" })
+      .where(
+        and(
+          inArray(aiProviderRunReservations.runId, queuedRuns),
+          eq(aiProviderRunReservations.status, "reserved"),
+        ),
+      ),
     tx
       .update(aiRuns)
       .set({ status: "failed", completedAt: new Date().toISOString() })

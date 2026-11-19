@@ -72,6 +72,16 @@ export async function prepareRun(
       "NO_ACTIVE_PROMPTS",
       "Add or unpause prompts before starting a check.",
     );
+  const cost = aiCostForAnswers(
+    scope.prompts.flatMap(() => scope.engines),
+    false,
+    trigger === "scheduled" ? "queued" : "live",
+  );
+  if (!cost.providerCostBounded)
+    throw new AiVisibilityError(
+      "PROVIDER_COST_CEILING_UNAVAILABLE",
+      "This selection includes a provider route with variable token or web-search charges and no enforceable run ceiling. No provider request was started.",
+    );
   // Hosted checks need credits for every answer before they start, like rank
   // checks. The tracker says why no check ran, whichever path started it.
   if (await isHostedServerAuthMode()) {
@@ -298,15 +308,20 @@ export async function runCheck(
   const config = await requireConfiguration(input.projectId);
   const scope = aiScope(config, input.promptIds);
   // Price the check now and refuse it above what the user approved.
-  const { costUsd } = aiCostForAnswers(
+  const cost = aiCostForAnswers(
     scope.prompts.flatMap(() => scope.engines),
     await isHostedServerAuthMode(),
     "live",
   );
-  if (Math.round(costUsd * 1e6) > Math.round(input.maxCostUsd * 1e6))
+  if (!cost.providerCostBounded)
+    throw new AiVisibilityError(
+      "PROVIDER_COST_CEILING_UNAVAILABLE",
+      "This selection includes a provider route with variable token or web-search charges and no enforceable run ceiling. No provider request was started.",
+    );
+  if (Math.round(cost.costUsd * 1e6) > Math.round(input.maxCostUsd * 1e6))
     throw new AiVisibilityError(
       "COST_LIMIT_EXCEEDED",
-      `This check now costs $${costUsd.toFixed(4)}, more than the approved maximum. Review the new estimate before running it.`,
+      `This check now costs $${cost.costUsd.toFixed(4)}, more than the approved maximum. Review the new estimate before running it.`,
     );
   return startRun(config, "manual", billing, input.promptIds);
 }

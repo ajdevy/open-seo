@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { aiProviderRunReservations, aiRuns } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { aiProviderRunReservations, aiRuns, aiTrackers } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "./AiVisibilityRepository";
 import {
   getAiProviderBudgetUsage,
@@ -11,6 +12,7 @@ import {
 } from "./AiProviderRunBudgetRepository";
 import { pruneAiHistory } from "./aiVisibilityRetentionRepository";
 import { configuration } from "../services/aiVisibilityTestFixtures";
+import { cancelQueuedScheduledRuns } from "./aiVisibilityConfigurationRepository";
 
 const { testDb } = await vi.hoisted(async () => {
   const { createAiVisibilityTestDb } = await import("../aiVisibilityTestDb");
@@ -29,6 +31,7 @@ async function createRun(
   createdAt = now.toISOString(),
   runProjectId = projectId,
   runTrackerId = trackerId,
+  overrides: Partial<typeof aiRuns.$inferInsert> = {},
 ) {
   await testDb.db.insert(aiRuns).values({
     id,
@@ -40,6 +43,7 @@ async function createRun(
     languageCode: "en",
     createdAt,
     completedAt: createdAt,
+    ...overrides,
   });
 }
 
@@ -151,18 +155,49 @@ describe("provider run budget reservations", () => {
       admitted: true,
       remainingUsdMicros: 500_000,
     });
-    await settleAiProviderRunBudget("second", now.toISOString());
+    // Reported provider charges can exceed an estimate; account the real total.
+    await settleAiProviderRunBudget("second", 2_500_000, now.toISOString());
     await expect(reserve("third", 1_000_000)).resolves.toMatchObject({
       admitted: false,
       reason: "budget_exceeded",
-      remainingUsdMicros: 500_000,
+      remainingUsdMicros: 0,
     });
 
     await expect(
       getAiProviderBudgetUsage(projectId, now.getTime()),
     ).resolves.toEqual({
-      accountedUsdMicros: 2_000_000,
+      accountedUsdMicros: 2_500_000,
       heldUsdMicros: 5_500_000,
+    });
+  });
+
+  it("releases a queued scheduled run's reservation in the cancellation transaction", async () => {
+    const runId = "queued-scheduled";
+    await createRun(runId, now.toISOString(), projectId, trackerId, {
+      trigger: "scheduled",
+      status: "queued",
+      completedAt: null,
+    });
+    await testDb.db.update(aiTrackers).set({ pendingScheduledRunId: runId });
+    await expect(reserve(runId, 2_000_000)).resolves.toMatchObject({
+      admitted: true,
+    });
+
+    await testDb.runBatch((tx) =>
+      cancelQueuedScheduledRuns(tx, trackerId, "tracking paused", runId),
+    );
+
+    await expect(
+      getAiProviderBudgetUsage(projectId, now.getTime()),
+    ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 0 });
+    const [run] = await testDb.db
+      .select()
+      .from(aiRuns)
+      .where(eq(aiRuns.id, runId));
+    expect(run?.status).toBe("failed");
+    await createRun("next-run");
+    await expect(reserve("next-run", 2_000_000)).resolves.toMatchObject({
+      admitted: true,
     });
   });
 

@@ -31,7 +31,6 @@ import {
   releaseAiProviderRunBudget,
   settleAiProviderRunBudget,
 } from "@/server/features/ai-visibility/repositories/AiProviderRunBudgetRepository";
-import { AiVisibilityRepository as repo } from "@/server/features/ai-visibility/repositories/AiVisibilityRepository";
 
 // One binding serves answer collection runs and the one-time research setup,
 // so setup needs no new workflow infrastructure.
@@ -112,13 +111,28 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     const { runId, customer } = payload;
     let pending: AiPendingTask[] = [];
     let providerCallMayHaveStarted = false;
+    let providerCostUsd = 0;
+    let providerCostKnown = true;
     // Each posted batch holds credits until settle charges the answers that
     // arrived, once late reads end or the run fails.
     const holds: AiPostedHold[] = [];
     // A run in flight across the deploy that added holds replays an older
     // post output, the bare task list, which was charged when posted.
     const queue = (posted: Awaited<ReturnType<typeof postAiBatch>>) => {
-      if (Array.isArray(posted)) return pending.push(...posted);
+      if (Array.isArray(posted)) {
+        // Workflow state persisted by an older deployment has no per-call
+        // provider billing metadata, so retain its hold for reconciliation.
+        providerCostKnown = false;
+        return pending.push(...posted);
+      }
+      if (
+        typeof posted.providerCostUsd === "number" &&
+        Number.isFinite(posted.providerCostUsd) &&
+        posted.providerCostUsd >= 0 &&
+        posted.providerCostKnown
+      )
+        providerCostUsd += posted.providerCostUsd;
+      else providerCostKnown = false;
       if (posted.hold) holds.push(posted.hold);
       pending.push(...posted.pending);
     };
@@ -211,10 +225,18 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       for (const [index, tasks] of plan.batches.entries())
         try {
           providerCallMayHaveStarted = true;
-          await pgStep(step, `live-${index}`, LIVE_STEP, () =>
+          const outcome = await pgStep(step, `live-${index}`, LIVE_STEP, () =>
             collectAiLiveBatch(runId, customer, plan.market, tasks),
           );
+          if (
+            outcome?.providerCostKnown &&
+            Number.isFinite(outcome.providerCostUsd) &&
+            outcome.providerCostUsd >= 0
+          )
+            providerCostUsd += outcome.providerCostUsd;
+          else providerCostKnown = false;
         } catch (error) {
+          providerCostKnown = false;
           console.warn(
             `[ai-visibility] ${runId} live-${index}: ${describeError(error)}`,
           );
@@ -233,12 +255,15 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
             `[ai-visibility] ${runId} post-${index}: ${describeError(error)}`,
           );
         }
-    // Claude and Perplexity answers come from the model API on every run.
-    // Queued answers process meanwhile, and each model batch is followed by
-    // one free read of them.
+    // Legacy workflow instances may still replay model API steps; their
+    // provider cost is unknown, so they remain held for reconciliation.
     for (const [index, batch] of plan.modelBatches.entries()) {
       try {
         providerCallMayHaveStarted = true;
+        // New model API dispatches are blocked before this step. An older
+        // persisted workflow plan can still replay it, so never settle its
+        // budget from an estimate or a missing legacy step result.
+        providerCostKnown = false;
         await pgStep(step, `model-${index}`, LIVE_STEP, () =>
           collectAiModelBatch(runId, customer, plan.market, batch),
         );
@@ -297,12 +322,17 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     }
     await settle();
     await pgStep(step, "settle-provider-budget", FREE_STEP, async () => {
-      const observations = await repo.getObservationStatuses([runId]);
-      const outcomeKnown =
-        observations.length > 0 &&
-        observations.every((observation) => observation.status === "completed");
-      if (outcomeKnown)
-        await settleAiProviderRunBudget(runId, new Date().toISOString());
+      const accountedUsdMicros = Math.round(providerCostUsd * 1e6);
+      if (
+        providerCostKnown &&
+        Number.isSafeInteger(accountedUsdMicros) &&
+        accountedUsdMicros >= 0
+      )
+        await settleAiProviderRunBudget(
+          runId,
+          accountedUsdMicros,
+          new Date().toISOString(),
+        );
       else await markAiProviderRunBudgetUnknown(runId);
     });
   }

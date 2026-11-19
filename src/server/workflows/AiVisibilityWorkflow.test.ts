@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
   settleProviderBudget: vi.fn(),
   markProviderBudgetUnknown: vi.fn(),
   releaseProviderBudget: vi.fn(),
-  observationStatuses: vi.fn(),
   finalize: vi.fn(),
   markFailed: vi.fn(),
   sleep: vi.fn(),
@@ -51,14 +50,6 @@ vi.mock(
     markAiProviderRunBudgetUnknown: mocks.markProviderBudgetUnknown,
     releaseAiProviderRunBudget: mocks.releaseProviderBudget,
     settleAiProviderRunBudget: mocks.settleProviderBudget,
-  }),
-);
-vi.mock(
-  "@/server/features/ai-visibility/repositories/AiVisibilityRepository",
-  () => ({
-    AiVisibilityRepository: {
-      getObservationStatuses: mocks.observationStatuses,
-    },
   }),
 );
 vi.mock("./pgStep", () => ({
@@ -108,13 +99,18 @@ beforeEach(() => {
       { engine: "gemini", tasks: [] },
     ],
   });
-  mocks.post.mockResolvedValue({ pending: [task], hold });
+  mocks.post.mockResolvedValue({
+    pending: [task],
+    hold,
+    providerCostUsd: 0.02,
+    providerCostKnown: true,
+  });
+  mocks.live.mockResolvedValue({
+    providerCostUsd: 0.03,
+    providerCostKnown: true,
+  });
   mocks.collect.mockResolvedValue({ pending: [], retry: [] });
   mocks.late.mockResolvedValue([]);
-  mocks.observationStatuses.mockResolvedValue([
-    { status: "completed" },
-    { status: "completed" },
-  ]);
 });
 
 describe("AI visibility workflow", () => {
@@ -138,6 +134,7 @@ describe("AI visibility workflow", () => {
     expect(mocks.finalize).toHaveBeenCalledExactlyOnceWith("run");
     expect(mocks.settleProviderBudget).toHaveBeenCalledExactlyOnceWith(
       "run",
+      40_000,
       expect.any(String),
     );
   });
@@ -147,10 +144,13 @@ describe("AI visibility workflow", () => {
     await execute();
     expect(mocks.collect).toHaveBeenCalledWith("run", [task, task], true);
     expect(mocks.settle).not.toHaveBeenCalled();
-    expect(mocks.settleProviderBudget).toHaveBeenCalledOnce();
+    expect(mocks.markProviderBudgetUnknown).toHaveBeenCalledExactlyOnceWith(
+      "run",
+    );
+    expect(mocks.settleProviderBudget).not.toHaveBeenCalled();
   });
 
-  it("asks the model API for Claude and Perplexity, then reads queued answers before sleeping", async () => {
+  it("keeps an old model API workflow outcome unknown", async () => {
     mocks.prepare.mockResolvedValue({
       market: { locationCode: 2840, languageCode: "en" },
       modelBatches: [{ engine: "claude", tasks: [] }],
@@ -159,10 +159,10 @@ describe("AI visibility workflow", () => {
     });
     await execute();
     expect(mocks.model).toHaveBeenCalledOnce();
-    expect(mocks.steps).toHaveBeenCalledWith("read-model-0", {
-      retries: { limit: 2, delay: "10 seconds" },
-      timeout: "5 minutes",
-    });
+    expect(mocks.markProviderBudgetUnknown).toHaveBeenCalledExactlyOnceWith(
+      "run",
+    );
+    expect(mocks.settleProviderBudget).not.toHaveBeenCalled();
     expect(mocks.sleep).not.toHaveBeenCalled();
     expect(mocks.finalize).toHaveBeenCalledExactlyOnceWith("run");
   });
@@ -179,6 +179,52 @@ describe("AI visibility workflow", () => {
     expect(mocks.post).not.toHaveBeenCalled();
     expect(mocks.sleep).not.toHaveBeenCalled();
     expect(mocks.finalize).toHaveBeenCalledExactlyOnceWith("run");
+  });
+
+  it("settles the live run from actual per-call provider costs", async () => {
+    mocks.prepare.mockResolvedValue({
+      market: { locationCode: 2840, languageCode: "en" },
+      modelBatches: [],
+      live: true,
+      batches: [[], []],
+    });
+    mocks.live
+      .mockResolvedValueOnce({
+        providerCostUsd: 0.031,
+        providerCostKnown: true,
+      })
+      .mockResolvedValueOnce({
+        providerCostUsd: 0.017,
+        providerCostKnown: true,
+      });
+
+    await execute();
+
+    expect(mocks.settleProviderBudget).toHaveBeenCalledExactlyOnceWith(
+      "run",
+      48_000,
+      expect.any(String),
+    );
+    expect(mocks.markProviderBudgetUnknown).not.toHaveBeenCalled();
+  });
+
+  it("settles provider charges for failed answer posts when billing is exact", async () => {
+    // DataForSEO can report a charge even when it returns no task to collect.
+    mocks.post.mockResolvedValue({
+      pending: [],
+      hold: null,
+      providerCostUsd: 0.006,
+      providerCostKnown: true,
+    });
+
+    await execute();
+
+    expect(mocks.settleProviderBudget).toHaveBeenCalledExactlyOnceWith(
+      "run",
+      12_000,
+      expect.any(String),
+    );
+    expect(mocks.markProviderBudgetUnknown).not.toHaveBeenCalled();
   });
 
   it("finishes the run when the collection window closes, then reads missing answers late before settling", async () => {
@@ -233,10 +279,6 @@ describe("AI visibility workflow", () => {
       batches: [[], []],
     });
     mocks.live.mockRejectedValueOnce(new Error("internal workflows error"));
-    mocks.observationStatuses.mockResolvedValue([
-      { status: "failed" },
-      { status: "completed" },
-    ]);
     await execute();
     expect(mocks.live).toHaveBeenCalledTimes(2);
     expect(mocks.finalize).toHaveBeenCalledExactlyOnceWith("run");

@@ -11,11 +11,13 @@ describe("AI collection estimates", () => {
   it("quotes a conservative three-attempt ceiling with hosted markup and credits", () => {
     expect(aiCostForAnswers(chatgpt(12), true, "queued")).toEqual({
       providerCostUsd: 0.0432,
+      providerCostBounded: true,
       costCredits: 72,
       costUsd: 0.072,
     });
     expect(aiCostForAnswers([], true, "queued")).toEqual({
       providerCostUsd: 0,
+      providerCostBounded: true,
       costCredits: 0,
       costUsd: 0,
     });
@@ -28,6 +30,7 @@ describe("AI collection estimates", () => {
   it("quotes self-hosted provider cost without markup or credits", () => {
     expect(aiCostForAnswers(chatgpt(3), false, "queued")).toEqual({
       providerCostUsd: 0.0108,
+      providerCostBounded: true,
       costCredits: 0,
       costUsd: 0.0108,
     });
@@ -37,5 +40,8 @@ describe("AI collection estimates", () => {
       expect(
         aiCostForAnswers(["claude", "perplexity"], false, mode).providerCostUsd,
       ).toBe(0.66);
+    expect(
+      aiCostForAnswers(["claude"], false, "live").providerCostBounded,
+    ).toBe(false);
   });
 });
