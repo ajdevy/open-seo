@@ -105,6 +105,26 @@ describe("provider dispatch certainty", () => {
     });
   });
 
+  it("keeps queued spend unknown when the response omits a submitted task", async () => {
+    dataforseo.trackingTaskPost.mockResolvedValue({
+      tasks: [],
+      hold: null,
+      providerCostUsd: 0,
+      providerCostKnown: true,
+    });
+
+    const result = await postAiBatch(runId, customer, market, {
+      engine: "chatgpt",
+      tasks: [{ tag: "answer-0", prompt: "Which SEO tools?" }],
+    });
+
+    expect(result).toMatchObject({
+      providerCostUsd: 0,
+      providerCostKnown: false,
+      providerCallMayHaveStarted: true,
+    });
+  });
+
   it("accounts a live credit refusal as zero provider spend", async () => {
     dataforseo.trackingLiveBatchWithCosts.mockResolvedValue([
       {

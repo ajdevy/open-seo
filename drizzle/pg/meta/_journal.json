@@ -351,6 +351,13 @@
       "when": 1795173925002,
       "tag": "0049_legacy_provider_budget_holds",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1795181168162,
+      "tag": "0050_rainy_rockslide",
+      "breakpoints": true
     }
   ]
 }

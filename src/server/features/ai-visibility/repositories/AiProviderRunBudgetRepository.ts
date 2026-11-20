@@ -245,8 +245,33 @@ export async function reserveAiProviderRunBudget(input: {
       globalUsed > AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS ||
       projectUsed > limitUsdMicros
     ) {
-      // If a concurrent status change or database trigger introduced another
-      // hold during admission, release only this not-yet-dispatched hold.
+      if (sameRun[0]) {
+        // This is an idempotent retry of an existing hold. Its provider
+        // request may already have started, so do not release it.
+        return {
+          admitted: false,
+          reason:
+            projectUsed > limitUsdMicros
+              ? "budget_exceeded"
+              : "global_budget_exceeded",
+          heldUsdMicros: currentRun[0].reservedUsdMicros,
+          usedUsdMicros: Math.max(
+            projectUsed - currentRun[0].reservedUsdMicros,
+            0,
+          ),
+          remainingUsdMicros: Math.max(
+            Math.min(
+              limitUsdMicros - projectUsed,
+              AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS - globalUsed,
+            ),
+            0,
+          ),
+        };
+      }
+
+      // This row was created by this call, before any provider request. A
+      // concurrent hold made admission fail, so only this new hold is safe to
+      // release.
       await db
         .update(aiProviderRunReservations)
         .set({ status: "released" })

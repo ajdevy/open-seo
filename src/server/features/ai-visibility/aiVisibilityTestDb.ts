@@ -32,6 +32,7 @@ export async function createAiVisibilityTestDb() {
   /** Clears every row, then adds organization "organization" and its project "project". */
   const seedProject = () =>
     client.executeMultiple(`
+      DELETE FROM ai_provider_run_reservations;
       DELETE FROM organization;
       INSERT INTO organization (id, name, slug, created_at)
         VALUES ('organization', 'Organization', 'organization', 0);

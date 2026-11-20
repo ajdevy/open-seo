@@ -112,12 +112,10 @@ export const aiProviderRunReservations = sqliteTable(
   "ai_provider_run_reservations",
   {
     id: text("id").primaryKey(),
-    projectId: text("project_id")
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    runId: text("run_id")
-      .notNull()
-      .references(() => aiRuns.id, { onDelete: "cascade" }),
+    // Keep spend history independent of project/run lifecycle so deleting
+    // either record cannot erase unresolved provider spend.
+    projectId: text("project_id").notNull(),
+    runId: text("run_id").notNull(),
     reservedUsdMicros: integer("reserved_usd_micros").notNull(),
     accountedUsdMicros: integer("accounted_usd_micros"),
     status: text("status", {

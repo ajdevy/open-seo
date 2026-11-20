@@ -47,7 +47,15 @@ export async function postAiBatch(
     posted = result.tasks;
     if (result.hold) hold = { ...result.hold, tasks: posted };
     providerCostUsd = result.providerCostUsd;
+    const submittedTags = new Set(batch.tasks.map((task) => task.tag));
+    const postedTags = new Set(posted.map((task) => task.tag));
+    const representsEverySubmittedTask =
+      submittedTags.size === batch.tasks.length &&
+      postedTags.size === posted.length &&
+      posted.length === batch.tasks.length &&
+      batch.tasks.every((task) => postedTags.has(task.tag));
     providerCostKnown =
+      representsEverySubmittedTask &&
       result.providerCostKnown &&
       Number.isFinite(providerCostUsd) &&
       providerCostUsd >= 0;

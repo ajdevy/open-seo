@@ -245,7 +245,7 @@ describe("AI answer collection", () => {
     expect(result.pending).toEqual([pendingTask]);
     expect(result).toMatchObject({
       providerCostUsd: 0.003,
-      providerCostKnown: true,
+      providerCostKnown: false,
     });
     expect(await repo.getObservation("answer-1")).toMatchObject({
       status: "failed",
