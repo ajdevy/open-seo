@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const state = await vi.hoisted(async () => {
   const { createAiVisibilityTestDb } =
@@ -26,9 +26,18 @@ vi.mock("@/server/lib/runtime-env", () => ({
 
 import { db } from "@/db";
 import { projectSettingsSnapshotOutbox } from "@/db/schema";
+import { handleGoogleDriveArchiveOAuthCallback } from "./googleDriveArchiveOAuthCallback";
+import {
+  GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_PARAMETER,
+  GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_VERSION,
+  GOOGLE_DRIVE_ARCHIVE_CALLBACK_READY_HEADER,
+  GOOGLE_DRIVE_ARCHIVE_CALLBACK_READY_VALUE,
+} from "./googleDriveArchiveCallbackReadiness";
+import { callbackProbeAwareFetch } from "./googleDriveArchiveCallbackTestUtils";
 import { handleGoogleDriveArchiveRequest } from "./googleDriveArchiveOAuthRoutes";
 
 const ORIGIN = "https://autogeo.flexsentlabs.com";
+const CALLBACK = ORIGIN + "/api/google-drive/archive/oauth/callback";
 
 function outboxRow(
   id: string,
@@ -64,8 +73,13 @@ beforeEach(async () => {
     GOOGLE_DRIVE_ARCHIVE_PICKER_API_KEY: "synthetic-picker-key",
     GOOGLE_DRIVE_ARCHIVE_PROJECT_NUMBER: "123456789",
   });
+  vi.stubGlobal("fetch", callbackProbeAwareFetch());
   await db.delete(projectSettingsSnapshotOutbox);
   await state.testDb.seedProject();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 it("shows only this organization’s unconfirmed snapshots in archive status", async () => {
@@ -99,4 +113,97 @@ it("shows only this organization’s unconfirmed snapshots in archive status", a
     connected: false,
     unconfirmedSnapshots: 1,
   });
+});
+
+it("keeps OAuth unavailable until the configured callback route answers its readiness probe", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(null, { status: 404 })),
+  );
+
+  const statusResponse = await handleGoogleDriveArchiveRequest(
+    new Request(ORIGIN + "/api/google-drive/archive/status", {
+      method: "GET",
+      headers: {
+        origin: ORIGIN,
+        "sec-fetch-site": "same-origin",
+      },
+    }),
+  );
+  expect(statusResponse?.status).toBe(200);
+  await expect(statusResponse?.json()).resolves.toMatchObject({
+    callbackReady: false,
+    pickerReady: true,
+  });
+
+  const startResponse = await handleGoogleDriveArchiveRequest(
+    new Request(ORIGIN + "/api/google-drive/archive/oauth/start", {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        "sec-fetch-site": "same-origin",
+      },
+    }),
+  );
+  expect(startResponse?.status).toBe(503);
+  await expect(startResponse?.json()).resolves.toEqual({
+    error: "google_drive_callback_unavailable",
+  });
+
+  const pickerResponse = await handleGoogleDriveArchiveRequest(
+    new Request(ORIGIN + "/api/google-drive/archive/picker-token", {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        "sec-fetch-site": "same-origin",
+      },
+    }),
+  );
+  expect(pickerResponse?.status).toBe(503);
+  await expect(pickerResponse?.json()).resolves.toEqual({
+    error: "google_drive_callback_unavailable",
+  });
+
+  const folderResponse = await handleGoogleDriveArchiveRequest(
+    new Request(ORIGIN + "/api/google-drive/archive/folder", {
+      method: "PUT",
+      headers: {
+        origin: ORIGIN,
+        "sec-fetch-site": "same-origin",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ id: "folder-id" }),
+    }),
+  );
+  expect(folderResponse?.status).toBe(503);
+  await expect(folderResponse?.json()).resolves.toEqual({
+    error: "google_drive_callback_unavailable",
+  });
+});
+
+it("confirms only the configured callback route through a side-effect-free readiness probe", async () => {
+  const response = await handleGoogleDriveArchiveOAuthCallback(
+    new Request(
+      CALLBACK +
+        "?" +
+        GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_PARAMETER +
+        "=" +
+        GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_VERSION,
+    ),
+  );
+
+  expect(response.status).toBe(204);
+  expect(response.headers.get(GOOGLE_DRIVE_ARCHIVE_CALLBACK_READY_HEADER)).toBe(
+    GOOGLE_DRIVE_ARCHIVE_CALLBACK_READY_VALUE,
+  );
+
+  const wrongOrigin = await handleGoogleDriveArchiveOAuthCallback(
+    new Request(
+      "https://wrong.example.com/api/google-drive/archive/oauth/callback?" +
+        GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_PARAMETER +
+        "=" +
+        GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_VERSION,
+    ),
+  );
+  expect(wrongOrigin.status).toBe(404);
 });

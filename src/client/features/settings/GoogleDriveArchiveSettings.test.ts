@@ -4,16 +4,21 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { GoogleDriveArchiveSettings } from "./GoogleDriveArchiveSettings";
 
-function renderArchiveSettings(unconfirmedSnapshots: number) {
+function renderArchiveSettings(
+  unconfirmedSnapshots: number,
+  callbackReady = true,
+  pickerReady = true,
+) {
   const queryClient = new QueryClient();
   queryClient.setQueryData(["googleDriveArchiveStatus"], {
     configured: true,
+    callbackReady,
     connected: true,
     unconfirmedSnapshots,
     status: "connected",
     accountEmail: "owner@example.com",
     folder: { id: "archive-folder", name: "Settings archive" },
-    pickerReady: false,
+    pickerReady,
   });
 
   return renderToStaticMarkup(
@@ -44,5 +49,17 @@ describe("GoogleDriveArchiveSettings", () => {
     expect(markup).toContain(
       "Only confirmed snapshots can be restored after server loss.",
     );
+  });
+
+  it("keeps OAuth and folder selection unavailable while the callback is unreachable", () => {
+    const markup = renderArchiveSettings(0, false, true);
+
+    expect(markup).toContain(
+      "Google OAuth callback is not reachable yet. Connection and folder selection are disabled.",
+    );
+    expect(markup).not.toContain("Choose folder");
+    expect(markup).not.toContain("Change folder");
+    expect(markup).not.toContain("Connect Google Drive");
+    expect(markup).toContain("Disconnect");
   });
 });

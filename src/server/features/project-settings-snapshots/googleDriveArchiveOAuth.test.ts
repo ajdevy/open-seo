@@ -51,6 +51,7 @@ import {
   verification,
 } from "@/db/schema";
 import { handleGoogleDriveArchiveOAuthCallback } from "./googleDriveArchiveOAuthCallback";
+import { callbackProbeAwareFetch } from "./googleDriveArchiveCallbackTestUtils";
 import { handleGoogleDriveArchiveRequest } from "./googleDriveArchiveOAuthRoutes";
 
 const ORIGIN = "https://autogeo.flexsentlabs.com";
@@ -94,6 +95,7 @@ beforeEach(async () => {
   state.accountId = "google-account-1";
   Object.keys(state.env).forEach((key) => delete state.env[key]);
   setSyntheticConfig();
+  vi.stubGlobal("fetch", callbackProbeAwareFetch());
   await db.delete(googleDriveArchiveConnections);
   await db.delete(verification);
   await state.testDb.seedProject();
@@ -159,7 +161,7 @@ it("stores OAuth tokens encrypted and only returns a no-store Picker token", asy
     }
     return new Response(null, { status: 404 });
   });
-  vi.stubGlobal("fetch", fetcher);
+  vi.stubGlobal("fetch", callbackProbeAwareFetch(fetcher));
 
   const callback = await handleGoogleDriveArchiveOAuthCallback(
     new Request(CALLBACK + "?code=synthetic-code&state=" + stateToken),
@@ -380,7 +382,7 @@ it("rejects OAuth tokens that include scopes beyond drive.file", async () => {
       scope: `${DRIVE_SCOPE} email`,
     }),
   );
-  vi.stubGlobal("fetch", fetcher);
+  vi.stubGlobal("fetch", callbackProbeAwareFetch(fetcher));
 
   const response = requireResponse(
     await handleGoogleDriveArchiveRequest(
@@ -409,7 +411,7 @@ it("rejects OAuth tokens that include scopes beyond drive.file", async () => {
 
 it("clears callback query parameters before rejecting an expired state", async () => {
   const fetcher = vi.fn();
-  vi.stubGlobal("fetch", fetcher);
+  vi.stubGlobal("fetch", callbackProbeAwareFetch(fetcher));
   const callback = await handleGoogleDriveArchiveOAuthCallback(
     new Request(CALLBACK + "?code=synthetic-code&state=invalid"),
   );

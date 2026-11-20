@@ -20,6 +20,7 @@ import {
   verifySelectedFolder,
 } from "./googleDriveArchiveOAuth";
 import { completeGoogleDriveArchiveOAuth } from "./googleDriveArchiveOAuthCallback";
+import { isGoogleDriveArchiveCallbackReady } from "./googleDriveArchiveCallbackReadiness";
 import {
   API_ROOT,
   GOOGLE_DRIVE_ARCHIVE_CALLBACK_PATH,
@@ -262,24 +263,27 @@ async function handleApiRequest(request: Request): Promise<Response | null> {
 
   try {
     if (url.pathname === `${API_ROOT}/status` && request.method === "GET") {
-      const connection = await connectionForOrganization(
-        context.organizationId,
-      );
-      const [pendingSnapshots] = await db
-        .select({ count: count() })
-        .from(projectSettingsSnapshotOutbox)
-        .innerJoin(
-          projects,
-          eq(projectSettingsSnapshotOutbox.projectId, projects.id),
-        )
-        .where(
-          and(
-            eq(projects.organizationId, context.organizationId),
-            eq(projectSettingsSnapshotOutbox.status, "unconfirmed"),
-          ),
-        );
+      const [connection, pendingSnapshots, callbackReady] = await Promise.all([
+        connectionForOrganization(context.organizationId),
+        db
+          .select({ count: count() })
+          .from(projectSettingsSnapshotOutbox)
+          .innerJoin(
+            projects,
+            eq(projectSettingsSnapshotOutbox.projectId, projects.id),
+          )
+          .where(
+            and(
+              eq(projects.organizationId, context.organizationId),
+              eq(projectSettingsSnapshotOutbox.status, "unconfirmed"),
+            ),
+          )
+          .then(([pending]) => pending),
+        isGoogleDriveArchiveCallbackReady(config.redirectUri, url.origin),
+      ]);
       return jsonResponse({
         configured: true,
+        callbackReady,
         connected: Boolean(connection),
         unconfirmedSnapshots: pendingSnapshots?.count ?? 0,
         status: connection?.status ?? null,
@@ -295,6 +299,13 @@ async function handleApiRequest(request: Request): Promise<Response | null> {
       url.pathname === `${API_ROOT}/oauth/start` &&
       request.method === "POST"
     ) {
+      if (
+        !(await isGoogleDriveArchiveCallbackReady(
+          config.redirectUri,
+          url.origin,
+        ))
+      )
+        return genericError(503, "google_drive_callback_unavailable");
       if (!config.pickerApiKey || !config.projectNumber)
         return genericError(503, "google_drive_picker_not_configured");
       if (url.origin !== new URL(config.redirectUri).origin)
@@ -313,6 +324,13 @@ async function handleApiRequest(request: Request): Promise<Response | null> {
       url.pathname === `${API_ROOT}/oauth/complete` &&
       request.method === "POST"
     ) {
+      if (
+        !(await isGoogleDriveArchiveCallbackReady(
+          config.redirectUri,
+          url.origin,
+        ))
+      )
+        return genericError(503, "google_drive_callback_unavailable");
       const response = await completeOAuthRequest(request, config, context);
       return response;
     }
@@ -321,6 +339,13 @@ async function handleApiRequest(request: Request): Promise<Response | null> {
       url.pathname === `${API_ROOT}/picker-token` &&
       request.method === "POST"
     ) {
+      if (
+        !(await isGoogleDriveArchiveCallbackReady(
+          config.redirectUri,
+          url.origin,
+        ))
+      )
+        return genericError(503, "google_drive_callback_unavailable");
       const picker = requirePickerConfig(config);
       const connection = await connectionForOrganization(
         context.organizationId,
@@ -331,6 +356,13 @@ async function handleApiRequest(request: Request): Promise<Response | null> {
     }
 
     if (url.pathname === `${API_ROOT}/folder` && request.method === "PUT") {
+      if (
+        !(await isGoogleDriveArchiveCallbackReady(
+          config.redirectUri,
+          url.origin,
+        ))
+      )
+        return genericError(503, "google_drive_callback_unavailable");
       const response = await handleFolderRequest(request, context, config);
       return response;
     }

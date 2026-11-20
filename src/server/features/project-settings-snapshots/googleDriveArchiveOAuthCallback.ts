@@ -1,4 +1,5 @@
 import { hasOrgPermission } from "@/lib/org-permissions";
+import { googleDriveArchiveCallbackProbeResponse } from "./googleDriveArchiveCallbackReadiness";
 import { saveConnection } from "./googleDriveArchiveOAuth";
 import { getGoogleDriveAccountIdentity } from "./googleDriveArchiveOAuthAccount";
 import {
@@ -88,6 +89,11 @@ export async function handleGoogleDriveArchiveOAuthCallback(
 ): Promise<Response> {
   try {
     const config = await readConfig();
+    const probe = googleDriveArchiveCallbackProbeResponse(
+      request,
+      config?.redirectUri ?? null,
+    );
+    if (probe) return probe;
     if (!config) return callbackBridgeResponse();
     const requestUrl = new URL(request.url);
     if (`${requestUrl.origin}${requestUrl.pathname}` !== config.redirectUri)

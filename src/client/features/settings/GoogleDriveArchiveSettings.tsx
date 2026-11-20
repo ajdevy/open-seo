@@ -12,6 +12,7 @@ const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
 const archiveStatusSchema = z.object({
   configured: z.boolean(),
+  callbackReady: z.boolean(),
   connected: z.boolean(),
   unconfirmedSnapshots: z.number().int().nonnegative(),
   status: z.enum(["connected", "reauthorization_required"]).nullable(),
@@ -69,13 +70,25 @@ async function parseJson<T>(
   schema: z.ZodType<T>,
 ): Promise<T> {
   if (!response.ok) {
+    const errorPayload: unknown = await response.json().catch(() => null);
+    const errorCode =
+      typeof errorPayload === "object" &&
+      errorPayload !== null &&
+      "error" in errorPayload &&
+      typeof errorPayload.error === "string"
+        ? errorPayload.error
+        : null;
     if (response.status === 403)
       throw new Error(
         "Only an Every App owner or admin can manage this archive.",
       );
+    if (errorCode === "google_drive_callback_unavailable")
+      throw new Error(
+        "Google OAuth callback is not reachable yet. Connection and folder selection are disabled.",
+      );
     if (response.status === 503)
       throw new Error(
-        "Google Drive archive is not configured for this app yet.",
+        "Google Drive archive settings or callback are not ready for this app yet.",
       );
     if (response.status === 409)
       throw new Error(
@@ -339,10 +352,20 @@ export function GoogleDriveArchiveSettings() {
                 No Google Drive account connected.
               </span>
             )}
-            {status.pickerReady ? (
-              status.connected &&
-              status.status !== "reauthorization_required" ? (
-                <>
+            {status.connected ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                pending={disconnectMutation.isPending}
+                onClick={() => disconnectMutation.mutate()}
+              >
+                <Unplug />
+                Disconnect
+              </Button>
+            ) : null}
+            {status.callbackReady && status.pickerReady ? (
+              status.connected ? (
+                status.status !== "reauthorization_required" ? (
                   <Button
                     size="sm"
                     variant="outline"
@@ -351,30 +374,29 @@ export function GoogleDriveArchiveSettings() {
                     <FolderOpen />
                     {status.folder ? "Change folder" : "Choose folder"}
                   </Button>
+                ) : (
                   <Button
                     size="sm"
-                    variant="ghost"
-                    pending={disconnectMutation.isPending}
-                    onClick={() => disconnectMutation.mutate()}
+                    pending={connectMutation.isPending}
+                    onClick={() => connectMutation.mutate()}
                   >
-                    <Unplug />
-                    Disconnect
+                    Reconnect Google Drive
                   </Button>
-                </>
+                )
               ) : (
                 <Button
                   size="sm"
                   pending={connectMutation.isPending}
                   onClick={() => connectMutation.mutate()}
                 >
-                  {status.connected
-                    ? "Reconnect Google Drive"
-                    : "Connect Google Drive"}
+                  Connect Google Drive
                 </Button>
               )
             ) : (
-              <span className="text-sm text-muted-foreground">
-                Google OAuth and Picker settings are incomplete.
+              <span className="text-sm text-muted-foreground" role="status">
+                {!status.callbackReady
+                  ? "Google OAuth callback is not reachable yet. Connection and folder selection are disabled."
+                  : "Google OAuth and Picker settings are incomplete."}
               </span>
             )}
           </div>
