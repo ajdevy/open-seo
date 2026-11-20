@@ -21,7 +21,7 @@ vi.mock("cloudflare:workers", () => ({
   env: { DATABASE_PROVIDER: "d1", R2: { put: r2Put } },
 }));
 vi.mock("@/db", () => ({ db: testDb.db }));
-vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/db/runBatch", () => testDb.runBatchModule);
 
 const projectId = "project";
 const own = { name: "OpenSEO", domain: "openseo.so", own: true };

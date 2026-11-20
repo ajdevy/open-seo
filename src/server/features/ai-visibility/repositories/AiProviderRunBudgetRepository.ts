@@ -1,6 +1,6 @@
 import { and, eq, exists, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { runBatch } from "@/db/runBatch";
+import { getBatchRows, runBatchWithResults } from "@/db/runBatch";
 import {
   AI_PROVIDER_BUDGET_WINDOW_MS,
   getAiProviderBudgetUsage,
@@ -25,7 +25,7 @@ export const AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS =
 
 const GLOBAL_BUDGET_LOCK_ID = "provider-run-budget";
 export type AiProviderRunBudgetTransaction = Parameters<
-  Parameters<typeof runBatch>[0]
+  Parameters<typeof runBatchWithResults>[0]
 >[0];
 
 /** Serialize saved project budget changes with provider-run admissions. */
@@ -60,6 +60,19 @@ export type AiProviderRunBudgetAdmission =
       usedUsdMicros: number;
       remainingUsdMicros: number;
     };
+
+function reservationRejected(
+  reason: "reservation_mismatch" | "unknown_outcome",
+  heldUsdMicros: number,
+): AiProviderRunBudgetAdmission {
+  return {
+    admitted: false,
+    reason,
+    heldUsdMicros,
+    usedUsdMicros: heldUsdMicros,
+    remainingUsdMicros: 0,
+  };
+}
 
 /**
  * Reserve the full provider-cost ceiling before any provider call. A global
@@ -103,21 +116,15 @@ export async function reserveAiProviderRunBudget(input: {
       sameRun[0].projectId !== input.projectId ||
       sameRun[0].reservedUsdMicros !== input.reserveUsdMicros
     )
-      return {
-        admitted: false,
-        reason: "reservation_mismatch",
-        heldUsdMicros: sameRun[0].reservedUsdMicros,
-        usedUsdMicros: sameRun[0].reservedUsdMicros,
-        remainingUsdMicros: 0,
-      };
+      return reservationRejected(
+        "reservation_mismatch",
+        sameRun[0].reservedUsdMicros,
+      );
     if (sameRun[0].status !== "reserved")
-      return {
-        admitted: false,
-        reason: "unknown_outcome",
-        heldUsdMicros: sameRun[0].reservedUsdMicros,
-        usedUsdMicros: sameRun[0].reservedUsdMicros,
-        remainingUsdMicros: 0,
-      };
+      return reservationRejected(
+        "unknown_outcome",
+        sameRun[0].reservedUsdMicros,
+      );
   }
 
   const now = Date.parse(input.createdAt);
@@ -140,7 +147,7 @@ export async function reserveAiProviderRunBudget(input: {
   // The upsert obtains a transaction-scoped row lock in Postgres. D1's atomic
   // batch serializes the same lock-and-insert sequence. The conditional insert
   // reads usage only after that global admission lock has been acquired.
-  await runBatch((tx) => [
+  const batchResults = await runBatchWithResults((tx) => [
     lockAiProviderRunBudget(tx),
     tx
       .insert(aiProviderRunReservations)
@@ -174,8 +181,16 @@ export async function reserveAiProviderRunBudget(input: {
             ),
           ),
       )
-      .onConflictDoNothing(),
+      .onConflictDoNothing()
+      .returning({ id: aiProviderRunReservations.id }),
   ]);
+  const ownsNewReservation = getBatchRows(batchResults[1]).some(
+    (row) =>
+      typeof row === "object" &&
+      row !== null &&
+      "id" in row &&
+      row.id === input.id,
+  );
 
   const currentRun = await db
     .select({
@@ -192,25 +207,19 @@ export async function reserveAiProviderRunBudget(input: {
       currentRun[0].projectId !== input.projectId ||
       currentRun[0].reservedUsdMicros !== input.reserveUsdMicros
     )
-      return {
-        admitted: false,
-        reason: "reservation_mismatch",
-        heldUsdMicros: currentRun[0].reservedUsdMicros,
-        usedUsdMicros: currentRun[0].reservedUsdMicros,
-        remainingUsdMicros: 0,
-      };
+      return reservationRejected(
+        "reservation_mismatch",
+        currentRun[0].reservedUsdMicros,
+      );
     if (currentRun[0].status !== "reserved")
-      return {
-        admitted: false,
-        reason: "unknown_outcome",
-        heldUsdMicros: currentRun[0].reservedUsdMicros,
-        usedUsdMicros: currentRun[0].reservedUsdMicros,
-        remainingUsdMicros: 0,
-      };
+      return reservationRejected(
+        "unknown_outcome",
+        currentRun[0].reservedUsdMicros,
+      );
 
     // If the row appeared after pre-read under another ID, another caller owns
     // the hold; neither admit this dispatch nor release that reservation.
-    if (!sameRun[0] && currentRun[0].id !== input.id)
+    if (!sameRun[0] && !ownsNewReservation)
       return {
         admitted: false,
         reason: "run_in_progress",
@@ -256,7 +265,7 @@ export async function reserveAiProviderRunBudget(input: {
       globalUsed > AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS ||
       projectUsed > limitUsdMicros
     ) {
-      if (sameRun[0]) {
+      if (!ownsNewReservation) {
         // This is an idempotent retry of an existing hold. Its provider
         // request may already have started, so do not release it. The same
         // applies to any row not inserted by this call.
@@ -389,47 +398,10 @@ export async function reserveAiProviderRunBudget(input: {
   return { admitted: false, reason: "run_in_progress", ...common };
 }
 
-/**
- * Fail closed when a persisted workflow resumes without an active budget hold.
- * Legacy workflows may outlive the deployment that created them.
- */
-export async function hasReservedAiProviderRunBudget(runId: string) {
-  const reservation = await db
-    .select({ status: aiProviderRunReservations.status })
-    .from(aiProviderRunReservations)
-    .where(eq(aiProviderRunReservations.runId, runId))
-    .limit(1);
-  return reservation[0]?.status === "reserved";
-}
-
-/** A confirmed workflow completion settles at the provider-reported charge. */
-export async function settleAiProviderRunBudget(
-  runId: string,
-  accountedUsdMicros: number,
-  settledAt: string,
-) {
-  if (!Number.isSafeInteger(accountedUsdMicros) || accountedUsdMicros < 0)
-    throw new Error("Provider budget settled amount is invalid.");
-  const reservation = await db
-    .select()
-    .from(aiProviderRunReservations)
-    .where(eq(aiProviderRunReservations.runId, runId))
-    .limit(1);
-  if (!reservation[0] || reservation[0].status !== "reserved") return;
-  await db
-    .update(aiProviderRunReservations)
-    .set({
-      status: "settled",
-      accountedUsdMicros,
-      settledAt,
-    })
-    .where(
-      and(
-        eq(aiProviderRunReservations.id, reservation[0].id),
-        eq(aiProviderRunReservations.status, "reserved"),
-      ),
-    );
-}
+export {
+  hasReservedAiProviderRunBudget,
+  settleAiProviderRunBudget,
+} from "./AiProviderRunBudgetSettlementRepository";
 
 export {
   markAiProviderRunBudgetUnknown,
