@@ -330,6 +330,13 @@
       "when": 1795195519368,
       "tag": "0046_purple_roland_deschain",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1795212257297,
+      "tag": "0047_parallel_naoko",
+      "breakpoints": true
     }
   ]
 }

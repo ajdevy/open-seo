@@ -58,6 +58,14 @@ export function ConfiguredTrackingPanel({
   );
   const busy =
     currentRun?.status === "running" || currentRun?.status === "queued";
+  const lastSkipReason = tracker?.lastSkipReason;
+  const insufficientCredits =
+    lastSkipReason?.startsWith("INSUFFICIENT_CREDITS") ?? false;
+  const scheduleNotice = lastSkipReason?.startsWith("INSUFFICIENT_CREDITS; ")
+    ? lastSkipReason.slice("INSUFFICIENT_CREDITS; ".length)
+    : lastSkipReason === "INSUFFICIENT_CREDITS"
+      ? null
+      : lastSkipReason;
 
   return (
     <>
@@ -113,14 +121,11 @@ export function ConfiguredTrackingPanel({
           ) : (
             <RunStatusLine run={null} tracker={tracker} />
           )}
-          {tracker?.lastSkipReason === "INSUFFICIENT_CREDITS" ? (
-            <InsufficientCreditsError variant="inline" />
-          ) : (
-            tracker?.lastSkipReason && (
-              <p className="text-xs text-warning">
-                Most recent scheduling notice: {tracker.lastSkipReason}
-              </p>
-            )
+          {insufficientCredits && <InsufficientCreditsError variant="inline" />}
+          {scheduleNotice && (
+            <p className="text-xs text-warning">
+              Most recent scheduling notice: {scheduleNotice}
+            </p>
           )}
         </div>
         <VisibilityTrend projectId={projectId} collecting={busy} />

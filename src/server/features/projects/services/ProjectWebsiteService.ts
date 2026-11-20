@@ -12,6 +12,7 @@ import { researchWebsite } from "@/server/features/projects/services/websiteRese
 import { normalizeBacklinksTarget } from "@/server/lib/dataforseoBacklinksTarget";
 import { AppError } from "@/server/lib/errors";
 import {
+  enableWebsiteTrackingSchedule,
   prepareWebsiteTracking,
   startWebsiteTrackingRun,
 } from "@/server/features/ai-visibility/services/websiteTrackingSetup";
@@ -90,8 +91,15 @@ async function save(
     ...new Map(accepted.competitors.map((row) => [row.domain, row])).values(),
   ];
   const tracking = await prepareWebsiteTracking(accepted, project);
-  await saveWebsiteSetup(customer.organizationId, accepted, author, tracking);
-  if (tracking && runSeededTracking)
+  const trackingSaved = await saveWebsiteSetup(
+    customer.organizationId,
+    accepted,
+    author,
+    tracking,
+  );
+  if (trackingSaved)
+    await enableWebsiteTrackingSchedule(accepted.projectId, customer);
+  if (trackingSaved && runSeededTracking)
     await startWebsiteTrackingRun(accepted.projectId, customer);
   return requireProject(customer, accepted.projectId);
 }

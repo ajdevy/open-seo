@@ -7,6 +7,7 @@ const {
   research,
   workflow,
   prepareWebsiteTracking,
+  enableWebsiteTrackingSchedule,
   startWebsiteTrackingRun,
 } = vi.hoisted(() => ({
   getTracker: vi.fn(),
@@ -15,6 +16,7 @@ const {
   research: vi.fn(),
   workflow: { get: vi.fn(), create: vi.fn() },
   prepareWebsiteTracking: vi.fn(),
+  enableWebsiteTrackingSchedule: vi.fn(),
   startWebsiteTrackingRun: vi.fn(),
 }));
 
@@ -36,6 +38,7 @@ vi.mock("../repositories/aiVisibilityConfigurationRepository", () => ({
 }));
 vi.mock("./websiteTrackingSetup", () => ({
   prepareWebsiteTracking,
+  enableWebsiteTrackingSchedule,
   startWebsiteTrackingRun,
 }));
 vi.mock("@/server/features/projects/repositories/ProjectRepository", () => ({
@@ -109,6 +112,7 @@ describe("runAiResearchSetup", () => {
     listResearchKeywords.mockResolvedValue([]);
     listCompetitors.mockResolvedValue([]);
     prepareWebsiteTracking.mockResolvedValue(null);
+    enableWebsiteTrackingSchedule.mockClear();
     research.mockResolvedValue({
       name: "OpenSEO",
       domain: "openseo.so",
@@ -145,6 +149,11 @@ describe("runAiResearchSetup", () => {
     await runAiResearchSetup({ projectId: "project" }, customer, {
       runSeededTracking: true,
     });
+    expect(enableWebsiteTrackingSchedule).toHaveBeenCalledTimes(2);
+    expect(enableWebsiteTrackingSchedule).toHaveBeenCalledWith(
+      "project",
+      customer,
+    );
     expect(startWebsiteTrackingRun).toHaveBeenCalledWith("project", customer);
   });
 

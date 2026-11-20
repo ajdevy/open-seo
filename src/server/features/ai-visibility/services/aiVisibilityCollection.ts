@@ -28,6 +28,7 @@ import { aiBrands } from "./aiVisibilityConfiguration";
 import { AI_ANSWER_FAILURES } from "./aiVisibilityErrors";
 import { matchAiBrand } from "./aiVisibilityMatching";
 import { recordAiRunOutcome } from "./aiVisibilityRunOutcome";
+import { scheduledRunScopeError } from "./aiVisibilityScheduledRunScope";
 
 // Each function here is one workflow step body: inputs are its parameters and
 // the return value is what the workflow engine persists and replays.
@@ -94,11 +95,22 @@ export async function prepareAiRun(
   // Stale-run cleanup failed it already; a retry would find the same.
   if (!run || (run.status !== "queued" && run.status !== "running"))
     throw new NonRetryableError(`Run ${runId} is no longer active.`);
+  if (run.trigger === "scheduled") {
+    const authorizationError = await scheduledRunScopeError(run, "dispatch");
+    if (authorizationError) throw new NonRetryableError(authorizationError);
+  }
   const pending = (await repo.getObservations([runId])).filter(
     (row) => row.status === "pending",
   );
   const live = run.trigger !== "scheduled";
-  await repo.updateRun(runId, { status: "running" });
+  if (run.trigger === "scheduled" && run.status === "queued") {
+    if (!(await repo.startScheduledRunIfQueued(runId)))
+      throw new NonRetryableError(
+        "The scheduled check was canceled before provider dispatch.",
+      );
+  } else if (run.status === "queued") {
+    await repo.updateRun(runId, { status: "running" });
+  }
   const market = {
     locationCode: run.locationCode,
     languageCode: run.languageCode,
