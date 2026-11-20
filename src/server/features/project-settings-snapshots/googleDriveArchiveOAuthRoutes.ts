@@ -1,9 +1,13 @@
-import { and, eq, isNull, notExists, or } from "drizzle-orm";
+import { and, count, eq, isNull, notExists, or } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { runBatch } from "@/db/runBatch";
 import { hasOrgPermission } from "@/lib/org-permissions";
-import { googleDriveArchiveConnections } from "@/db/schema";
+import {
+  googleDriveArchiveConnections,
+  projectSettingsSnapshotOutbox,
+  projects,
+} from "@/db/schema";
 import { resolveUserContextFromHeaders } from "@/middleware/ensure-user/resolve";
 import {
   lockGoogleDriveArchiveConnectionTarget,
@@ -261,9 +265,23 @@ async function handleApiRequest(request: Request): Promise<Response | null> {
       const connection = await connectionForOrganization(
         context.organizationId,
       );
+      const [pendingSnapshots] = await db
+        .select({ count: count() })
+        .from(projectSettingsSnapshotOutbox)
+        .innerJoin(
+          projects,
+          eq(projectSettingsSnapshotOutbox.projectId, projects.id),
+        )
+        .where(
+          and(
+            eq(projects.organizationId, context.organizationId),
+            eq(projectSettingsSnapshotOutbox.status, "unconfirmed"),
+          ),
+        );
       return jsonResponse({
         configured: true,
         connected: Boolean(connection),
+        unconfirmedSnapshots: pendingSnapshots?.count ?? 0,
         status: connection?.status ?? null,
         accountEmail: connection?.accountEmail ?? null,
         folder: connection?.folderId
