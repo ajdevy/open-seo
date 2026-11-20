@@ -14,6 +14,10 @@ const { testDb } = await vi.hoisted(async () => {
 vi.mock("@/db", () => ({ db: testDb.db }));
 vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
 vi.mock("cloudflare:workers", () => ({ env: { DATABASE_PROVIDER: "d1" } }));
+vi.mock("@/server/lib/runtime-env", () => ({
+  getOptionalEnvValue: async (name: string) =>
+    name === "AUTOGEO_QUEUE_MASTER_KEY_B64" ? btoa("k".repeat(32)) : undefined,
+}));
 
 const projectId = "project";
 const now = new Date("2026-11-12T12:00:00.000Z");
@@ -44,6 +48,62 @@ beforeEach(async () => {
 });
 
 describe("provider budget admission races", () => {
+  it("rejects a reservation when its saved project budget snapshot is stale", async () => {
+    await createRun("stale-budget-run");
+    await repo.updateTracker(trackerId, { weeklyProviderBudgetCents: 50 });
+
+    await expect(
+      reserveAiProviderRunBudget({
+        id: "reservation-stale-budget-run",
+        projectId,
+        runId: "stale-budget-run",
+        limitUsdCents: 800,
+        reserveUsdMicros: 2_000_000,
+        createdAt: now.toISOString(),
+      }),
+    ).resolves.toMatchObject({
+      admitted: false,
+      reason: "budget_changed",
+    });
+    await expect(
+      testDb.db.select().from(aiProviderRunReservations),
+    ).resolves.toEqual([]);
+  });
+
+  it("does not resume an existing hold under a stale project budget snapshot", async () => {
+    await createRun("held-stale-budget-run");
+    await expect(
+      reserveAiProviderRunBudget({
+        id: "reservation-held-stale-budget-run",
+        projectId,
+        runId: "held-stale-budget-run",
+        limitUsdCents: 800,
+        reserveUsdMicros: 2_000_000,
+        createdAt: now.toISOString(),
+      }),
+    ).resolves.toMatchObject({ admitted: true });
+    await repo.updateTracker(trackerId, { weeklyProviderBudgetCents: 50 });
+
+    await expect(
+      reserveAiProviderRunBudget({
+        id: "reservation-held-stale-budget-run-retry",
+        projectId,
+        runId: "held-stale-budget-run",
+        limitUsdCents: 800,
+        reserveUsdMicros: 2_000_000,
+        createdAt: now.toISOString(),
+      }),
+    ).resolves.toMatchObject({
+      admitted: false,
+      reason: "budget_changed",
+    });
+    await expect(
+      testDb.db
+        .select({ status: aiProviderRunReservations.status })
+        .from(aiProviderRunReservations),
+    ).resolves.toEqual([{ status: "reserved" }]);
+  });
+
   it("rechecks the rolling cap if an unresolved hold appears during admission", async () => {
     await createRun("racing-run");
     await createRun("racing-unknown");

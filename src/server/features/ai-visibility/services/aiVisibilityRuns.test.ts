@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aiObservations, aiProviderRunReservations, aiRuns } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
-import { runCheck } from "./aiVisibilityRuns";
+import { runCheck, startRun } from "./aiVisibilityRuns";
 import { estimateCost } from "./aiVisibilityCost";
 import { getTracker } from "./aiVisibilityState";
 import { configuration, customer } from "./aiVisibilityTestFixtures";
@@ -157,6 +157,27 @@ describe("AI visibility checks", () => {
     );
     expect((await repo.getTracker(projectId))?.lastSkipReason).toContain(
       "rolling 7-day budget",
+    );
+  });
+
+  it("refuses a manual run prepared from an older saved budget", async () => {
+    const staleConfig = await repo.getConfiguration(projectId);
+    if (!staleConfig) throw new Error("Tracker fixture was not saved.");
+    await repo.updateTracker(staleConfig.tracker.id, {
+      weeklyProviderBudgetCents: 50,
+    });
+
+    await expect(
+      startRun(staleConfig, "manual", customer),
+    ).rejects.toMatchObject({
+      reason: "PROVIDER_BUDGET_EXCEEDED",
+    });
+    expect(workflow.create).not.toHaveBeenCalled();
+    expect(await repo.listRuns(projectId)).toMatchObject([
+      { status: "failed" },
+    ]);
+    expect(await testDb.db.select().from(aiProviderRunReservations)).toEqual(
+      [],
     );
   });
 

@@ -16,6 +16,7 @@ import {
   readProjectSettingsRows,
 } from "@/server/features/project-settings-snapshots/snapshotRepository";
 import { AiVisibilityError } from "../services/aiVisibilityErrors";
+import { lockAiProviderRunBudget } from "./AiProviderRunBudgetRepository";
 
 export type TrackerRow = typeof aiTrackers.$inferSelect;
 export type PromptRow = typeof aiPrompts.$inferSelect;
@@ -154,6 +155,7 @@ const SNAPSHOTTED_TRACKER_FIELDS = new Set([
   "locationCode",
   "languageCode",
   "scheduleInterval",
+  "weeklyProviderBudgetCents",
 ]);
 
 /** Updates tracker settings and their snapshot in one project mutation. */
@@ -192,6 +194,9 @@ export async function updateTracker(
       languageCode: values.languageCode ?? state.tracker.languageCode,
       scheduleInterval:
         values.scheduleInterval ?? state.tracker.scheduleInterval,
+      weeklyProviderBudgetCents:
+        values.weeklyProviderBudgetCents ??
+        state.tracker.weeklyProviderBudgetCents,
     };
     if (values.enabled === true) {
       if (!state.questions.some((prompt) => !prompt.paused && !prompt.archived))
@@ -217,6 +222,9 @@ export async function updateTracker(
         tracker: nextTracker,
       }),
       write: (tx) => [
+        ...(values.weeklyProviderBudgetCents !== undefined
+          ? [lockAiProviderRunBudget(tx)]
+          : []),
         ...(cancelQueuedRuns &&
         (values.enabled === false ||
           SCHEDULED_RUN_SCOPE_FIELDS.some((key) => values[key] !== undefined))
@@ -237,6 +245,7 @@ export async function updateTracker(
 export function writeConfiguration(tx: Tx, rows: ConfigurationRows) {
   const { tracker } = rows;
   return [
+    lockAiProviderRunBudget(tx),
     tx
       .insert(aiTrackers)
       .values(tracker)

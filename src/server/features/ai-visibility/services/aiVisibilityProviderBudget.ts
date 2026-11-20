@@ -17,6 +17,8 @@ export function providerBudgetDenialMessage(
     return "This run has an unresolved provider outcome and cannot be started again until that outcome is reconciled.";
   if (admission.reason === "reservation_mismatch")
     return "A different provider-cost ceiling is already reserved for this run. No new provider request was started.";
+  if (admission.reason === "budget_changed")
+    return "The saved project provider budget no longer matches this check's settings. Refresh the saved settings before retrying; this attempt did not start a provider request.";
   if (admission.reason === "global_budget_exceeded")
     return `This run may use up to $${reservationCost.toFixed(4)} in provider charges, but only $${(admission.remainingUsdMicros / 1e6).toFixed(4)} remains in the installation-wide rolling 7-day provider budget. No provider request was started.`;
   return `This run may use up to $${reservationCost.toFixed(4)} in provider charges, but only $${(admission.remainingUsdMicros / 1e6).toFixed(4)} remains in this project's rolling 7-day budget. No provider request was started.`;

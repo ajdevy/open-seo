@@ -1,21 +1,42 @@
-import { and, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, exists, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { runBatch } from "@/db/runBatch";
 import {
+  AI_PROVIDER_BUDGET_WINDOW_MS,
+  getAiProviderBudgetUsage,
+  getAiProviderGlobalBudgetUsage,
+  usageTotalSql,
+} from "./AiProviderRunBudgetUsageRepository";
+export {
+  AI_PROVIDER_BUDGET_WINDOW_MS,
+  getAiProviderBudgetUsage,
+  getAiProviderGlobalBudgetUsage,
+  type AiProviderBudgetUsage,
+} from "./AiProviderRunBudgetUsageRepository";
+import {
+  aiTrackers,
   aiProviderRunBudgetLocks,
   aiProviderRunReservations,
 } from "@/db/schema";
 
-export const AI_PROVIDER_BUDGET_WINDOW_MS = 7 * 24 * 60 * 60_000;
 export const AI_PROVIDER_GLOBAL_BUDGET_USD_CENTS = 800;
 export const AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS =
   AI_PROVIDER_GLOBAL_BUDGET_USD_CENTS * 10_000;
 
 const GLOBAL_BUDGET_LOCK_ID = "provider-run-budget";
+export type AiProviderRunBudgetTransaction = Parameters<
+  Parameters<typeof runBatch>[0]
+>[0];
 
-export interface AiProviderBudgetUsage {
-  accountedUsdMicros: number;
-  heldUsdMicros: number;
+/** Serialize saved project budget changes with provider-run admissions. */
+export function lockAiProviderRunBudget(tx: AiProviderRunBudgetTransaction) {
+  return tx
+    .insert(aiProviderRunBudgetLocks)
+    .values({ id: GLOBAL_BUDGET_LOCK_ID, version: 1 })
+    .onConflictDoUpdate({
+      target: aiProviderRunBudgetLocks.id,
+      set: { version: sql`${aiProviderRunBudgetLocks.version} + 1` },
+    });
 }
 
 export type AiProviderRunBudgetAdmission =
@@ -33,94 +54,17 @@ export type AiProviderRunBudgetAdmission =
         | "run_in_progress"
         | "unknown_outcome"
         | "reservation_mismatch"
+        | "budget_changed"
         | "cost_ceiling_unavailable";
       heldUsdMicros: number;
       usedUsdMicros: number;
       remainingUsdMicros: number;
     };
 
-function usageWindow(cutoff: string) {
-  return or(
-    inArray(aiProviderRunReservations.status, ["reserved", "unknown"]),
-    and(
-      eq(aiProviderRunReservations.status, "settled"),
-      or(
-        gte(aiProviderRunReservations.settledAt, cutoff),
-        and(
-          isNull(aiProviderRunReservations.settledAt),
-          gte(aiProviderRunReservations.createdAt, cutoff),
-        ),
-      ),
-    ),
-  );
-}
-
-function usageTotalSql(cutoff: string, projectId?: string) {
-  const window = usageWindow(cutoff);
-  const filter = projectId
-    ? and(window, eq(aiProviderRunReservations.projectId, projectId))
-    : window;
-  return sql<number>`COALESCE((
-    SELECT SUM(
-      CASE
-        WHEN ${aiProviderRunReservations.status} = 'settled'
-          THEN COALESCE(${aiProviderRunReservations.accountedUsdMicros}, ${aiProviderRunReservations.reservedUsdMicros})
-        ELSE ${aiProviderRunReservations.reservedUsdMicros}
-      END
-    )
-    FROM ${aiProviderRunReservations}
-    WHERE ${filter}
-  ), 0)`;
-}
-
-async function getBudgetUsage(projectId: string | undefined, now: number) {
-  const cutoff = new Date(now - AI_PROVIDER_BUDGET_WINDOW_MS).toISOString();
-  const rows = await db
-    .select({
-      status: aiProviderRunReservations.status,
-      reservedUsdMicros: aiProviderRunReservations.reservedUsdMicros,
-      accountedUsdMicros: aiProviderRunReservations.accountedUsdMicros,
-    })
-    .from(aiProviderRunReservations)
-    .where(
-      projectId
-        ? and(
-            usageWindow(cutoff),
-            eq(aiProviderRunReservations.projectId, projectId),
-          )
-        : usageWindow(cutoff),
-    );
-  return rows.reduce(
-    (usage, row) => {
-      if (row.status === "settled")
-        usage.accountedUsdMicros +=
-          row.accountedUsdMicros ?? row.reservedUsdMicros;
-      else usage.heldUsdMicros += row.reservedUsdMicros;
-      return usage;
-    },
-    { accountedUsdMicros: 0, heldUsdMicros: 0 },
-  );
-}
-
-/** Provider-reported totals count for seven days; unresolved holds never expire. */
-export async function getAiProviderBudgetUsage(
-  projectId: string,
-  now = Date.now(),
-): Promise<AiProviderBudgetUsage> {
-  return getBudgetUsage(projectId, now);
-}
-
-/** Provider-neutral usage shared by every project on this installation. */
-export async function getAiProviderGlobalBudgetUsage(
-  now = Date.now(),
-): Promise<AiProviderBudgetUsage> {
-  return getBudgetUsage(undefined, now);
-}
-
 /**
  * Reserve the full provider-cost ceiling before any provider call. A global
- * lock serializes D1 and Postgres admissions while the SQL insert enforces both
- * the project cap and provider-neutral installation cap in the same transaction.
+ * lock serializes D1 and Postgres admissions and saved budget changes while the
+ * SQL insert enforces the current project cap and installation cap atomically.
  */
 export async function reserveAiProviderRunBudget(input: {
   id: string;
@@ -174,30 +118,30 @@ export async function reserveAiProviderRunBudget(input: {
         usedUsdMicros: sameRun[0].reservedUsdMicros,
         remainingUsdMicros: 0,
       };
-    return {
-      admitted: true,
-      heldUsdMicros: sameRun[0].reservedUsdMicros,
-      usedUsdMicros: 0,
-      remainingUsdMicros: 0,
-    };
   }
 
   const now = Date.parse(input.createdAt);
   const cutoff = new Date(now - AI_PROVIDER_BUDGET_WINDOW_MS).toISOString();
   const projectFits = sql`${usageTotalSql(cutoff, input.projectId)} + ${input.reserveUsdMicros} <= ${limitUsdMicros}`;
   const globalFits = sql`${usageTotalSql(cutoff)} + ${input.reserveUsdMicros} <= ${AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS}`;
+  const savedBudgetMatches = (tx: AiProviderRunBudgetTransaction) =>
+    exists(
+      tx
+        .select({ id: aiTrackers.id })
+        .from(aiTrackers)
+        .where(
+          and(
+            eq(aiTrackers.projectId, input.projectId),
+            eq(aiTrackers.weeklyProviderBudgetCents, input.limitUsdCents),
+          ),
+        ),
+    );
 
   // The upsert obtains a transaction-scoped row lock in Postgres. D1's atomic
   // batch serializes the same lock-and-insert sequence. The conditional insert
   // reads usage only after that global admission lock has been acquired.
   await runBatch((tx) => [
-    tx
-      .insert(aiProviderRunBudgetLocks)
-      .values({ id: GLOBAL_BUDGET_LOCK_ID, version: 1 })
-      .onConflictDoUpdate({
-        target: aiProviderRunBudgetLocks.id,
-        set: { version: sql`${aiProviderRunBudgetLocks.version} + 1` },
-      }),
+    lockAiProviderRunBudget(tx),
     tx
       .insert(aiProviderRunReservations)
       .select(
@@ -224,6 +168,7 @@ export async function reserveAiProviderRunBudget(input: {
           .where(
             and(
               eq(aiProviderRunBudgetLocks.id, GLOBAL_BUDGET_LOCK_ID),
+              savedBudgetMatches(tx),
               projectFits,
               globalFits,
             ),
@@ -263,14 +208,39 @@ export async function reserveAiProviderRunBudget(input: {
         remainingUsdMicros: 0,
       };
 
-    const [globalUsage, projectUsage] = await Promise.all([
+    const [globalUsage, projectUsage, savedBudgetRows] = await Promise.all([
       getAiProviderGlobalBudgetUsage(now),
       getAiProviderBudgetUsage(input.projectId, now),
+      db
+        .select({
+          weeklyProviderBudgetCents: aiTrackers.weeklyProviderBudgetCents,
+        })
+        .from(aiTrackers)
+        .where(eq(aiTrackers.projectId, input.projectId))
+        .limit(1),
     ]);
     const globalUsed =
       globalUsage.accountedUsdMicros + globalUsage.heldUsdMicros;
     const projectUsed =
       projectUsage.accountedUsdMicros + projectUsage.heldUsdMicros;
+    const savedLimitUsdCents = savedBudgetRows[0]?.weeklyProviderBudgetCents;
+    if (savedLimitUsdCents !== input.limitUsdCents)
+      return {
+        admitted: false,
+        reason: "budget_changed",
+        heldUsdMicros: currentRun[0].reservedUsdMicros,
+        usedUsdMicros: Math.max(
+          projectUsed - currentRun[0].reservedUsdMicros,
+          0,
+        ),
+        remainingUsdMicros: Math.max(
+          Math.min(
+            (savedLimitUsdCents ?? 0) * 10_000 - projectUsed,
+            AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS - globalUsed,
+          ),
+          0,
+        ),
+      };
     if (
       globalUsed > AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS ||
       projectUsed > limitUsdMicros
@@ -326,7 +296,7 @@ export async function reserveAiProviderRunBudget(input: {
     };
   }
 
-  const [globalUsage, projectUsage, activeProjectReservation] =
+  const [globalUsage, projectUsage, activeProjectReservation, savedBudgetRows] =
     await Promise.all([
       getAiProviderGlobalBudgetUsage(now),
       getAiProviderBudgetUsage(input.projectId, now),
@@ -340,13 +310,22 @@ export async function reserveAiProviderRunBudget(input: {
           ),
         )
         .limit(1),
+      db
+        .select({
+          weeklyProviderBudgetCents: aiTrackers.weeklyProviderBudgetCents,
+        })
+        .from(aiTrackers)
+        .where(eq(aiTrackers.projectId, input.projectId))
+        .limit(1),
     ]);
   const globalUsed = globalUsage.accountedUsdMicros + globalUsage.heldUsdMicros;
   const projectUsed =
     projectUsage.accountedUsdMicros + projectUsage.heldUsdMicros;
+  const savedLimitUsdCents = savedBudgetRows[0]?.weeklyProviderBudgetCents;
+  const savedLimitUsdMicros = (savedLimitUsdCents ?? 0) * 10_000;
   const remainingUsdMicros = Math.max(
     Math.min(
-      limitUsdMicros - projectUsed,
+      savedLimitUsdMicros - projectUsed,
       AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS - globalUsed,
     ),
     0,
@@ -356,6 +335,8 @@ export async function reserveAiProviderRunBudget(input: {
     usedUsdMicros: projectUsed,
     remainingUsdMicros,
   };
+  if (savedLimitUsdCents !== input.limitUsdCents)
+    return { admitted: false, reason: "budget_changed", ...common };
   if (activeProjectReservation[0])
     return { admitted: false, reason: "run_in_progress", ...common };
   if (projectUsed + input.reserveUsdMicros > limitUsdMicros)
