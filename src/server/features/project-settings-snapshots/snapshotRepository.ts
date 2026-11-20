@@ -69,6 +69,7 @@ export interface ProjectSettingsSnapshot {
     locationCode: number;
     languageCode: string;
     scheduleInterval: TrackerRow["scheduleInterval"];
+    weeklyProviderBudgetCents: number;
   };
   questions: {
     id: string;
@@ -126,6 +127,7 @@ export function makeProjectSettingsSnapshot(input: {
           locationCode: tracker.locationCode,
           languageCode: tracker.languageCode,
           scheduleInterval: tracker.scheduleInterval,
+          weeklyProviderBudgetCents: tracker.weeklyProviderBudgetCents,
         }
       : null,
     questions: input.questions.map((question) => ({

@@ -337,6 +337,34 @@
       "when": 1795212257297,
       "tag": "0047_parallel_naoko",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1794996161046,
+      "tag": "0048_previous_mach_iv",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1795173925002,
+      "tag": "0049_legacy_provider_budget_holds",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1795181168162,
+      "tag": "0050_rainy_rockslide",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1795194629000,
+      "tag": "0051_legacy_terminal_spend_guard",
+      "breakpoints": true
     }
   ]
 }

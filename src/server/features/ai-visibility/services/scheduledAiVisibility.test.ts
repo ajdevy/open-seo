@@ -1,34 +1,45 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { aiPrompts, aiTrackers, projects } from "@/db/schema";
+import {
+  aiPrompts,
+  aiProviderRunReservations,
+  aiTrackers,
+  projects,
+} from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { runScheduledAiVisibility } from "./scheduledAiVisibility";
 import { configuration } from "./aiVisibilityTestFixtures";
 
-const { testDb, workflow, hosted } = await vi.hoisted(async () => {
-  const { createAiVisibilityTestDb } = await import("../aiVisibilityTestDb");
-  return {
-    testDb: await createAiVisibilityTestDb(),
-    workflow: {
-      create: vi.fn(),
-      get: vi.fn(async () => ({
-        status: async () => ({ status: "queued" }),
-      })),
-    },
-    hosted: vi.fn(),
-  };
-});
+const { testDb, workflow, hosted, providerAccess } = await vi.hoisted(
+  async () => {
+    const { createAiVisibilityTestDb } = await import("../aiVisibilityTestDb");
+    return {
+      testDb: await createAiVisibilityTestDb(),
+      workflow: {
+        create: vi.fn(),
+        get: vi.fn(async () => ({
+          status: async () => ({ status: "queued" }),
+        })),
+      },
+      hosted: vi.fn(),
+      providerAccess: vi.fn(),
+    };
+  },
+);
 vi.mock("cloudflare:workers", () => ({
   env: { DATABASE_PROVIDER: "d1", AI_VISIBILITY_WORKFLOW: workflow },
 }));
 vi.mock("@/db", () => ({ db: testDb.db }));
-vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/db/runBatch", () => testDb.runBatchModule);
 vi.mock("@/server/lib/runtime-env", () => ({
   getOptionalEnvValue: async (name: string) =>
     name === "AUTOGEO_QUEUE_MASTER_KEY_B64"
       ? btoa("k".repeat(32))
       : "dataforseo-key",
   isHostedServerAuthMode: hosted,
+}));
+vi.mock("@/server/lib/provider-access", () => ({
+  hasDataforseoAccess: providerAccess,
 }));
 vi.mock("@/server/billing/subscription", () => ({
   getOrCreateOrganizationCustomer: async () => ({ id: "organization" }),
@@ -53,17 +64,23 @@ async function dueTracker(
     scheduleHour?: number | null;
     scheduleMinute?: number | null;
     scheduleTimeZone?: string | null;
+    engine?: "chatgpt" | "claude";
+    engines?: ("chatgpt" | "gemini" | "google_ai_overview")[];
   } = {},
 ) {
+  const { engine = "chatgpt", engines, ...trackerSchedule } = schedule;
   const rows = configuration(
-    { engines: ["chatgpt"], prompts: [{ text: "Which SEO tools?" }] },
+    {
+      engines: engines ?? [engine],
+      prompts: [{ text: "Which SEO tools?" }],
+    },
     projectId,
   );
   await repo.saveConfiguration(rows);
   await repo.updateTracker(rows.tracker.id, {
     enabled: true,
     nextCheckAt: due,
-    ...schedule,
+    ...trackerSchedule,
   });
   if (paused) {
     const current = await repo.getConfiguration(projectId);
@@ -77,6 +94,11 @@ async function dueTracker(
 
 beforeEach(async () => {
   hosted.mockResolvedValue(false);
+  providerAccess.mockResolvedValue(true);
+  workflow.create.mockReset().mockResolvedValue(undefined);
+  workflow.get
+    .mockReset()
+    .mockRejectedValue(new Error("workflow instance not found"));
   await testDb.seedProject();
   await testDb.db.insert(projects).values({
     id: "paused-project",
@@ -118,6 +140,70 @@ it("records a skipped check for credits on the tracker without starting it", asy
     "INSUFFICIENT_CREDITS",
   );
   expect(await repo.listRuns("project")).toEqual([]);
+});
+
+it("skips a scheduled run when its project rolling provider budget is exhausted", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
+  await dueTracker("project", false, {
+    engines: ["chatgpt", "gemini", "google_ai_overview"],
+  });
+  const tracker = await repo.getTracker("project");
+  if (!tracker) throw new Error("Tracker fixture was not saved.");
+  await repo.updateTracker(tracker.id, { weeklyProviderBudgetCents: 1 });
+
+  await runScheduledAiVisibility();
+
+  expect((await repo.getTracker("project"))?.lastSkipReason).toContain(
+    "rolling 7-day budget",
+  );
+  expect(await repo.listRuns("project")).toMatchObject([
+    { trigger: "scheduled", status: "failed" },
+  ]);
+  expect(workflow.create).not.toHaveBeenCalled();
+});
+
+it("rejects a scheduled run prepared from an older project budget", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
+  await dueTracker("project", false);
+  const original = await repo.getConfiguration("project");
+  if (!original) throw new Error("test tracker configuration was not created");
+  const staleBudgetCents = original.tracker.weeklyProviderBudgetCents;
+  await repo.updateTracker(original.tracker.id, {
+    weeklyProviderBudgetCents: 50,
+  });
+
+  const getConfiguration = repo.getConfiguration.bind(repo);
+  let reads = 0;
+  vi.spyOn(repo, "getConfiguration").mockImplementation(async (projectId) => {
+    const current = await getConfiguration(projectId);
+    if (!current) return current;
+    reads++;
+    return reads === 1
+      ? {
+          ...current,
+          tracker: {
+            ...current.tracker,
+            weeklyProviderBudgetCents: staleBudgetCents,
+          },
+        }
+      : current;
+  });
+
+  await runScheduledAiVisibility();
+
+  expect(reads).toBe(2);
+  expect(workflow.create).not.toHaveBeenCalled();
+  expect(await repo.listRuns("project")).toMatchObject([
+    { trigger: "scheduled", status: "failed" },
+  ]);
+  expect((await repo.getTracker("project"))?.lastSkipReason).toContain(
+    "saved project provider budget no longer matches",
+  );
+  await expect(
+    testDb.db.select().from(aiProviderRunReservations),
+  ).resolves.toEqual([]);
 });
 
 it("resumes the same scheduled run after the cron stops after its durable claim", async () => {
@@ -346,7 +432,8 @@ it("retains a visible outbox claim when workflow creation cannot be confirmed", 
   await runScheduledAiVisibility();
 
   expect(await repo.listRuns("project")).toHaveLength(1);
-  expect(workflow.create.mock.calls.at(-1)?.[0]).toMatchObject({ id: runId });
+  expect(workflow.create).not.toHaveBeenCalled();
+  expect(workflow.get).toHaveBeenCalledWith(runId);
   expect((await repo.getTracker("project"))?.pendingScheduledRunId).toBeNull();
   expect((await repo.getTracker("project"))?.lastSkipReason).toBeNull();
 });

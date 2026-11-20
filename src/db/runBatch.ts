@@ -41,20 +41,21 @@ export async function runPostgresTransaction(
 }
 
 /**
- * Run a set of write statements atomically on either backend.
- *
- * - D1: collected statements run via `db.batch([...])` (one atomic, ordered call).
- * - Postgres: statements run sequentially inside `db.transaction(tx => ...)`
- *   (atomic, and in array order to match D1's batch semantics).
- *
- * IMPORTANT: build statements from the `tx` handle the callback receives, NOT
- * the module-level `db`. On Postgres, statements built from the outer `db` would
- * execute outside the transaction. Returning the (unawaited) Drizzle query
- * builders is enough; they are thenables on both dialects.
+ * Run ordered writes atomically on either backend. Build statements from the
+ * `tx` handle, not module-level `db`, so Postgres stays inside the transaction.
  */
-export async function runBatch(
+function executeBatch(
   build: (tx: BatchExecutor) => readonly Promise<unknown>[],
-): Promise<void> {
+  captureResults: true,
+): Promise<unknown[]>;
+function executeBatch(
+  build: (tx: BatchExecutor) => readonly Promise<unknown>[],
+  captureResults: false,
+): Promise<void>;
+async function executeBatch(
+  build: (tx: BatchExecutor) => readonly Promise<unknown>[],
+  captureResults: boolean,
+): Promise<unknown[] | void> {
   if (getDatabaseProvider() === "postgres") {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- pg tx exposes the same query builder surface as d1Db
     const pg = pgDb as unknown as {
@@ -62,18 +63,43 @@ export async function runBatch(
         fn: (tx: BatchExecutor) => Promise<unknown>,
       ) => Promise<unknown>;
     };
+    const results: unknown[] = [];
     await pg.transaction(async (tx) => {
-      // Sequential to mirror D1's ordered batch contract.
-      for (const statement of build(tx)) await statement;
+      for (const statement of build(tx)) {
+        const result = await statement;
+        if (captureResults) results.push(result);
+      }
     });
-    return;
+    return captureResults ? results : undefined;
   }
 
   const statements = build(d1Db);
-  if (statements.length === 0) return;
+  if (statements.length === 0) return captureResults ? [] : undefined;
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- d1 query builders are BatchItems; length checked above
   const batch = statements as unknown as [BatchStatement, ...BatchStatement[]];
-  await d1Db.batch(batch);
+  const results = await d1Db.batch(batch);
+  return captureResults ? results : undefined;
+}
+
+/** Run a write sequence and retain each dialect's statement results. */
+export async function runBatchWithResults(
+  build: (tx: BatchExecutor) => readonly Promise<unknown>[],
+) {
+  return executeBatch(build, true);
+}
+
+/** Normalize RETURNING rows from Postgres and D1 batch statement results. */
+export function getBatchRows(result: unknown): unknown[] {
+  if (Array.isArray(result)) return result;
+  if (typeof result !== "object" || result === null || !("results" in result))
+    return [];
+  return Array.isArray(result.results) ? result.results : [];
+}
+
+export async function runBatch(
+  build: (tx: BatchExecutor) => readonly Promise<unknown>[],
+): Promise<void> {
+  await executeBatch(build, false);
 }
 
 /**

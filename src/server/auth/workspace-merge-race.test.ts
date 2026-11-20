@@ -72,6 +72,7 @@ beforeAll(async () => {
       pending_scheduled_run_id TEXT,
       next_check_at TEXT,
       last_skip_reason TEXT,
+      weekly_provider_budget_cents INTEGER NOT NULL DEFAULT 800,
       created_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX ai_trackers_project_idx ON ai_trackers(project_id);

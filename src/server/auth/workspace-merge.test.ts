@@ -84,6 +84,7 @@ beforeAll(async () => {
       location_code INTEGER NOT NULL DEFAULT 2840,
       language_code TEXT NOT NULL DEFAULT 'en',
       schedule_interval TEXT NOT NULL DEFAULT 'weekly',
+      weekly_provider_budget_cents INTEGER NOT NULL DEFAULT 800,
       schedule_weekday INTEGER, schedule_hour INTEGER, schedule_minute INTEGER, schedule_time_zone TEXT, pending_scheduled_run_id TEXT,
       next_check_at TEXT,
       last_skip_reason TEXT,
@@ -186,10 +187,10 @@ async function seedLegacyWorkspaces() {
     INSERT INTO ai_trackers (
       id, project_id, enabled, chatgpt, gemini, claude, perplexity,
       google_ai_overview, location_code, language_code, schedule_interval,
-      created_at
+      weekly_provider_budget_cents, created_at
     ) VALUES (
       'tracker-acme', 'p1-acme', 1, 1, 0, 0, 0, 0, 2840, 'en', 'weekly',
-      '2026-01-01 00:00:00'
+      375, '2026-01-01 00:00:00'
     );
     INSERT INTO ai_prompts (
       id, tracker_id, topic, text, paused, archived, created_at
@@ -319,7 +320,7 @@ describe("WorkspaceMergeService", () => {
       clientId: "shared-workspace",
       projectId: "p1-acme",
       project: { name: "Acme" },
-      tracker: { id: "tracker-acme", enabled: true },
+      tracker: { weeklyProviderBudgetCents: 375 },
       questions: [
         {
           id: "question-acme-1",
@@ -416,11 +417,10 @@ describe("WorkspaceMergeService", () => {
         name: "Default",
       }),
     ]);
-    expect(
-      await rows(
-        "SELECT count(*) AS n FROM project_settings_snapshot_revisions",
-      ),
-    ).toEqual([expect.objectContaining({ n: 0 })]);
+    const snapshotRevisions = await rows(
+      "SELECT count(*) AS n FROM project_settings_snapshot_revisions",
+    );
+    expect(snapshotRevisions).toEqual([expect.objectContaining({ n: 0 })]);
     expect(
       await rows("SELECT count(*) AS n FROM project_settings_snapshot_outbox"),
     ).toEqual([expect.objectContaining({ n: 0 })]);

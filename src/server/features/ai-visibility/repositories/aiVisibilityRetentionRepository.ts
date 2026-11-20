@@ -1,6 +1,7 @@
-import { and, asc, inArray, lt } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, notExists } from "drizzle-orm";
 import { db } from "@/db";
-import { aiRuns } from "@/db/schema";
+import { runBatch } from "@/db/runBatch";
+import { aiProviderRunReservations, aiRuns } from "@/db/schema";
 
 /** Deletes up to 80 finished runs older than 13 months, with their answers. */
 export async function pruneAiHistory(now: Date) {
@@ -13,15 +14,31 @@ export async function pruneAiHistory(now: Date) {
       and(
         lt(aiRuns.createdAt, cutoff.toISOString()),
         inArray(aiRuns.status, ["completed", "partial", "failed"]),
+        notExists(
+          db
+            .select({ id: aiProviderRunReservations.id })
+            .from(aiProviderRunReservations)
+            .where(
+              and(
+                eq(aiProviderRunReservations.runId, aiRuns.id),
+                inArray(aiProviderRunReservations.status, [
+                  "reserved",
+                  "unknown",
+                ]),
+              ),
+            ),
+        ),
       ),
     )
     .orderBy(asc(aiRuns.createdAt))
     .limit(80);
-  if (runs.length)
-    await db.delete(aiRuns).where(
-      inArray(
-        aiRuns.id,
-        runs.map((r) => r.id),
-      ),
-    );
+  if (runs.length) {
+    const runIds = runs.map((run) => run.id);
+    await runBatch((tx) => [
+      tx
+        .delete(aiProviderRunReservations)
+        .where(inArray(aiProviderRunReservations.runId, runIds)),
+      tx.delete(aiRuns).where(inArray(aiRuns.id, runIds)),
+    ]);
+  }
 }

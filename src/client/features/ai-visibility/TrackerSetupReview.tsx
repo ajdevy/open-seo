@@ -36,6 +36,16 @@ export function TrackerSetupReview({
   onSaveAndSchedule: () => void;
 }) {
   const paused = !enabled && !creating;
+  const fitsWeeklyProviderBudget =
+    review.estimate.providerCostBounded &&
+    review.estimate.providerCostUsd <=
+      review.estimate.weeklyProviderBudgetAvailableUsd;
+  const exceedsInstallationBudget =
+    review.estimate.providerCostUsd >
+    review.estimate.weeklyProviderBudgetGlobalAvailableUsd;
+  const exceedsProjectBudget =
+    review.estimate.providerCostUsd >
+    review.estimate.weeklyProjectProviderBudgetAvailableUsd;
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
@@ -100,13 +110,53 @@ export function TrackerSetupReview({
       <div className="space-y-1 rounded-lg bg-muted/60 p-4 text-sm">
         <p>
           Each run collects <strong>{review.estimate.observations}</strong>{" "}
-          {review.estimate.observations === 1 ? "answer" : "answers"} for{" "}
-          <strong>{aiMoney(review.estimate.costUsd)}</strong>
+          {review.estimate.observations === 1 ? "answer" : "answers"} with a
+          {review.estimate.providerCostBounded
+            ? " conservative cost ceiling of "
+            : " forecast of "}
+          <strong>{aiMoney(review.estimate.costUsd)}</strong>, including up to
+          three provider attempts per answer.
         </p>
+        {!review.estimate.providerCostBounded && (
+          <p className="font-medium text-destructive">
+            This estimate is informational. A selected LLM Responses route has
+            variable token or web-search charges without an enforceable run
+            ceiling, so paid runs and scheduling are disabled.
+          </p>
+        )}
         <p>
           <strong>{aiMoney(review.estimate.monthlyCostUsd)}</strong> estimated
           per month if it runs {review.estimate.scheduleInterval}.
         </p>
+        <p>
+          Installation-wide provider budget:{" "}
+          <strong>{aiMoney(review.estimate.weeklyProviderBudgetUsd)}</strong>{" "}
+          over a rolling 7 days, with{" "}
+          <strong>
+            {aiMoney(review.estimate.weeklyProviderBudgetGlobalAvailableUsd)}
+          </strong>{" "}
+          available across all projects. This project's{" "}
+          <strong>
+            {aiMoney(review.estimate.weeklyProjectProviderBudgetUsd)}
+          </strong>{" "}
+          cap has{" "}
+          {aiMoney(review.estimate.weeklyProjectProviderBudgetAvailableUsd)}
+          available; this check needs room for up to{" "}
+          {aiMoney(review.estimate.providerCostUsd)}.
+        </p>
+        {exceedsProjectBudget && (
+          <p className="font-medium text-destructive">
+            This run exceeds the remaining project budget. Increase the project
+            cap or reduce the run scope before enabling scheduled checks.
+          </p>
+        )}
+        {exceedsInstallationBudget && (
+          <p className="font-medium text-destructive">
+            This run exceeds the remaining installation-wide rolling 7-day
+            budget. Reduce the run scope or wait until the rolling window has
+            room before enabling scheduled checks.
+          </p>
+        )}
       </div>
       {!!error && <AiQueryError error={error} />}
       <DialogFooter>
@@ -123,7 +173,10 @@ export function TrackerSetupReview({
           variant={paused ? "secondary" : "default"}
           disabled={
             pending ||
-            (creating && (!canSchedule || review.estimate.observations === 0))
+            (creating &&
+              (!canSchedule ||
+                !fitsWeeklyProviderBudget ||
+                review.estimate.observations === 0))
           }
           onClick={creating ? onSaveAndSchedule : onSave}
         >
@@ -140,7 +193,10 @@ export function TrackerSetupReview({
           <Button
             type="button"
             disabled={
-              pending || !canSchedule || review.estimate.observations === 0
+              pending ||
+              !canSchedule ||
+              !fitsWeeklyProviderBudget ||
+              review.estimate.observations === 0
             }
             onClick={onSaveAndSchedule}
           >

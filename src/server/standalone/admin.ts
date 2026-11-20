@@ -4,9 +4,46 @@ import { member, organization, user } from "@/db/schema";
 import { z } from "zod";
 import { getAuth } from "@/lib/auth";
 import { usesBetterAuthServer } from "@/server/lib/runtime-env";
+import {
+  listUnknownAiProviderRunBudgets,
+  reconcileAiProviderRunBudget,
+} from "@/server/features/ai-visibility/repositories/AiProviderRunBudgetRepository";
 import { isOperatorRequest } from "./operator-auth";
 
-const commandSchema = z.discriminatedUnion("command", [
+const evidenceReferenceSchema = z
+  .string()
+  .trim()
+  .max(200)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,199}$/u);
+const reconciliationTimeSchema = z.string().datetime({ offset: true });
+
+const commandSchema = z.union([
+  z
+    .object({
+      command: z.literal("list-ai-provider-budget-unknown"),
+      limit: z.number().int().min(1).max(100).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal("reconcile-ai-provider-budget"),
+      runId: z.string().min(1).max(128),
+      outcome: z.literal("settled"),
+      accountedUsdMicros: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+      settledAt: reconciliationTimeSchema,
+      evidenceReference: evidenceReferenceSchema,
+      reconciledAt: reconciliationTimeSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      command: z.literal("reconcile-ai-provider-budget"),
+      runId: z.string().min(1).max(128),
+      outcome: z.literal("released"),
+      evidenceReference: evidenceReferenceSchema,
+      reconciledAt: reconciliationTimeSchema.optional(),
+    })
+    .strict(),
   z.object({
     command: z.literal("claim-legacy-user"),
     userId: z.string().min(1),
@@ -42,6 +79,37 @@ export async function handleOperatorRequest(
   if (request.method !== "POST" || !isOperatorRequest(request.headers)) {
     return new Response("Not found", { status: 404 });
   }
+  const parsed = commandSchema.safeParse(
+    await request.json().catch(() => null),
+  );
+  if (!parsed.success)
+    return Response.json(
+      { error: "Invalid operator command" },
+      { status: 400 },
+    );
+  const command = parsed.data;
+
+  if (
+    command.command === "list-ai-provider-budget-unknown" ||
+    command.command === "reconcile-ai-provider-budget"
+  ) {
+    try {
+      if (command.command === "list-ai-provider-budget-unknown")
+        return Response.json({
+          reservations: await listUnknownAiProviderRunBudgets(command.limit),
+        });
+      return Response.json({
+        result: await reconcileAiProviderRunBudget(command),
+      });
+    } catch (error) {
+      console.error("[provider-budget-admin] Operator command failed", error);
+      return Response.json(
+        { error: "Provider budget operator command failed" },
+        { status: 400 },
+      );
+    }
+  }
+
   if (!(await usesBetterAuthServer())) {
     return Response.json(
       {
@@ -51,12 +119,6 @@ export async function handleOperatorRequest(
       { status: 409 },
     );
   }
-  const parsed = commandSchema.safeParse(
-    await request.json().catch(() => null),
-  );
-  if (!parsed.success)
-    return Response.json({ error: "Invalid account command" }, { status: 400 });
-  const command = parsed.data;
   const auth = getAuth();
   try {
     if (command.command === "create-user") {

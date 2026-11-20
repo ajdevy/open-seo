@@ -15,6 +15,29 @@ import { requireConfiguration } from "./aiVisibilityMutation";
 import { getTracker } from "./aiVisibilityState";
 import { hasDataforseoAccess } from "@/server/lib/provider-access";
 
+function validateScheduleTime(
+  input: SetAiScheduleInput,
+  scheduleInterval: string,
+) {
+  if (
+    input.scheduleTime?.timeZone !== undefined &&
+    scheduleInterval !== "weekly"
+  )
+    throw new AiVisibilityError(
+      "INVALID_SCHEDULE_TIME",
+      "A timezone is supported only for weekly schedules.",
+    );
+  if (
+    scheduleInterval === "weekly" &&
+    input.scheduleTime?.timeZone !== undefined &&
+    input.scheduleTime.weekday === undefined
+  )
+    throw new AiVisibilityError(
+      "INVALID_SCHEDULE_TIME",
+      "A weekday is required for a weekly schedule with a timezone.",
+    );
+}
+
 async function validateCanEnableSchedule(config: ConfigurationRows) {
   if (!activeAiPrompts(config).length)
     throw new AiVisibilityError(
@@ -54,15 +77,7 @@ export async function setSchedule(
     return { state: await getTracker(input), run: null };
   }
   const scheduleInterval = input.scheduleInterval ?? tracker.scheduleInterval;
-  if (
-    scheduleInterval === "weekly" &&
-    input.scheduleTime?.timeZone !== undefined &&
-    input.scheduleTime.weekday === undefined
-  )
-    throw new AiVisibilityError(
-      "INVALID_SCHEDULE_TIME",
-      "A weekday is required for a weekly schedule with a timezone.",
-    );
+  validateScheduleTime(input, scheduleInterval);
   await validateCanEnableSchedule(config);
   const savedWallClock =
     scheduleInterval === "weekly" &&

@@ -34,6 +34,7 @@ describe("AI configuration projection", () => {
       scheduleMinute: null,
       scheduleTimeZone: null,
       nextCheckAt: null,
+      weeklyProviderBudgetCents: 800,
       locationCode: 2100,
       languageCode: "bg",
       chatgpt: true,

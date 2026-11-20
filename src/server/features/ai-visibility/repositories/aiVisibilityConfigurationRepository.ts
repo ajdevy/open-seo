@@ -8,6 +8,7 @@ import {
   aiRuns,
   aiObservations,
   projects,
+  aiProviderRunReservations,
 } from "@/db/schema";
 import {
   commitProjectSettingsMutation,
@@ -15,6 +16,7 @@ import {
   readProjectSettingsRows,
 } from "@/server/features/project-settings-snapshots/snapshotRepository";
 import { AiVisibilityError } from "../services/aiVisibilityErrors";
+import { lockAiProviderRunBudget } from "./AiProviderRunBudgetRepository";
 
 export type TrackerRow = typeof aiTrackers.$inferSelect;
 export type PromptRow = typeof aiPrompts.$inferSelect;
@@ -51,30 +53,39 @@ export function cancelQueuedScheduledRuns(
   reason = SCHEDULED_RUN_SCOPE_CHANGED_REASON,
   runId?: string,
 ) {
-  const queuedRuns = tx
-    .select({ id: aiRuns.id })
-    .from(aiRuns)
-    .where(
-      and(
-        eq(aiRuns.trackerId, trackerId),
-        eq(aiRuns.trigger, "scheduled"),
-        eq(aiRuns.status, "queued"),
-        runId ? eq(aiRuns.id, runId) : undefined,
-      ),
-    );
+  // Cancellation and workflow dispatch both compete to transition the run out
+  // of `queued`. Record cancellation first; only runs whose compare-and-set
+  // succeeds here may have their provider reservation released.
+  const cancelledAt = new Date().toISOString();
   const queuedRun = and(
     eq(aiRuns.trackerId, trackerId),
     eq(aiRuns.trigger, "scheduled"),
     eq(aiRuns.status, "queued"),
     runId ? eq(aiRuns.id, runId) : undefined,
   );
+  const cancelledRuns = tx
+    .select({ id: aiRuns.id })
+    .from(aiRuns)
+    .where(
+      and(
+        eq(aiRuns.trackerId, trackerId),
+        eq(aiRuns.trigger, "scheduled"),
+        eq(aiRuns.status, "failed"),
+        eq(aiRuns.completedAt, cancelledAt),
+        runId ? eq(aiRuns.id, runId) : undefined,
+      ),
+    );
   return [
+    tx
+      .update(aiRuns)
+      .set({ status: "failed", completedAt: cancelledAt })
+      .where(queuedRun),
     tx
       .update(aiObservations)
       .set({ status: "failed", error: reason })
       .where(
         and(
-          inArray(aiObservations.runId, queuedRuns),
+          inArray(aiObservations.runId, cancelledRuns),
           eq(aiObservations.status, "pending"),
         ),
       ),
@@ -84,17 +95,24 @@ export function cancelQueuedScheduledRuns(
       .where(
         and(
           eq(aiTrackers.id, trackerId),
-          inArray(aiTrackers.pendingScheduledRunId, queuedRuns),
+          inArray(aiTrackers.pendingScheduledRunId, cancelledRuns),
         ),
       ),
     tx
       .update(aiTrackers)
       .set({ lastSkipReason: reason })
-      .where(and(eq(aiTrackers.id, trackerId), exists(queuedRuns))),
+      .where(and(eq(aiTrackers.id, trackerId), exists(cancelledRuns))),
+    // Only a run transitioned by the cancellation compare-and-set can match
+    // this marker. A dispatch that won the transition keeps its reservation.
     tx
-      .update(aiRuns)
-      .set({ status: "failed", completedAt: new Date().toISOString() })
-      .where(queuedRun),
+      .update(aiProviderRunReservations)
+      .set({ status: "released" })
+      .where(
+        and(
+          inArray(aiProviderRunReservations.runId, cancelledRuns),
+          eq(aiProviderRunReservations.status, "reserved"),
+        ),
+      ),
   ];
 }
 
@@ -137,10 +155,16 @@ const SNAPSHOTTED_TRACKER_FIELDS = new Set([
   "locationCode",
   "languageCode",
   "scheduleInterval",
+  "weeklyProviderBudgetCents",
 ]);
 
 /** Updates tracker settings and their snapshot in one project mutation. */
-export async function updateTracker(id: string, values: Partial<TrackerRow>) {
+export async function updateTracker(
+  id: string,
+  values: Partial<TrackerRow>,
+  options: { cancelQueuedRuns?: boolean } = {},
+) {
+  const cancelQueuedRuns = options.cancelQueuedRuns !== false;
   if (!Object.keys(values).some((key) => SNAPSHOTTED_TRACKER_FIELDS.has(key))) {
     await db.update(aiTrackers).set(values).where(eq(aiTrackers.id, id));
     return;
@@ -170,6 +194,9 @@ export async function updateTracker(id: string, values: Partial<TrackerRow>) {
       languageCode: values.languageCode ?? state.tracker.languageCode,
       scheduleInterval:
         values.scheduleInterval ?? state.tracker.scheduleInterval,
+      weeklyProviderBudgetCents:
+        values.weeklyProviderBudgetCents ??
+        state.tracker.weeklyProviderBudgetCents,
     };
     if (values.enabled === true) {
       if (!state.questions.some((prompt) => !prompt.paused && !prompt.archived))
@@ -195,8 +222,12 @@ export async function updateTracker(id: string, values: Partial<TrackerRow>) {
         tracker: nextTracker,
       }),
       write: (tx) => [
-        ...(values.enabled === false ||
-        SCHEDULED_RUN_SCOPE_FIELDS.some((key) => values[key] !== undefined)
+        ...(values.weeklyProviderBudgetCents !== undefined
+          ? [lockAiProviderRunBudget(tx)]
+          : []),
+        ...(cancelQueuedRuns &&
+        (values.enabled === false ||
+          SCHEDULED_RUN_SCOPE_FIELDS.some((key) => values[key] !== undefined))
           ? cancelQueuedScheduledRuns(
               tx,
               id,
@@ -214,6 +245,7 @@ export async function updateTracker(id: string, values: Partial<TrackerRow>) {
 export function writeConfiguration(tx: Tx, rows: ConfigurationRows) {
   const { tracker } = rows;
   return [
+    lockAiProviderRunBudget(tx),
     tx
       .insert(aiTrackers)
       .values(tracker)
@@ -228,6 +260,7 @@ export function writeConfiguration(tx: Tx, rows: ConfigurationRows) {
           perplexity: tracker.perplexity,
           locationCode: tracker.locationCode,
           languageCode: tracker.languageCode,
+          weeklyProviderBudgetCents: tracker.weeklyProviderBudgetCents,
         },
       }),
     ...rows.prompts.map((prompt) =>

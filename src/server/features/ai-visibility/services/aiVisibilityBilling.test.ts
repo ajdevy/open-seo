@@ -14,7 +14,7 @@ const { testDb, settleTrackingHold } = await vi.hoisted(async () => {
 });
 vi.mock("cloudflare:workers", () => ({ env: { DATABASE_PROVIDER: "d1" } }));
 vi.mock("@/db", () => ({ db: testDb.db }));
-vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/db/runBatch", () => testDb.runBatchModule);
 vi.mock("@/server/lib/dataforseo", () => ({
   createDataforseoClient: () => ({ aiSearch: { settleTrackingHold } }),
 }));

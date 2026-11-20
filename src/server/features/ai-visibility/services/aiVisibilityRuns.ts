@@ -20,7 +20,9 @@ import { requireConfiguration } from "./aiVisibilityMutation";
 import { aiPromptIsBranded } from "./aiVisibilityMatching";
 import { aiRunView } from "./aiVisibilityResults";
 import { aiCostForAnswers } from "./aiVisibilityCost";
+import { reserveProviderBudgetForRun } from "./aiVisibilityProviderBudget";
 import { hasDataforseoAccess } from "@/server/lib/provider-access";
+import { markAiProviderRunBudgetUnknown } from "../repositories/AiProviderRunBudgetRepository";
 import {
   startWorkflow,
   STUCK_RUN_AFTER_MS,
@@ -69,6 +71,16 @@ export async function prepareRun(
     throw new AiVisibilityError(
       "NO_ACTIVE_PROMPTS",
       "Add or unpause prompts before starting a check.",
+    );
+  const cost = aiCostForAnswers(
+    scope.prompts.flatMap(() => scope.engines),
+    false,
+    trigger === "scheduled" ? "queued" : "live",
+  );
+  if (!cost.providerCostBounded)
+    throw new AiVisibilityError(
+      "PROVIDER_COST_CEILING_UNAVAILABLE",
+      "This selection includes a provider route with variable token or web-search charges and no enforceable run ceiling. No provider request was started.",
     );
   // Hosted checks need credits for every answer before they start, like rank
   // checks. The tracker says why no check ran, whichever path started it.
@@ -179,7 +191,12 @@ async function staleRunReason(run: RunRow): Promise<string | null> {
 /** Fails a run and its unfinished answers. Safe on a finished run. */
 export async function failAiRun(runId: string, error: string) {
   const run = await repo.getRunInternal(runId);
-  if (!run || (run.status !== "queued" && run.status !== "running")) return;
+  if (!run) return;
+  // A failed workflow may have reached a provider before its outcome was
+  // persisted. Keep the complete reservation until a human/evidence-based
+  // reconciliation proves the amount.
+  await markAiProviderRunBudgetUnknown(runId);
+  if (run.status !== "queued" && run.status !== "running") return;
   await repo.failPendingObservations(runId, error);
   await repo.updateRun(runId, {
     status: "failed",
@@ -232,8 +249,8 @@ export async function startRun(
   // Two attempts: once normally, once after failing a stale blocker.
   for (let attempt = 0; attempt < 2; attempt++) {
     const id = crypto.randomUUID();
+    const rows = rowsForRun(prepared, id);
     try {
-      const rows = rowsForRun(prepared, id);
       await repo.createRun(rows.run, rows.observations);
     } catch (error) {
       // The one-active-run index rejected the insert, or it truly failed.
@@ -247,9 +264,32 @@ export async function startRun(
         blocker.id,
       );
     }
+    let reservation: Awaited<ReturnType<typeof reserveProviderBudgetForRun>>;
+    try {
+      reservation = await reserveProviderBudgetForRun({
+        run: rows.run,
+        limitUsdCents: config.tracker.weeklyProviderBudgetCents,
+        engines: rows.observations.map((observation) => observation.engine),
+      });
+    } catch (error) {
+      // A dropped database response can hide a committed reservation. Preserve
+      // that outcome as unknown and fail closed before starting the workflow.
+      await failAiRun(id, AI_ANSWER_FAILURES.notStarted).catch(() => undefined);
+      throw error;
+    }
+    if (!reservation.admission.admitted) {
+      const message = reservation.message;
+      if (!message) throw new Error("Provider budget refusal had no message.");
+      await failAiRun(id, AI_ANSWER_FAILURES.notStarted);
+      await repo.updateTracker(config.tracker.id, {
+        lastSkipReason: message,
+      });
+      throw new AiVisibilityError("PROVIDER_BUDGET_EXCEEDED", message, id);
+    }
     try {
       await startWorkflowForRun(id, prepared.project.id, billing);
     } catch (error) {
+      await markAiProviderRunBudgetUnknown(id);
       await failAiRun(id, AI_ANSWER_FAILURES.notStarted);
       throw error;
     }
@@ -268,15 +308,20 @@ export async function runCheck(
   const config = await requireConfiguration(input.projectId);
   const scope = aiScope(config, input.promptIds);
   // Price the check now and refuse it above what the user approved.
-  const { costUsd } = aiCostForAnswers(
+  const cost = aiCostForAnswers(
     scope.prompts.flatMap(() => scope.engines),
     await isHostedServerAuthMode(),
     "live",
   );
-  if (Math.round(costUsd * 1e6) > Math.round(input.maxCostUsd * 1e6))
+  if (!cost.providerCostBounded)
+    throw new AiVisibilityError(
+      "PROVIDER_COST_CEILING_UNAVAILABLE",
+      "This selection includes a provider route with variable token or web-search charges and no enforceable run ceiling. No provider request was started.",
+    );
+  if (Math.round(cost.costUsd * 1e6) > Math.round(input.maxCostUsd * 1e6))
     throw new AiVisibilityError(
       "COST_LIMIT_EXCEEDED",
-      `This check now costs $${costUsd.toFixed(4)}, more than the approved maximum. Review the new estimate before running it.`,
+      `This check now costs $${cost.costUsd.toFixed(4)}, more than the approved maximum. Review the new estimate before running it.`,
     );
   return startRun(config, "manual", billing, input.promptIds);
 }

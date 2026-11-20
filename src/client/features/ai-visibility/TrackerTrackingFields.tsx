@@ -8,6 +8,7 @@ import {
   TooltipTrigger,
 } from "@/client/components/ui/tooltip";
 import { ProjectMarketFields } from "@/client/features/projects/ProjectMarketFields";
+import { Input } from "@/client/components/ui/input";
 import {
   AI_UNSUPPORTED_LOCATIONS,
   aiCountryLabel,
@@ -17,6 +18,7 @@ import {
 } from "@/shared/ai-visibility";
 
 export type TrackerDraft = {
+  weeklyProviderBudgetUsd: number;
   locationCode: number;
   languageCode: string;
   engines: AiEngine[];
@@ -115,6 +117,34 @@ export function TrackerTrackingFields({
   );
   return (
     <section className="space-y-5">
+      <label className="block space-y-2">
+        <span className="text-sm font-semibold">Weekly provider budget</span>
+        <span className="block text-xs text-muted-foreground">
+          Per project, shared across all provider routes over a rolling 7 days.
+          A run is skipped if its full estimate would exceed the remaining
+          budget.
+        </span>
+        <span className="relative block max-w-40">
+          <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-muted-foreground">
+            $
+          </span>
+          <Input
+            aria-label="Weekly provider budget in USD"
+            type="number"
+            min="0.01"
+            max="1000"
+            step="0.01"
+            value={value.weeklyProviderBudgetUsd}
+            onChange={(event) =>
+              onChange({
+                ...value,
+                weeklyProviderBudgetUsd: Number(event.currentTarget.value),
+              })
+            }
+            className="pl-7"
+          />
+        </span>
+      </label>
       {engineGroup(
         "Scraped responses",
         "Answers as users see them in each AI app.",

@@ -16,6 +16,16 @@ const scheduleIntervalSchema = z
     "How often scheduled tracking runs. Monthly runs on the last day of the month.",
   );
 export const aiTrackerPatchSchema = z.object({
+  weeklyProviderBudgetUsd: z
+    .number()
+    .finite()
+    .min(0.01)
+    .max(1000)
+    .multipleOf(0.01)
+    .optional()
+    .describe(
+      "Maximum provider cost for this project across any rolling seven days, in USD. The budget is shared by all routes in a run.",
+    ),
   engines: z
     .array(aiEngineSchema)
     .min(1)
@@ -96,6 +106,17 @@ export const setAiScheduleSchema = aiProjectSchema
       ),
   })
   .superRefine((input, ctx) => {
+    if (
+      input.enabled &&
+      input.scheduleTime?.timeZone !== undefined &&
+      input.scheduleInterval !== undefined &&
+      input.scheduleInterval !== "weekly"
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["scheduleTime", "timeZone"],
+        message: "A timezone is supported only for weekly schedules.",
+      });
     if (
       input.enabled &&
       input.scheduleInterval === "weekly" &&
