@@ -22,8 +22,7 @@ vi.mock("@/db", () => ({ db: testDb.db }));
 vi.mock("@/db/runBatch", () => testDb.runBatchModule);
 vi.mock("cloudflare:workers", () => ({ env: { DATABASE_PROVIDER: "d1" } }));
 
-const projectId = "project";
-const now = new Date("2026-11-12T12:00:00.000Z");
+const [now, projectId] = [new Date(), "project"];
 let trackerId: string;
 
 async function createRun(

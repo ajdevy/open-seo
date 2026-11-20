@@ -1,6 +1,21 @@
-import { and, eq, notExists } from "drizzle-orm";
+import {
+  and,
+  eq,
+  exists,
+  isNull,
+  lt,
+  notInArray,
+  notExists,
+  or,
+} from "drizzle-orm";
 import { db } from "@/db";
 import { aiProviderRunReservations, aiRuns } from "@/db/schema";
+
+// The workflow can keep collecting late provider answers for almost a day.
+// Keep terminal holds reserved through that window plus a short settlement
+// retry margin, independent of which provider handled the run.
+export const AI_PROVIDER_RUN_SETTLEMENT_GRACE_MS =
+  24 * 60 * 60_000 + 5 * 60_000;
 
 /** A provider outcome is ambiguous; retain its full hold past the window. */
 export async function markAiProviderRunBudgetUnknown(runId: string) {
@@ -162,23 +177,50 @@ export async function reconcileAiProviderRunBudget(
 }
 
 /** Operator queue metadata only; never includes prompts, answers, or credentials. */
-export async function listUnknownAiProviderRunBudgets(limit = 100) {
+export async function listUnknownAiProviderRunBudgets(
+  limit = 100,
+  now = Date.now(),
+) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
     throw new Error("Provider budget queue limit is invalid.");
-  // Run deletion no longer cascades into the reservation ledger. Quarantine
-  // orphaned active holds so the recovery queue can surface them for evidence-
-  // based reconciliation instead of counting them invisibly forever.
+  // Run deletion no longer cascades into the reservation ledger. Also
+  // quarantine terminal runs only after the workflow's late-answer window and
+  // settlement retries have elapsed; active and recent terminal runs can
+  // still be collecting or settling and must keep their reserved status.
+  const staleTerminalRunCutoff = new Date(
+    now - AI_PROVIDER_RUN_SETTLEMENT_GRACE_MS,
+  ).toISOString();
   await db
     .update(aiProviderRunReservations)
     .set({ status: "unknown" })
     .where(
       and(
         eq(aiProviderRunReservations.status, "reserved"),
-        notExists(
-          db
-            .select({ id: aiRuns.id })
-            .from(aiRuns)
-            .where(eq(aiRuns.id, aiProviderRunReservations.runId)),
+        or(
+          notExists(
+            db
+              .select({ id: aiRuns.id })
+              .from(aiRuns)
+              .where(eq(aiRuns.id, aiProviderRunReservations.runId)),
+          ),
+          exists(
+            db
+              .select({ id: aiRuns.id })
+              .from(aiRuns)
+              .where(
+                and(
+                  eq(aiRuns.id, aiProviderRunReservations.runId),
+                  notInArray(aiRuns.status, ["queued", "running"]),
+                  or(
+                    lt(aiRuns.completedAt, staleTerminalRunCutoff),
+                    and(
+                      isNull(aiRuns.completedAt),
+                      lt(aiRuns.createdAt, staleTerminalRunCutoff),
+                    ),
+                  ),
+                ),
+              ),
+          ),
         ),
       ),
     );

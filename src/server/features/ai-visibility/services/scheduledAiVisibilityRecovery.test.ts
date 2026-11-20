@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   aiProviderRunBudgetLocks,
   aiProviderRunReservations,
@@ -176,6 +177,47 @@ it("reuses the provider hold after a crash between reserve and workflow start", 
     await testDb.db.select().from(aiProviderRunReservations),
   ).toMatchObject([{ runId, status: "reserved" }]);
   expect((await repo.getTracker("project"))?.pendingScheduledRunId).toBeNull();
+});
+
+it("uses the current rolling window when recovering an old scheduled run", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-15T06:01:00.000Z"));
+  await dueTracker();
+  const runId = "scheduled-outbox-old-budget-window";
+  const config = await persistPendingScheduledRun(
+    runId,
+    "project",
+    "2026-09-01T05:00:00.000Z",
+  );
+  await testDb.db.insert(aiProviderRunReservations).values({
+    id: "scheduled-outbox-expired-charge",
+    projectId: config.tracker.projectId,
+    runId: "previous-run-expired-charge",
+    reservedUsdMicros: 8_000_000,
+    accountedUsdMicros: 8_000_000,
+    status: "settled",
+    createdAt: "2026-09-07T05:00:00.000Z",
+    settledAt: "2026-09-07T05:00:00.000Z",
+  });
+  workflow.get.mockRejectedValue(new Error("workflow instance not found"));
+
+  const recovered = await resumePendingScheduledRuns({
+    answerBudget: 1,
+    deadline: Date.now() + 60_000,
+  });
+
+  expect(recovered).toEqual({ started: 1, answersStarted: 1 });
+  expect(workflow.create).toHaveBeenCalledTimes(1);
+  expect(workflow.create.mock.calls[0]?.[0]).toMatchObject({ id: runId });
+  expect(
+    await testDb.db
+      .select({
+        runId: aiProviderRunReservations.runId,
+        status: aiProviderRunReservations.status,
+      })
+      .from(aiProviderRunReservations)
+      .where(eq(aiProviderRunReservations.runId, runId)),
+  ).toEqual([{ runId, status: "reserved" }]);
 });
 
 it("defers a concurrent recovery without failing or clearing its shared hold", async () => {

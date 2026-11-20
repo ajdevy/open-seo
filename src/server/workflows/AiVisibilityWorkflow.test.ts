@@ -253,6 +253,21 @@ describe("AI visibility workflow", () => {
     expect(mocks.markProviderBudgetUnknown).not.toHaveBeenCalled();
   });
 
+  it("quarantines a terminal run when provider-budget settlement keeps failing", async () => {
+    const error = new Error("provider budget database unavailable");
+    mocks.settleProviderBudget.mockRejectedValueOnce(error);
+
+    await expect(execute()).rejects.toThrow(error);
+
+    expect(mocks.finalize).toHaveBeenCalledExactlyOnceWith("run");
+    expect(mocks.markProviderBudgetUnknown).toHaveBeenCalledExactlyOnceWith(
+      "run",
+    );
+    expect(mocks.finalize.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.markProviderBudgetUnknown.mock.invocationCallOrder[0],
+    );
+  });
+
   it("keeps a scheduled provider reservation unknown when task_post omits cost", async () => {
     mocks.post.mockResolvedValue({
       pending: [task],

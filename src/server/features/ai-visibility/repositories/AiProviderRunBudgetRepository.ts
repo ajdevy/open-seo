@@ -79,14 +79,17 @@ function reservationRejected(
  * lock serializes D1 and Postgres admissions and saved budget changes while the
  * SQL insert enforces the current project cap and installation cap atomically.
  */
-export async function reserveAiProviderRunBudget(input: {
-  id: string;
-  projectId: string;
-  runId: string;
-  limitUsdCents: number;
-  reserveUsdMicros: number;
-  createdAt: string;
-}): Promise<AiProviderRunBudgetAdmission> {
+export async function reserveAiProviderRunBudget(
+  input: {
+    id: string;
+    projectId: string;
+    runId: string;
+    limitUsdCents: number;
+    reserveUsdMicros: number;
+    createdAt: string;
+  },
+  budgetWindowNow = Date.now(),
+): Promise<AiProviderRunBudgetAdmission> {
   const limitUsdMicros = input.limitUsdCents * 10_000;
   if (
     !Number.isSafeInteger(input.reserveUsdMicros) ||
@@ -127,8 +130,10 @@ export async function reserveAiProviderRunBudget(input: {
       );
   }
 
-  const now = Date.parse(input.createdAt);
-  const cutoff = new Date(now - AI_PROVIDER_BUDGET_WINDOW_MS).toISOString();
+  const cutoff = new Date(
+    budgetWindowNow - AI_PROVIDER_BUDGET_WINDOW_MS,
+  ).toISOString();
+  const now = budgetWindowNow;
   const projectFits = sql`${usageTotalSql(cutoff, input.projectId)} + ${input.reserveUsdMicros} <= ${limitUsdMicros}`;
   const globalFits = sql`${usageTotalSql(cutoff)} + ${input.reserveUsdMicros} <= ${AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS}`;
   const savedBudgetMatches = (tx: AiProviderRunBudgetTransaction) =>

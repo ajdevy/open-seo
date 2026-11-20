@@ -3,11 +3,12 @@ import { eq } from "drizzle-orm";
 import { aiProviderRunReservations, aiRuns } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "./AiVisibilityRepository";
 import {
+  AI_PROVIDER_RUN_SETTLEMENT_GRACE_MS,
   listUnknownAiProviderRunBudgets,
   markAiProviderRunBudgetUnknown,
   reconcileAiProviderRunBudget,
-  reserveAiProviderRunBudget,
-} from "./AiProviderRunBudgetRepository";
+} from "./AiProviderRunBudgetRecoveryRepository";
+import { reserveAiProviderRunBudget } from "./AiProviderRunBudgetRepository";
 import { getAiProviderBudgetUsage } from "./AiProviderRunBudgetRepository";
 import { configuration } from "../services/aiVisibilityTestFixtures";
 
@@ -23,7 +24,7 @@ const projectId = "project";
 const now = new Date("2026-11-12T12:00:00.000Z");
 let trackerId: string;
 
-async function createRun(id: string) {
+async function createRun(id: string, completedAt = now.toISOString()) {
   await testDb.db.insert(aiRuns).values({
     id,
     trackerId,
@@ -32,20 +33,23 @@ async function createRun(id: string) {
     status: "completed",
     locationCode: 2840,
     languageCode: "en",
-    createdAt: now.toISOString(),
-    completedAt: now.toISOString(),
+    createdAt: completedAt,
+    completedAt,
   });
 }
 
 async function reserve(runId: string, reserveUsdMicros: number) {
-  return reserveAiProviderRunBudget({
-    id: `reservation-${runId}`,
-    projectId,
-    runId,
-    limitUsdCents: 800,
-    reserveUsdMicros,
-    createdAt: now.toISOString(),
-  });
+  return reserveAiProviderRunBudget(
+    {
+      id: `reservation-${runId}`,
+      projectId,
+      runId,
+      limitUsdCents: 800,
+      reserveUsdMicros,
+      createdAt: now.toISOString(),
+    },
+    now.getTime(),
+  );
 }
 
 beforeEach(async () => {
@@ -191,7 +195,9 @@ describe("provider run budget recovery", () => {
       .delete(aiRuns)
       .where(eq(aiRuns.id, "deleted-run-with-provider-hold"));
 
-    await expect(listUnknownAiProviderRunBudgets()).resolves.toEqual([
+    await expect(
+      listUnknownAiProviderRunBudgets(100, now.getTime()),
+    ).resolves.toEqual([
       {
         runId: "deleted-run-with-provider-hold",
         projectId,
@@ -218,5 +224,72 @@ describe("provider run budget recovery", () => {
         reconciledAt: now.toISOString(),
       }),
     ).resolves.toEqual({ reconciled: true, status: "released" });
+  });
+
+  it("quarantines a terminal run whose provider settlement window has expired", async () => {
+    const completedAt = new Date(
+      now.getTime() - AI_PROVIDER_RUN_SETTLEMENT_GRACE_MS - 60_000,
+    ).toISOString();
+    await createRun("terminal-run-with-unsettled-provider-hold", completedAt);
+    await testDb.db.insert(aiProviderRunReservations).values({
+      id: "terminal-run-stuck-settlement",
+      projectId,
+      runId: "terminal-run-with-unsettled-provider-hold",
+      reservedUsdMicros: 3_000_000,
+      status: "reserved",
+      createdAt: completedAt,
+    });
+
+    await expect(
+      listUnknownAiProviderRunBudgets(100, now.getTime()),
+    ).resolves.toEqual([
+      {
+        runId: "terminal-run-with-unsettled-provider-hold",
+        projectId,
+        reservedUsdMicros: 3_000_000,
+        createdAt: completedAt,
+      },
+    ]);
+    await expect(
+      testDb.db
+        .select({ status: aiProviderRunReservations.status })
+        .from(aiProviderRunReservations)
+        .where(
+          eq(
+            aiProviderRunReservations.runId,
+            "terminal-run-with-unsettled-provider-hold",
+          ),
+        ),
+    ).resolves.toEqual([{ status: "unknown" }]);
+  });
+
+  it("keeps terminal reservations during the late-answer settlement window", async () => {
+    const completedAt = new Date(
+      now.getTime() - AI_PROVIDER_RUN_SETTLEMENT_GRACE_MS + 60_000,
+    ).toISOString();
+    await createRun("terminal-run-still-reading-late-answers", completedAt);
+    await testDb.db.insert(aiProviderRunReservations).values({
+      id: "terminal-run-still-settling",
+      projectId,
+      runId: "terminal-run-still-reading-late-answers",
+      reservedUsdMicros: 3_000_000,
+      status: "reserved",
+      createdAt: completedAt,
+    });
+
+    await expect(
+      listUnknownAiProviderRunBudgets(100, now.getTime()),
+    ).resolves.toEqual([]);
+    await expect(
+      testDb.db
+        .select({ status: aiProviderRunReservations.status })
+        .from(aiProviderRunReservations)
+        .where(
+          eq(
+            aiProviderRunReservations.runId,
+            "terminal-run-still-reading-late-answers",
+          ),
+        ),
+    ).resolves.toEqual([{ status: "reserved" }]);
   });
 });

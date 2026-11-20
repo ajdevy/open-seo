@@ -36,14 +36,17 @@ async function createRun(id: string) {
 }
 
 async function reserve(runId: string, limitUsdCents = 800) {
-  return reserveAiProviderRunBudget({
-    id: `reservation-${runId}`,
-    projectId,
-    runId,
-    limitUsdCents,
-    reserveUsdMicros: 6_000_000,
-    createdAt: now.toISOString(),
-  });
+  return reserveAiProviderRunBudget(
+    {
+      id: `reservation-${runId}`,
+      projectId,
+      runId,
+      limitUsdCents,
+      reserveUsdMicros: 6_000_000,
+      createdAt: now.toISOString(),
+    },
+    now.getTime(),
+  );
 }
 
 beforeEach(async () => {

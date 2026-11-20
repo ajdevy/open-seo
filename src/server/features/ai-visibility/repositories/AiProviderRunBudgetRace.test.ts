@@ -54,14 +54,17 @@ describe("provider budget admission races", () => {
     await repo.updateTracker(trackerId, { weeklyProviderBudgetCents: 50 });
 
     await expect(
-      reserveAiProviderRunBudget({
-        id: "reservation-stale-budget-run",
-        projectId,
-        runId: "stale-budget-run",
-        limitUsdCents: 800,
-        reserveUsdMicros: 2_000_000,
-        createdAt: now.toISOString(),
-      }),
+      reserveAiProviderRunBudget(
+        {
+          id: "reservation-stale-budget-run",
+          projectId,
+          runId: "stale-budget-run",
+          limitUsdCents: 800,
+          reserveUsdMicros: 2_000_000,
+          createdAt: now.toISOString(),
+        },
+        now.getTime(),
+      ),
     ).resolves.toMatchObject({
       admitted: false,
       reason: "budget_changed",
@@ -74,26 +77,32 @@ describe("provider budget admission races", () => {
   it("does not resume an existing hold under a stale project budget snapshot", async () => {
     await createRun("held-stale-budget-run");
     await expect(
-      reserveAiProviderRunBudget({
-        id: "reservation-held-stale-budget-run",
-        projectId,
-        runId: "held-stale-budget-run",
-        limitUsdCents: 800,
-        reserveUsdMicros: 2_000_000,
-        createdAt: now.toISOString(),
-      }),
+      reserveAiProviderRunBudget(
+        {
+          id: "reservation-held-stale-budget-run",
+          projectId,
+          runId: "held-stale-budget-run",
+          limitUsdCents: 800,
+          reserveUsdMicros: 2_000_000,
+          createdAt: now.toISOString(),
+        },
+        now.getTime(),
+      ),
     ).resolves.toMatchObject({ admitted: true });
     await repo.updateTracker(trackerId, { weeklyProviderBudgetCents: 50 });
 
     await expect(
-      reserveAiProviderRunBudget({
-        id: "reservation-held-stale-budget-run-retry",
-        projectId,
-        runId: "held-stale-budget-run",
-        limitUsdCents: 800,
-        reserveUsdMicros: 2_000_000,
-        createdAt: now.toISOString(),
-      }),
+      reserveAiProviderRunBudget(
+        {
+          id: "reservation-held-stale-budget-run-retry",
+          projectId,
+          runId: "held-stale-budget-run",
+          limitUsdCents: 800,
+          reserveUsdMicros: 2_000_000,
+          createdAt: now.toISOString(),
+        },
+        now.getTime(),
+      ),
     ).resolves.toMatchObject({
       admitted: false,
       reason: "budget_changed",
@@ -123,14 +132,17 @@ describe("provider budget admission races", () => {
     `);
 
     await expect(
-      reserveAiProviderRunBudget({
-        id: "reservation-racing-run",
-        projectId,
-        runId: "racing-run",
-        limitUsdCents: 800,
-        reserveUsdMicros: 4_000_000,
-        createdAt: now.toISOString(),
-      }),
+      reserveAiProviderRunBudget(
+        {
+          id: "reservation-racing-run",
+          projectId,
+          runId: "racing-run",
+          limitUsdCents: 800,
+          reserveUsdMicros: 4_000_000,
+          createdAt: now.toISOString(),
+        },
+        now.getTime(),
+      ),
     ).resolves.toMatchObject({
       admitted: false,
       reason: "budget_exceeded",
@@ -174,14 +186,17 @@ describe("provider budget admission races", () => {
     `);
 
     await expect(
-      reserveAiProviderRunBudget({
-        id: "losing-concurrent-owner",
-        projectId,
-        runId: "concurrent-same-run",
-        limitUsdCents: 800,
-        reserveUsdMicros: 4_000_000,
-        createdAt: now.toISOString(),
-      }),
+      reserveAiProviderRunBudget(
+        {
+          id: "losing-concurrent-owner",
+          projectId,
+          runId: "concurrent-same-run",
+          limitUsdCents: 800,
+          reserveUsdMicros: 4_000_000,
+          createdAt: now.toISOString(),
+        },
+        now.getTime(),
+      ),
     ).resolves.toMatchObject({
       admitted: false,
       reason: "run_in_progress",

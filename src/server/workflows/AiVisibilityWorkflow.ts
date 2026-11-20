@@ -366,19 +366,37 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       }
     }
     await settle();
-    await pgStep(step, "settle-provider-budget", FREE_STEP, async () => {
-      const accountedUsdMicros = Math.round(providerCostUsd * 1e6);
-      if (
-        providerCostKnown &&
-        Number.isSafeInteger(accountedUsdMicros) &&
-        accountedUsdMicros >= 0
-      )
-        await settleAiProviderRunBudget(
-          runId,
-          accountedUsdMicros,
-          new Date().toISOString(),
+    try {
+      await pgStep(step, "settle-provider-budget", FREE_STEP, async () => {
+        const accountedUsdMicros = Math.round(providerCostUsd * 1e6);
+        if (
+          providerCostKnown &&
+          Number.isSafeInteger(accountedUsdMicros) &&
+          accountedUsdMicros >= 0
+        )
+          await settleAiProviderRunBudget(
+            runId,
+            accountedUsdMicros,
+            new Date().toISOString(),
+          );
+        else await markAiProviderRunBudgetUnknown(runId);
+      });
+    } catch (error) {
+      // The run is already terminal, so a failed settlement will not be
+      // retried by the workflow. Make its still-held amount operator-visible.
+      try {
+        await pgStep(
+          step,
+          "mark-provider-budget-unknown-after-settlement-failure",
+          FREE_STEP,
+          () => markAiProviderRunBudgetUnknown(runId),
         );
-      else await markAiProviderRunBudgetUnknown(runId);
-    });
+      } catch (quarantineError) {
+        console.error(
+          `[ai-visibility] ${runId} provider budget quarantine failed: ${describeError(quarantineError)}`,
+        );
+      }
+      throw error;
+    }
   }
 }
