@@ -8,6 +8,11 @@ export async function scheduledRunScopeError(
   run: RunRow,
   stage: ValidationStage,
 ) {
+  if (!(await repo.isProjectActive(run.projectId)))
+    return stage === "dispatch"
+      ? "The scheduled check was canceled because its project was archived before provider dispatch."
+      : "The scheduled check was canceled because its project was archived before the queued check started.";
+
   const config = await repo.getConfiguration(run.projectId);
   if (!config || !config.tracker.enabled)
     return stage === "dispatch"

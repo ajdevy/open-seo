@@ -211,6 +211,60 @@ it("does not resume a queued scheduled run after the tracker was paused", async 
   });
 });
 
+it("cancels a queued scheduled outbox when its project was archived", async () => {
+  workflow.create.mockClear();
+  await dueTracker("project", false);
+  const config = await repo.getConfiguration("project");
+  if (!config) throw new Error("test tracker configuration was not created");
+  const prompt = config.prompts[0];
+  if (!prompt) throw new Error("test prompt was not created");
+  const runId = "scheduled-outbox-archived-project";
+  await repo.createRun(
+    {
+      id: runId,
+      trackerId: config.tracker.id,
+      projectId: "project",
+      trigger: "scheduled",
+      status: "queued",
+      locationCode: config.tracker.locationCode,
+      languageCode: config.tracker.languageCode,
+      createdAt: new Date().toISOString(),
+    },
+    [
+      {
+        id: `${runId}-answer`,
+        runId,
+        promptId: prompt.id,
+        engine: "chatgpt",
+        branded: false,
+      },
+    ],
+  );
+  await repo.updateTracker(config.tracker.id, {
+    pendingScheduledRunId: runId,
+  });
+  await testDb.db
+    .update(projects)
+    .set({ archivedAt: "2026-09-01T06:00:00.000Z" })
+    .where(eq(projects.id, "project"));
+
+  await runScheduledAiVisibility();
+
+  expect(workflow.create).not.toHaveBeenCalled();
+  expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
+  expect(await repo.getObservations([runId])).toMatchObject([
+    {
+      status: "failed",
+      error: "The scheduled check was canceled because its project was archived before the queued check started.",
+    },
+  ]);
+  expect(await repo.getTracker("project")).toMatchObject({
+    pendingScheduledRunId: null,
+    lastSkipReason:
+      "The scheduled check was canceled because its project was archived before the queued check started.",
+  });
+});
+
 it("does not resume a queued scheduled run after its prompt scope is removed", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));

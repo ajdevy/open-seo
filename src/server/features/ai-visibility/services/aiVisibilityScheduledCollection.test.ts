@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
+import { projects } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { prepareAiRun } from "./aiVisibilityCollection";
 import { configuration } from "./aiVisibilityTestFixtures";
@@ -114,6 +116,50 @@ describe("scheduled answer collection authorization", () => {
       { status: "failed", error: "Scheduled tracking is paused." },
       { status: "failed", error: "Scheduled tracking is paused." },
     ]);
+    expect(dataforseo.trackingTaskPost).not.toHaveBeenCalled();
+    expect(dataforseo.trackingLiveBatch).not.toHaveBeenCalled();
+    expect(dataforseo.llmResponse).not.toHaveBeenCalled();
+  });
+
+  it("cancels an archived project at queued-to-running admission", async () => {
+    const tracker = await repo.getTracker("project");
+    if (!tracker) throw new Error("Tracker fixture was not saved.");
+    await repo.updateTracker(tracker.id, {
+      enabled: true,
+      pendingScheduledRunId: runId,
+    });
+
+    const isProjectActive = repo.isProjectActive.bind(repo);
+    vi.spyOn(repo, "isProjectActive").mockImplementation(async (projectId) => {
+      const active = await isProjectActive(projectId);
+      if (active)
+        await testDb.db
+          .update(projects)
+          .set({ archivedAt: "2026-09-05T12:00:00.000Z" })
+          .where(eq(projects.id, projectId));
+      return active;
+    });
+
+    await expect(prepareAiRun(runId)).rejects.toThrow(
+      "The scheduled check was canceled before provider dispatch.",
+    );
+
+    expect(await repo.getRunInternal(runId)).toMatchObject({ status: "failed" });
+    expect(await repo.getObservations([runId])).toMatchObject([
+      {
+        status: "failed",
+        error: "The scheduled check was canceled because its project was archived or it was no longer queued before provider dispatch.",
+      },
+      {
+        status: "failed",
+        error: "The scheduled check was canceled because its project was archived or it was no longer queued before provider dispatch.",
+      },
+    ]);
+    expect(await repo.getTracker("project")).toMatchObject({
+      pendingScheduledRunId: null,
+      lastSkipReason:
+        "The scheduled check was canceled because its project was archived or it was no longer queued before provider dispatch.",
+    });
     expect(dataforseo.trackingTaskPost).not.toHaveBeenCalled();
     expect(dataforseo.trackingLiveBatch).not.toHaveBeenCalled();
     expect(dataforseo.llmResponse).not.toHaveBeenCalled();

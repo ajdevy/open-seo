@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lte, ne } from "drizzle-orm";
+import { and, asc, desc, eq, exists, inArray, isNull, lte, ne } from "drizzle-orm";
 import { chunk } from "remeda";
 import { db } from "@/db";
 import { runBatch } from "@/db/runBatch";
@@ -290,6 +290,14 @@ export const AiVisibilityRepository = {
   createRun,
   getRun,
   getRunInternal,
+  isProjectActive: async (projectId: string) =>
+    (
+      await db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(eq(projects.id, projectId), isNull(projects.archivedAt)))
+        .limit(1)
+    ).length > 0,
   listRuns,
   getActiveRun,
   getLatestScheduledRun: async (projectId: string) =>
@@ -315,6 +323,17 @@ export const AiVisibilityRepository = {
             eq(aiRuns.id, id),
             eq(aiRuns.trigger, "scheduled"),
             eq(aiRuns.status, "queued"),
+            exists(
+              db
+                .select({ id: projects.id })
+                .from(projects)
+                .where(
+                  and(
+                    eq(projects.id, aiRuns.projectId),
+                    isNull(projects.archivedAt),
+                  ),
+                ),
+            ),
           ),
         )
         .returning({ id: aiRuns.id })
