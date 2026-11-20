@@ -53,7 +53,7 @@ describe("provider run budget migration", () => {
       ).replaceAll("--> statement-breakpoint", "");
       await client.executeMultiple(migration);
 
-      await client.execute(`
+      await client.executeMultiple(`
         INSERT INTO ai_runs (id, project_id, status, created_at, completed_at)
         VALUES (
           'legacy-terminal-run',
@@ -61,12 +61,21 @@ describe("provider run budget migration", () => {
           'completed',
           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-6 days'),
           strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')
-        )
+        );
+        INSERT INTO ai_runs (id, project_id, status, created_at, completed_at)
+        VALUES (
+          'older-legacy-terminal-run',
+          'project',
+          'completed',
+          strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-6 days'),
+          strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-4 days')
+        );
       `);
       const terminalMigration = readFileSync(
         "drizzle/sqlite/0073_legacy_terminal_spend_guard.sql",
         "utf8",
       ).replaceAll("--> statement-breakpoint", "");
+      await client.executeMultiple(terminalMigration);
       await client.executeMultiple(terminalMigration);
 
       const legacyGuard = await client.execute(
@@ -83,6 +92,11 @@ describe("provider run budget migration", () => {
           reconciliation_reference: "migration:legacy-terminal-spend-window",
         }),
       ]);
+      const guardCount = await client.execute(
+        "SELECT COUNT(*) AS count FROM ai_provider_run_reservations WHERE id = ?",
+        ["legacy-terminal-spend-guard"],
+      );
+      expect(guardCount.rows).toEqual([{ count: 1 }]);
 
       const foreignKeys = await client.execute(
         "PRAGMA foreign_key_list('ai_provider_run_reservations')",

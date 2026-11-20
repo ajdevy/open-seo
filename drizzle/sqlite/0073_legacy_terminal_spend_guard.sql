@@ -36,5 +36,10 @@ WHERE legacy_run.status IN ('completed', 'partial', 'failed')
 		FROM ai_provider_run_reservations
 		WHERE ai_provider_run_reservations.run_id = legacy_run.id
 	)
+	AND NOT EXISTS (
+		SELECT 1
+		FROM ai_provider_run_reservations
+		WHERE ai_provider_run_reservations.id = 'legacy-terminal-spend-guard'
+	)
 ORDER BY COALESCE(legacy_run.completed_at, legacy_run.created_at) DESC
 LIMIT 1;
