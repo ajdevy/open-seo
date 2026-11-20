@@ -60,11 +60,15 @@ async function dueTracker(
     scheduleMinute?: number | null;
     scheduleTimeZone?: string | null;
     engine?: "chatgpt" | "claude";
+    engines?: ("chatgpt" | "gemini" | "google_ai_overview")[];
   } = {},
 ) {
-  const { engine = "chatgpt", ...trackerSchedule } = schedule;
+  const { engine = "chatgpt", engines, ...trackerSchedule } = schedule;
   const rows = configuration(
-    { engines: [engine], prompts: [{ text: "Which SEO tools?" }] },
+    {
+      engines: engines ?? [engine],
+      prompts: [{ text: "Which SEO tools?" }],
+    },
     projectId,
   );
   await repo.saveConfiguration(rows);
@@ -133,10 +137,12 @@ it("records a skipped check for credits on the tracker without starting it", asy
   expect(await repo.listRuns("project")).toEqual([]);
 });
 
-it("skips a scheduled run when its shared rolling provider budget is exhausted", async () => {
+it("skips a scheduled run when its project rolling provider budget is exhausted", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
-  await dueTracker("project", false, { engine: "claude" });
+  await dueTracker("project", false, {
+    engines: ["chatgpt", "gemini", "google_ai_overview"],
+  });
   const tracker = await repo.getTracker("project");
   if (!tracker) throw new Error("Tracker fixture was not saved.");
   await repo.updateTracker(tracker.id, { weeklyProviderBudgetCents: 1 });
