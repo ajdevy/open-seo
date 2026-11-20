@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   late: vi.fn(),
   settle: vi.fn(),
   settleProviderBudget: vi.fn(),
+  hasProviderReservation: vi.fn(),
   markProviderBudgetUnknown: vi.fn(),
   releaseProviderBudget: vi.fn(),
   finalize: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock("@/server/features/ai-visibility/services/aiVisibilityBilling", () => ({
 vi.mock(
   "@/server/features/ai-visibility/repositories/AiProviderRunBudgetRepository",
   () => ({
+    hasReservedAiProviderRunBudget: mocks.hasProviderReservation,
     markAiProviderRunBudgetUnknown: mocks.markProviderBudgetUnknown,
     releaseAiProviderRunBudget: mocks.releaseProviderBudget,
     settleAiProviderRunBudget: mocks.settleProviderBudget,
@@ -103,6 +105,7 @@ function execute(
   );
 }
 beforeEach(() => {
+  mocks.hasProviderReservation.mockResolvedValue(true);
   mocks.prepare.mockResolvedValue({
     market: { locationCode: 2840, languageCode: "en" },
     modelBatches: [],

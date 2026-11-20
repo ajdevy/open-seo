@@ -352,6 +352,19 @@ export async function reserveAiProviderRunBudget(input: {
   return { admitted: false, reason: "run_in_progress", ...common };
 }
 
+/**
+ * Fail closed when a persisted workflow resumes without an active budget hold.
+ * Legacy workflows may outlive the deployment that created them.
+ */
+export async function hasReservedAiProviderRunBudget(runId: string) {
+  const reservation = await db
+    .select({ status: aiProviderRunReservations.status })
+    .from(aiProviderRunReservations)
+    .where(eq(aiProviderRunReservations.runId, runId))
+    .limit(1);
+  return reservation[0]?.status === "reserved";
+}
+
 /** A confirmed workflow completion settles at the provider-reported charge. */
 export async function settleAiProviderRunBudget(
   runId: string,

@@ -27,6 +27,7 @@ import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { AI_TRACKING_HOLD_TTL_MS } from "@/server/lib/dataforseo";
 import { describeError } from "@/server/lib/errors";
 import {
+  hasReservedAiProviderRunBudget,
   markAiProviderRunBudgetUnknown,
   releaseAiProviderRunBudget,
   settleAiProviderRunBudget,
@@ -102,6 +103,21 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
         "AI research setup is paused because it has no provider-budget reservation; no provider request was started.",
       );
     const { runId, customer } = payload;
+    const assertProviderBudgetReservation = async (stepName: string) => {
+      // This must be a distinct workflow step before the paid step. Its new
+      // name forces persisted workflows from older deployments to execute the
+      // reservation check even when their paid step result is already cached.
+      const isReserved = await pgStep(
+        step,
+        `provider-budget-${stepName}`,
+        FREE_STEP,
+        () => hasReservedAiProviderRunBudget(runId),
+      );
+      if (!isReserved)
+        throw new NonRetryableError(
+          "The provider budget reservation is missing or unresolved; no provider request was started.",
+        );
+    };
     let pending: AiPendingTask[] = [];
     let providerCallMayHaveStarted = false;
     let providerCostUsd = 0;
@@ -188,6 +204,7 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       pending = round.pending;
       for (const [index, batch] of round.retry.entries()) {
         try {
+          await assertProviderBudgetReservation(`repost-${name}-${index}`);
           providerCallMayHaveStarted = true;
           queue(
             await pgStep(step, `repost-${name}-${index}`, SINGLE_ATTEMPT, () =>
@@ -219,6 +236,7 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       // pending to poll.
       for (const [index, tasks] of plan.batches.entries())
         try {
+          await assertProviderBudgetReservation(`live-${index}`);
           providerCallMayHaveStarted = true;
           const outcome = await pgStep(step, `live-${index}`, LIVE_STEP, () =>
             collectAiLiveBatch(runId, customer, plan.market, tasks),
@@ -239,6 +257,7 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     else
       for (const [index, batch] of plan.batches.entries())
         try {
+          await assertProviderBudgetReservation(`post-${index}`);
           providerCallMayHaveStarted = true;
           queue(
             await pgStep(step, `post-${index}`, SINGLE_ATTEMPT, () =>
@@ -255,12 +274,15 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     // Legacy workflow instances may still replay model API steps; their
     // provider cost is unknown, so they remain held for reconciliation.
     for (const [index, batch] of plan.modelBatches.entries()) {
+      // This path never supplies a provider price, even when the new guard
+      // rejects the old step before reaching the provider.
+      providerCostKnown = false;
       try {
+        await assertProviderBudgetReservation(`model-${index}`);
         providerCallMayHaveStarted = true;
         // New model API dispatches are blocked before this step. An older
         // persisted workflow plan can still replay it, so never settle its
         // budget from an estimate or a missing legacy step result.
-        providerCostKnown = false;
         await pgStep(step, `model-${index}`, LIVE_STEP, () =>
           collectAiModelBatch(runId, customer, plan.market, batch),
         );
