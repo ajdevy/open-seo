@@ -183,4 +183,40 @@ describe("provider run budget recovery", () => {
       "Provider budget queue limit is invalid.",
     );
   });
+
+  it("quarantines a reserved hold after its run is deleted and lists it for reconciliation", async () => {
+    await createRun("deleted-run-with-provider-hold");
+    await reserve("deleted-run-with-provider-hold", 3_000_000);
+    await testDb.db
+      .delete(aiRuns)
+      .where(eq(aiRuns.id, "deleted-run-with-provider-hold"));
+
+    await expect(listUnknownAiProviderRunBudgets()).resolves.toEqual([
+      {
+        runId: "deleted-run-with-provider-hold",
+        projectId,
+        reservedUsdMicros: 3_000_000,
+        createdAt: now.toISOString(),
+      },
+    ]);
+    await expect(
+      testDb.db
+        .select({ status: aiProviderRunReservations.status })
+        .from(aiProviderRunReservations)
+        .where(
+          eq(aiProviderRunReservations.runId, "deleted-run-with-provider-hold"),
+        ),
+    ).resolves.toEqual([{ status: "unknown" }]);
+    await expect(
+      getAiProviderBudgetUsage(projectId, now.getTime()),
+    ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 3_000_000 });
+    await expect(
+      reconcileAiProviderRunBudget({
+        runId: "deleted-run-with-provider-hold",
+        outcome: "released",
+        evidenceReference: "operator:verified-no-dispatch",
+        reconciledAt: now.toISOString(),
+      }),
+    ).resolves.toEqual({ reconciled: true, status: "released" });
+  });
 });

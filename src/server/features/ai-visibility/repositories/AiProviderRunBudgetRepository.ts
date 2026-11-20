@@ -208,6 +208,17 @@ export async function reserveAiProviderRunBudget(input: {
         remainingUsdMicros: 0,
       };
 
+    // If the row appeared after pre-read under another ID, another caller owns
+    // the hold; neither admit this dispatch nor release that reservation.
+    if (!sameRun[0] && currentRun[0].id !== input.id)
+      return {
+        admitted: false,
+        reason: "run_in_progress",
+        heldUsdMicros: currentRun[0].reservedUsdMicros,
+        usedUsdMicros: currentRun[0].reservedUsdMicros,
+        remainingUsdMicros: 0,
+      };
+
     const [globalUsage, projectUsage, savedBudgetRows] = await Promise.all([
       getAiProviderGlobalBudgetUsage(now),
       getAiProviderBudgetUsage(input.projectId, now),
@@ -247,7 +258,8 @@ export async function reserveAiProviderRunBudget(input: {
     ) {
       if (sameRun[0]) {
         // This is an idempotent retry of an existing hold. Its provider
-        // request may already have started, so do not release it.
+        // request may already have started, so do not release it. The same
+        // applies to any row not inserted by this call.
         return {
           admitted: false,
           reason:

@@ -121,11 +121,22 @@ export async function postAiTrackingTasks(
     throw failedResponseError(response, "DataForSEO task_post failed");
   }
   // Cost is summed over every entry, accepted or not, so anything DataForSEO
-  // charged is metered.
+  // charged is metered. Cost is marked known only when the raw response maps
+  // one-to-one to every submitted task; filtering rejected entries below must
+  // not hide duplicate, extra, or missing provider entries from the caller.
   const posted: PostedAiTrackingTask[] = [];
   let costUsd = 0;
-  let costKnown = (response.tasks?.length ?? 0) > 0;
-  for (const entry of response.tasks ?? []) {
+  const rawEntries = response.tasks ?? [];
+  const submittedTags = new Set(input.tasks.map((task) => task.tag));
+  const rawTags = rawEntries.map((entry) => entry.data?.tag);
+  let costKnown =
+    submittedTags.size === input.tasks.length &&
+    rawEntries.length === input.tasks.length &&
+    new Set(rawTags).size === rawTags.length &&
+    rawTags.every(
+      (tag): tag is string => typeof tag === "string" && submittedTags.has(tag),
+    );
+  for (const entry of rawEntries) {
     if (
       typeof entry.cost === "number" &&
       Number.isFinite(entry.cost) &&

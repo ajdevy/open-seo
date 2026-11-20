@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, notExists } from "drizzle-orm";
 import { db } from "@/db";
-import { aiProviderRunReservations } from "@/db/schema";
+import { aiProviderRunReservations, aiRuns } from "@/db/schema";
 
 /** A provider outcome is ambiguous; retain its full hold past the window. */
 export async function markAiProviderRunBudgetUnknown(runId: string) {
@@ -165,6 +165,23 @@ export async function reconcileAiProviderRunBudget(
 export async function listUnknownAiProviderRunBudgets(limit = 100) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
     throw new Error("Provider budget queue limit is invalid.");
+  // Run deletion no longer cascades into the reservation ledger. Quarantine
+  // orphaned active holds so the recovery queue can surface them for evidence-
+  // based reconciliation instead of counting them invisibly forever.
+  await db
+    .update(aiProviderRunReservations)
+    .set({ status: "unknown" })
+    .where(
+      and(
+        eq(aiProviderRunReservations.status, "reserved"),
+        notExists(
+          db
+            .select({ id: aiRuns.id })
+            .from(aiRuns)
+            .where(eq(aiRuns.id, aiProviderRunReservations.runId)),
+        ),
+      ),
+    );
   return db
     .select({
       runId: aiProviderRunReservations.runId,
