@@ -314,7 +314,7 @@ export function GoogleDriveArchiveSettings() {
           {status.connected ? (
             <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
               <HardDrive className="size-4" />
-              {status.accountEmail}
+              {status.accountEmail ?? "Google Drive account"}
               {status.folder
                 ? " · " + status.folder.name
                 : " · No folder selected"}

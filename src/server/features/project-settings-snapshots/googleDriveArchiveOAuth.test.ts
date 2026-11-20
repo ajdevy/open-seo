@@ -138,14 +138,14 @@ it("stores OAuth tokens encrypted and only returns a no-store Picker token", asy
         access_token: "synthetic-google-access-token",
         refresh_token: "synthetic-google-refresh-token",
         expires_in: 3600,
-        scope: ["openid", "email", DRIVE_SCOPE].join(" "),
-        id_token: "synthetic-id-token",
+        scope: DRIVE_SCOPE,
       });
-    if (url === "https://openidconnect.googleapis.com/v1/userinfo")
+    if (url.startsWith("https://www.googleapis.com/drive/v3/about?"))
       return Response.json({
-        sub: state.accountId,
-        email: "acceptance@example.invalid",
-        email_verified: true,
+        user: {
+          permissionId: state.accountId,
+          me: true,
+        },
       });
     if (url.startsWith("https://www.googleapis.com/drive/v3/files/folder-")) {
       const folderId = new URL(url).pathname.split("/").at(-1);
@@ -193,7 +193,7 @@ it("stores OAuth tokens encrypted and only returns a no-store Picker token", asy
   expect(connection).toMatchObject({
     organizationId: "organization",
     googleAccountId: state.accountId,
-    accountEmail: "acceptance@example.invalid",
+    accountEmail: null,
     folderId: null,
     status: "connected",
   });
@@ -351,6 +351,60 @@ it("stores OAuth tokens encrypted and only returns a no-store Picker token", asy
     googleAccountId: "google-account-1",
     folderId: "folder-valid-123",
   });
+});
+
+it("rejects OAuth tokens that include scopes beyond drive.file", async () => {
+  const startResponse = requireResponse(
+    await handleGoogleDriveArchiveRequest(
+      new Request(ORIGIN + "/api/google-drive/archive/oauth/start", {
+        method: "POST",
+        headers: sameOriginHeaders(),
+      }),
+    ),
+  );
+  const startBody = await jsonBody(
+    startResponse,
+    z.object({
+      authorizationUrl: z.string().url(),
+      browserBinding: z.string(),
+    }),
+  );
+  const stateToken = new URL(startBody.authorizationUrl).searchParams.get(
+    "state",
+  );
+  const fetcher = vi.fn(async () =>
+    Response.json({
+      access_token: "synthetic-google-access-token",
+      refresh_token: "synthetic-google-refresh-token",
+      expires_in: 3600,
+      scope: `${DRIVE_SCOPE} email`,
+    }),
+  );
+  vi.stubGlobal("fetch", fetcher);
+
+  const response = requireResponse(
+    await handleGoogleDriveArchiveRequest(
+      new Request(ORIGIN + "/api/google-drive/archive/oauth/complete", {
+        method: "POST",
+        headers: sameOriginHeaders(),
+        body: JSON.stringify({
+          state: stateToken,
+          browserBinding: startBody.browserBinding,
+          code: "synthetic-code",
+          authorizationDenied: false,
+        }),
+      }),
+    ),
+  );
+
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({ error: "google_scope_invalid" });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(
+    await db
+      .select({ id: googleDriveArchiveConnections.id })
+      .from(googleDriveArchiveConnections),
+  ).toHaveLength(0);
 });
 
 it("clears callback query parameters before rejecting an expired state", async () => {

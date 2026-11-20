@@ -1,0 +1,1 @@
+ALTER TABLE "google_drive_archive_connections" ALTER COLUMN "account_email" DROP NOT NULL;

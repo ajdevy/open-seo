@@ -24,7 +24,7 @@ export async function saveConnection(input: {
   state: GoogleDriveArchiveOAuthState;
   tokens: z.infer<typeof tokenResponseSchema>;
   googleAccountId: string;
-  accountEmail: string;
+  accountEmail: string | null;
 }) {
   const cipher = await tokenCipher(input.config);
   const [existing] = await db
