@@ -120,10 +120,12 @@ beforeEach(() => {
     hold,
     providerCostUsd: 0.02,
     providerCostKnown: true,
+    providerCallMayHaveStarted: true,
   });
   mocks.live.mockResolvedValue({
     providerCostUsd: 0.03,
     providerCostKnown: true,
+    providerCallMayHaveStarted: true,
   });
   mocks.collect.mockResolvedValue({ pending: [], retry: [] });
   mocks.late.mockResolvedValue([]);

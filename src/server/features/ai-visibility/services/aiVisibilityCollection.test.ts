@@ -346,6 +346,7 @@ describe("AI answer collection", () => {
     expect(outcome).toEqual({
       providerCostUsd: 0.004,
       providerCostKnown: false,
+      providerCallMayHaveStarted: true,
     });
   });
 
@@ -365,6 +366,7 @@ describe("AI answer collection", () => {
     expect(result).toMatchObject({
       providerCostUsd: 0,
       providerCostKnown: false,
+      providerCallMayHaveStarted: true,
     });
   });
 

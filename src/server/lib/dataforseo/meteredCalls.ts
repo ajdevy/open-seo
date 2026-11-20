@@ -8,9 +8,11 @@ import {
   reserveUsageCredits,
   settleUsageCredits,
   type BillingCustomerContext,
+  type UsageCreditHold,
 } from "@/server/billing/subscription";
 import {
   DataforseoChargedTaskError,
+  DataforseoDispatchNotStartedError,
   type DataforseoApiCallCost,
   type DataforseoApiResponse,
 } from "@/server/lib/dataforseo/envelope";
@@ -66,13 +68,23 @@ export async function meterDataforseoCalls<T>(
     );
   }
 
-  const billingCustomer = await getOrCreateOrganizationCustomer(customer);
-  const { holds, refusedCalls } = await reserveUsageCredits({
-    customer,
-    customerId: billingCustomer.id,
-    callCredits,
-    creditFeature,
-  });
+  let billingCustomer: Awaited<
+    ReturnType<typeof getOrCreateOrganizationCustomer>
+  >;
+  let holds: UsageCreditHold[];
+  let refusedCalls: number[];
+  try {
+    billingCustomer = await getOrCreateOrganizationCustomer(customer);
+    ({ holds, refusedCalls } = await reserveUsageCredits({
+      customer,
+      customerId: billingCustomer.id,
+      callCredits,
+      creditFeature,
+    }));
+  } catch (error) {
+    // Both operations are completed before any provider executor is started.
+    throw new DataforseoDispatchNotStartedError(error);
+  }
 
   const work = (async () => {
     const billed: Array<DataforseoApiCallCost | null> = executes.map(
@@ -81,7 +93,9 @@ export async function meterDataforseoCalls<T>(
     const settled = await Promise.allSettled(
       executes.map(async (execute, index) => {
         if (refusedCalls.includes(index)) {
-          throw new AppError("INSUFFICIENT_CREDITS");
+          throw new DataforseoDispatchNotStartedError(
+            new AppError("INSUFFICIENT_CREDITS"),
+          );
         }
         try {
           const result = await execute();

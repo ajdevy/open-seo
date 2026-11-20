@@ -139,7 +139,10 @@ import {
   mapDataforseoPathToCreditFeature,
 } from "@/server/lib/dataforseo/client";
 import { dataforseoPricing } from "@/server/lib/dataforseo/pricing";
-import { DataforseoChargedTaskError } from "@/server/lib/dataforseo/envelope";
+import {
+  DataforseoChargedTaskError,
+  DataforseoDispatchNotStartedError,
+} from "@/server/lib/dataforseo/envelope";
 import { AppError } from "@/server/lib/errors";
 import { fetchBacklinksSummary } from "@/server/lib/dataforseo/backlinks";
 import { fetchRankCheckSerp } from "@/server/lib/dataforseo/serp";
@@ -344,6 +347,18 @@ describe("AI visibility queued posts", () => {
     );
   });
 
+  it("marks a refused credit hold as not dispatched", async () => {
+    setupHostedMode();
+    mockMonthlyBalance(0);
+
+    const client = createDataforseoClient(billingCustomer);
+    await expect(
+      client.aiSearch.trackingTaskPost(input),
+    ).rejects.toBeInstanceOf(DataforseoDispatchNotStartedError);
+
+    expect(postAiTrackingTasks).not.toHaveBeenCalled();
+  });
+
   it("releases the hold when the post fails", async () => {
     setupHostedMode();
     mockMonthlyBalance(5000);
@@ -361,6 +376,24 @@ describe("AI visibility queued posts", () => {
 });
 
 describe("AI visibility live provider cost", () => {
+  it("marks a refused live credit hold as not dispatched", async () => {
+    setupHostedMode();
+    mockMonthlyBalance(0);
+
+    const client = createDataforseoClient(billingCustomer);
+    await expect(
+      client.aiSearch.trackingLiveBatchWithCosts([
+        {
+          engine: "chatgpt",
+          locationCode: 2840,
+          languageCode: "en",
+          task: { tag: "answer-a", prompt: "Which SEO tools?" },
+        },
+      ]),
+    ).rejects.toBeInstanceOf(DataforseoDispatchNotStartedError);
+    expect(fetchAiTrackingLiveAnswer).not.toHaveBeenCalled();
+  });
+
   it("preserves unknown cost metadata through the metered client", async () => {
     isHostedServerAuthModeMock.mockResolvedValue(false);
     vi.mocked(fetchAiTrackingLiveAnswer).mockResolvedValue({

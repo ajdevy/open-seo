@@ -9,6 +9,8 @@ import {
   postAiTrackingTasks,
   type PostedAiTrackingTask,
 } from "@/server/lib/dataforseo/ai-tracking";
+import { DataforseoDispatchNotStartedError } from "@/server/lib/dataforseo/envelope";
+import { AppError } from "@/server/lib/errors";
 import { dataforseoPricing } from "@/server/lib/dataforseo/pricing";
 import { isHostedServerAuthMode } from "@/server/lib/runtime-env";
 import { creditsForProviderUsd } from "@/shared/billing";
@@ -49,19 +51,31 @@ export async function postAiTrackingTasksOnHold(
       providerCostKnown: response.billing.costKnown !== false,
     };
   }
-  const billingCustomer = await getOrCreateOrganizationCustomer(customer);
-  // One call gets one hold, or INSUFFICIENT_CREDITS.
-  const {
-    holds: [hold],
-  } = await reserveUsageCredits({
-    customer,
-    customerId: billingCustomer.id,
-    callCredits: [
-      creditsForProviderUsd(dataforseoPricing.aiSearch.trackingTaskPost(input)),
-    ],
-    creditFeature: "ai_prompt_responses",
-    ttlMs: AI_TRACKING_HOLD_TTL_MS,
-  });
+  let hold: UsageCreditHold | undefined;
+  try {
+    const billingCustomer = await getOrCreateOrganizationCustomer(customer);
+    // One call gets one hold, or INSUFFICIENT_CREDITS.
+    ({
+      holds: [hold],
+    } = await reserveUsageCredits({
+      customer,
+      customerId: billingCustomer.id,
+      callCredits: [
+        creditsForProviderUsd(
+          dataforseoPricing.aiSearch.trackingTaskPost(input),
+        ),
+      ],
+      creditFeature: "ai_prompt_responses",
+      ttlMs: AI_TRACKING_HOLD_TTL_MS,
+    }));
+  } catch (error) {
+    // Billing admission and its hold finish before task_post reaches the API.
+    throw new DataforseoDispatchNotStartedError(error);
+  }
+  if (!hold)
+    throw new DataforseoDispatchNotStartedError(
+      new AppError("INSUFFICIENT_CREDITS"),
+    );
   try {
     const response = await postAiTrackingTasks(input);
     return {

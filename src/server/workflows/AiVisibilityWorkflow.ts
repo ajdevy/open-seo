@@ -122,6 +122,26 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     let providerCallMayHaveStarted = false;
     let providerCostUsd = 0;
     let providerCostKnown = true;
+    const runProviderStep = async <T>(run: () => Promise<T>) => {
+      const previousPossibleDispatch = providerCallMayHaveStarted;
+      // A failed Workflow step may have reached the provider before its result
+      // was lost, so only a returned explicit false can clear this attempt.
+      providerCallMayHaveStarted = true;
+      try {
+        const result = await run();
+        const explicitlyNotDispatched =
+          typeof result === "object" &&
+          result !== null &&
+          "providerCallMayHaveStarted" in result &&
+          result.providerCallMayHaveStarted === false;
+        providerCallMayHaveStarted =
+          previousPossibleDispatch || !explicitlyNotDispatched;
+        return result;
+      } catch (error) {
+        providerCallMayHaveStarted = true;
+        throw error;
+      }
+    };
     // Each posted batch holds credits until settle charges the answers that
     // arrived, once late reads end or the run fails.
     const holds: AiPostedHold[] = [];
@@ -205,15 +225,16 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       for (const [index, batch] of round.retry.entries()) {
         try {
           await assertProviderBudgetReservation(`repost-${name}-${index}`);
-          providerCallMayHaveStarted = true;
           queue(
-            await pgStep(step, `repost-${name}-${index}`, SINGLE_ATTEMPT, () =>
-              postAiBatch(runId, customer, plan.market, batch),
+            await runProviderStep(() =>
+              pgStep(step, `repost-${name}-${index}`, SINGLE_ATTEMPT, () =>
+                postAiBatch(runId, customer, plan.market, batch),
+              ),
             ),
           );
         } catch (error) {
           // Its answers fail at finalize.
-          // The request may have reached the provider before the step failed.
+          // A missing or unresolved run reservation may reflect older spend.
           providerCostKnown = false;
           console.warn(
             `[ai-visibility] ${runId} repost-${name}: ${describeError(error)}`,
@@ -231,15 +252,16 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     // A batch whose step fails, on the engine's own error or a timeout, leaves
     // its answers pending for finalize to fail. The other batches still run,
     // so the run keeps every answer it got.
-    if (plan.live)
+    if (plan.live) {
       // Live runs save each live batch as it returns, so nothing is left
       // pending to poll.
-      for (const [index, tasks] of plan.batches.entries())
+      for (const [index, tasks] of plan.batches.entries()) {
         try {
           await assertProviderBudgetReservation(`live-${index}`);
-          providerCallMayHaveStarted = true;
-          const outcome = await pgStep(step, `live-${index}`, LIVE_STEP, () =>
-            collectAiLiveBatch(runId, customer, plan.market, tasks),
+          const outcome = await runProviderStep(() =>
+            pgStep(step, `live-${index}`, LIVE_STEP, () =>
+              collectAiLiveBatch(runId, customer, plan.market, tasks),
+            ),
           );
           if (
             outcome?.providerCostKnown &&
@@ -254,23 +276,27 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
             `[ai-visibility] ${runId} live-${index}: ${describeError(error)}`,
           );
         }
-    else
-      for (const [index, batch] of plan.batches.entries())
+      }
+    } else {
+      for (const [index, batch] of plan.batches.entries()) {
         try {
           await assertProviderBudgetReservation(`post-${index}`);
-          providerCallMayHaveStarted = true;
           queue(
-            await pgStep(step, `post-${index}`, SINGLE_ATTEMPT, () =>
-              postAiBatch(runId, customer, plan.market, batch),
+            await runProviderStep(() =>
+              pgStep(step, `post-${index}`, SINGLE_ATTEMPT, () =>
+                postAiBatch(runId, customer, plan.market, batch),
+              ),
             ),
           );
         } catch (error) {
-          // The request may have reached the provider before the step failed.
+          // A missing or unresolved run reservation may reflect older spend.
           providerCostKnown = false;
           console.warn(
             `[ai-visibility] ${runId} post-${index}: ${describeError(error)}`,
           );
         }
+      }
+    }
     // Legacy workflow instances may still replay model API steps; their
     // provider cost is unknown, so they remain held for reconciliation.
     for (const [index, batch] of plan.modelBatches.entries()) {

@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   finalize: vi.fn(),
   markFailed: vi.fn(),
   steps: vi.fn(),
+  replayProviderSteps: vi.fn(),
 }));
 
 vi.mock("cloudflare:workers", () => ({ WorkflowEntrypoint: vi.fn() }));
@@ -69,7 +70,7 @@ vi.mock("./pgStep", () => ({
     mocks.steps(name);
     // Model Cloudflare replaying old paid-step results without invoking the
     // callback. The new reservation step must still run before that replay.
-    if (name === "post-0" || name === "live-0")
+    if (mocks.replayProviderSteps() && (name === "post-0" || name === "live-0"))
       return Promise.resolve({ cached: true });
     return fn();
   },
@@ -103,7 +104,18 @@ function execute() {
 describe("AI visibility workflow dispatch guard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.replayProviderSteps.mockReturnValue(false);
     mocks.hasReservation.mockResolvedValue(false);
+    mocks.prepare.mockResolvedValue({
+      market: { locationCode: 2840, languageCode: "en" },
+      modelBatches: [],
+      live: false,
+      batches: [{ engine: "chatgpt", tasks: [task] }],
+    });
+  });
+
+  it("blocks replayed queued, live, and model provider steps without a reservation", async () => {
+    mocks.replayProviderSteps.mockReturnValue(true);
     mocks.prepare
       .mockResolvedValueOnce({
         market: { locationCode: 2840, languageCode: "en" },
@@ -117,9 +129,6 @@ describe("AI visibility workflow dispatch guard", () => {
         live: true,
         batches: [[task]],
       });
-  });
-
-  it("blocks replayed queued, live, and model provider steps without a reservation", async () => {
     await execute();
     await execute();
 
@@ -134,5 +143,32 @@ describe("AI visibility workflow dispatch guard", () => {
     expect(mocks.live).not.toHaveBeenCalled();
     expect(mocks.model).not.toHaveBeenCalled();
     expect(mocks.settleBudget).not.toHaveBeenCalled();
+  });
+
+  it("settles zero when the provider call is proven not to have started", async () => {
+    mocks.hasReservation.mockResolvedValue(true);
+    mocks.prepare.mockResolvedValue({
+      market: { locationCode: 2840, languageCode: "en" },
+      modelBatches: [],
+      live: false,
+      batches: [{ engine: "chatgpt", tasks: [task] }],
+    });
+    mocks.post.mockResolvedValue({
+      pending: [],
+      hold: null,
+      providerCostUsd: 0,
+      providerCostKnown: true,
+      providerCallMayHaveStarted: false,
+    });
+
+    await execute();
+
+    expect(mocks.settleBudget).toHaveBeenCalledExactlyOnceWith(
+      "legacy-run",
+      0,
+      expect.any(String),
+    );
+    expect(mocks.markUnknown).not.toHaveBeenCalled();
+    expect(mocks.release).not.toHaveBeenCalled();
   });
 });

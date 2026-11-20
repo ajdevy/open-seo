@@ -1,5 +1,8 @@
 import type { BillingCustomerContext } from "@/server/billing/subscription";
-import { DataforseoChargedTaskError } from "@/server/lib/dataforseo/envelope";
+import {
+  DataforseoChargedTaskError,
+  DataforseoDispatchNotStartedError,
+} from "@/server/lib/dataforseo/envelope";
 import {
   createDataforseoClient,
   type AiTrackingAnswer,
@@ -10,6 +13,8 @@ import type { AiEngine } from "@/shared/ai-visibility";
 export interface AiProviderCostOutcome {
   providerCostUsd: number;
   providerCostKnown: boolean;
+  /** False only when every provider request in the step is proven undispatched. */
+  providerCallMayHaveStarted: boolean;
 }
 
 export interface AiLiveAnswerWithProviderCost extends AiProviderCostOutcome {
@@ -54,26 +59,30 @@ export async function fetchAiLiveAnswersWithCosts(
           outcome.value.providerCostKnown &&
           Number.isFinite(providerCostUsd) &&
           providerCostUsd >= 0,
+        providerCallMayHaveStarted: true,
       };
     }
+    const reason: unknown = outcome.reason;
+    const notDispatched = reason instanceof DataforseoDispatchNotStartedError;
+    const error = notDispatched ? reason.originalError : reason;
     const chargedError =
-      outcome.reason instanceof DataforseoChargedTaskError
-        ? outcome.reason
-        : null;
+      error instanceof DataforseoChargedTaskError ? error : null;
     const providerCostUsd = chargedError?.billing.costUsd ?? 0;
     return {
       answer: {
         status: "failed",
-        message: errorMessage(outcome.reason),
-        code: asAppError(outcome.reason)?.code ?? "INTERNAL_ERROR",
+        message: errorMessage(error),
+        code: asAppError(error)?.code ?? "INTERNAL_ERROR",
         retryable: false,
       },
       providerCostUsd,
       providerCostKnown:
-        chargedError !== null &&
-        chargedError.billing.costKnown !== false &&
-        Number.isFinite(providerCostUsd) &&
-        providerCostUsd >= 0,
+        notDispatched ||
+        (chargedError !== null &&
+          chargedError.billing.costKnown !== false &&
+          Number.isFinite(providerCostUsd) &&
+          providerCostUsd >= 0),
+      providerCallMayHaveStarted: !notDispatched,
     };
   });
 }

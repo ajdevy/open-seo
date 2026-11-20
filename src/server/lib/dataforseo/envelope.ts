@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AppError } from "@/server/lib/errors";
+import { AppError, asAppError } from "@/server/lib/errors";
 import type { DataforseoErrorClassifier } from "@/server/lib/dataforseo/core";
 import type { ErrorCode } from "@/shared/error-codes";
 
@@ -49,6 +49,23 @@ export class DataforseoChargedTaskError extends AppError {
   ) {
     super(code, message);
     this.name = "DataforseoChargedTaskError";
+  }
+}
+
+/** A billing/admission failure that happened before DataForSEO was called. */
+export class DataforseoDispatchNotStartedError extends AppError {
+  readonly originalError: unknown;
+
+  constructor(error: unknown) {
+    const appError = asAppError(error);
+    super(
+      appError?.code ?? "INTERNAL_ERROR",
+      appError?.message ??
+        (error instanceof Error ? error.message : String(error)),
+      appError?.details,
+    );
+    this.name = "DataforseoDispatchNotStartedError";
+    this.originalError = error;
   }
 }
 

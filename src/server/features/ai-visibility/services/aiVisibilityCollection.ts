@@ -1,15 +1,12 @@
 import { NonRetryableError } from "cloudflare:workflows";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import {
-  createDataforseoClient,
   fetchAiTrackingTaskResult,
   MAX_TASKS_PER_POST,
   type AiTrackingAnswer,
   type PostedAiTrackingTask,
 } from "@/server/lib/dataforseo";
-import { DataforseoChargedTaskError } from "@/server/lib/dataforseo/envelope";
-import { AppError, asAppError } from "@/server/lib/errors";
-import type { ErrorCode } from "@/shared/error-codes";
+import { AppError } from "@/server/lib/errors";
 import {
   AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER,
   aiEngineUsesModelApi,
@@ -21,7 +18,6 @@ import {
   parseDataforseoAnswer,
   type ParsedAiAnswer,
 } from "../providers/dataforseoEvidence";
-import type { AiPostedHold } from "./aiVisibilityBilling";
 import {
   fetchAiLiveAnswersWithCosts,
   type AiProviderCostOutcome,
@@ -45,7 +41,7 @@ interface AiTask {
   /** Attempts already made, when a queued answer is posted again. */
   attempts?: number;
 }
-interface AiTaskBatch {
+export interface AiTaskBatch {
   engine: AiEngine;
   /** At most 100 per task_post, 6 per model batch. */
   tasks: AiTask[];
@@ -54,7 +50,7 @@ interface AiTaskBatch {
 type AiLiveTask = AiTask & { engine: AiEngine };
 export type AiPendingTask = PostedAiTrackingTask &
   AiLiveTask & { attempts: number };
-interface AiRunMarket {
+export interface AiRunMarket {
   locationCode: number;
   languageCode: string;
 }
@@ -75,6 +71,8 @@ const AI_RETRY_DELAY_MS = 3_000;
 
 const waitBeforeRetry = () =>
   new Promise((resolve) => setTimeout(resolve, AI_RETRY_DELAY_MS));
+
+export { postAiBatch } from "./aiVisibilityPostBatch";
 
 /**
  * Marks the run running and groups its answers into batches. Manual and
@@ -191,69 +189,6 @@ function engineBatches(answers: AiLiveTask[], size: number): AiTaskBatch[] {
 }
 
 /**
- * Posts one batch through the metered client, which holds credits for it
- * until settleAiRun charges the answers that arrived. Answers the provider
- * did not accept fail now; the rest are collected later.
- */
-export async function postAiBatch(
-  runId: string,
-  customer: BillingCustomerContext,
-  market: AiRunMarket,
-  batch: AiTaskBatch,
-): Promise<
-  {
-    pending: AiPendingTask[];
-    hold: AiPostedHold | null;
-  } & AiProviderCostOutcome
-> {
-  let posted: PostedAiTrackingTask[] = [];
-  let hold: AiPostedHold | null = null;
-  let providerCostUsd = 0;
-  let providerCostKnown = false;
-  // A rejected entry is logged where it is parsed.
-  let error: ErrorCode = "INTERNAL_ERROR";
-  try {
-    const result = await createDataforseoClient(
-      customer,
-    ).aiSearch.trackingTaskPost({
-      engine: batch.engine,
-      tasks: batch.tasks,
-      ...market,
-    });
-    posted = result.tasks;
-    if (result.hold) hold = { ...result.hold, tasks: posted };
-    providerCostUsd = result.providerCostUsd;
-    providerCostKnown =
-      result.providerCostKnown &&
-      Number.isFinite(providerCostUsd) &&
-      providerCostUsd >= 0;
-  } catch (cause) {
-    error = asAppError(cause)?.code ?? "INTERNAL_ERROR";
-    if (cause instanceof DataforseoChargedTaskError) {
-      providerCostUsd = cause.billing.costUsd;
-      providerCostKnown =
-        cause.billing.costKnown !== false &&
-        Number.isFinite(providerCostUsd) &&
-        providerCostUsd >= 0;
-    }
-    console.warn(`[ai-visibility] ${runId} task_post failed:`, cause);
-  }
-  const postedByTag = new Map(posted.map((task) => [task.tag, task]));
-  const rejected = batch.tasks
-    .map((task) => task.tag)
-    .filter((tag) => !postedByTag.has(tag));
-  if (rejected.length)
-    await repo.failPendingObservations(runId, error, rejected);
-  const pending = batch.tasks.flatMap((task) => {
-    const postedTask = postedByTag.get(task.tag);
-    if (!postedTask) return [];
-    const attempts = (task.attempts ?? 0) + 1;
-    return [{ ...task, ...postedTask, engine: batch.engine, attempts }];
-  });
-  return { pending, hold, providerCostUsd, providerCostKnown };
-}
-
-/**
  * Collects one batch of live answers through the metered client, which bills
  * them, and saves each one. An answer that DataForSEO's backend failed is
  * asked again, up to AI_ANSWER_ATTEMPTS.
@@ -265,10 +200,16 @@ export async function collectAiLiveBatch(
   tasks: AiLiveTask[],
 ): Promise<AiProviderCostOutcome> {
   const brands = await runBrands(runId);
-  if (!brands) return { providerCostUsd: 0, providerCostKnown: true };
+  if (!brands)
+    return {
+      providerCostUsd: 0,
+      providerCostKnown: true,
+      providerCallMayHaveStarted: false,
+    };
   let remaining = tasks;
   let providerCostUsd = 0;
   let providerCostKnown = true;
+  let providerCallMayHaveStarted = false;
   for (let attempt = 1; remaining.length > 0; attempt++) {
     if (attempt > 1) await waitBeforeRetry();
     const answers = await fetchAiLiveAnswersWithCosts(
@@ -280,6 +221,7 @@ export async function collectAiLiveBatch(
     for (const [index, result] of answers.entries()) {
       if (result.providerCostKnown) providerCostUsd += result.providerCostUsd;
       else providerCostKnown = false;
+      if (result.providerCallMayHaveStarted) providerCallMayHaveStarted = true;
       const task = remaining[index];
       if (
         result.answer.status === "failed" &&
@@ -303,7 +245,11 @@ export async function collectAiLiveBatch(
     }
     remaining = retry;
   }
-  return { providerCostUsd, providerCostKnown };
+  return {
+    providerCostUsd,
+    providerCostKnown,
+    providerCallMayHaveStarted,
+  };
 }
 
 /** Refuses legacy model batches until the provider exposes a hard cost ceiling. */
