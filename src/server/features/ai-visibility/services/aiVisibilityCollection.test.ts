@@ -226,7 +226,7 @@ describe("AI answer collection", () => {
     expect(dataforseo.fetchTaskResult).toHaveBeenCalledTimes(1);
   });
 
-  it("fails the answers DataForSEO did not accept and collects the rest", async () => {
+  it("accounts costed rejects while failing unaccepted answers", async () => {
     dataforseo.trackingTaskPost.mockResolvedValue({
       tasks: [{ tag: "answer-0", taskId: "task", costUsd: 0.002 }],
       hold: null,
@@ -245,7 +245,7 @@ describe("AI answer collection", () => {
     expect(result.pending).toEqual([pendingTask]);
     expect(result).toMatchObject({
       providerCostUsd: 0.003,
-      providerCostKnown: false,
+      providerCostKnown: true,
     });
     expect(await repo.getObservation("answer-1")).toMatchObject({
       status: "failed",

@@ -3,6 +3,9 @@ import { db } from "@/db";
 import { aiProviderRunReservations } from "@/db/schema";
 
 export const AI_PROVIDER_BUDGET_WINDOW_MS = 7 * 24 * 60 * 60_000;
+export const AI_PROVIDER_GLOBAL_BUDGET_USD_CENTS = 800;
+export const AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS =
+  AI_PROVIDER_GLOBAL_BUDGET_USD_CENTS * 10_000;
 
 export interface AiProviderBudgetUsage {
   accountedUsdMicros: number;
@@ -21,6 +24,10 @@ function usageWindow(cutoff: string) {
           gte(aiProviderRunReservations.createdAt, cutoff),
         ),
       ),
+    ),
+    and(
+      eq(aiProviderRunReservations.status, "legacy_guard"),
+      gte(aiProviderRunReservations.createdAt, cutoff),
     ),
   );
 }

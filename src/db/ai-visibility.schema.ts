@@ -119,7 +119,7 @@ export const aiProviderRunReservations = sqliteTable(
     reservedUsdMicros: integer("reserved_usd_micros").notNull(),
     accountedUsdMicros: integer("accounted_usd_micros"),
     status: text("status", {
-      enum: ["reserved", "settled", "unknown", "released"],
+      enum: ["reserved", "settled", "unknown", "released", "legacy_guard"],
     })
       .notNull()
       .default("reserved"),

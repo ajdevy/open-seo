@@ -119,7 +119,7 @@ export const aiProviderRunReservations = pgTable(
     }).notNull(),
     accountedUsdMicros: bigint("accounted_usd_micros", { mode: "number" }),
     status: text("status", {
-      enum: ["reserved", "settled", "unknown", "released"],
+      enum: ["reserved", "settled", "unknown", "released", "legacy_guard"],
     })
       .notNull()
       .default("reserved"),

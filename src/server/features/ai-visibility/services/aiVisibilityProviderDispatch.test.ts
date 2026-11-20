@@ -110,7 +110,7 @@ describe("provider dispatch certainty", () => {
       tasks: [],
       hold: null,
       providerCostUsd: 0,
-      providerCostKnown: true,
+      providerCostKnown: false,
     });
 
     const result = await postAiBatch(runId, customer, market, {
@@ -122,6 +122,35 @@ describe("provider dispatch certainty", () => {
       providerCostUsd: 0,
       providerCostKnown: false,
       providerCallMayHaveStarted: true,
+    });
+  });
+
+  it("accounts the raw task_post costs when rejected entries are fully covered", async () => {
+    dataforseo.trackingTaskPost.mockResolvedValue({
+      tasks: [{ tag: "answer-0", taskId: "provider-task-0", costUsd: 0.002 }],
+      hold: null,
+      providerCostUsd: 0.003,
+      // The provider adapter marks this true only when its raw response has
+      // one unique, costed entry for every submitted tag, including rejects.
+      providerCostKnown: true,
+    });
+
+    const result = await postAiBatch(runId, customer, market, {
+      engine: "chatgpt",
+      tasks: [
+        { tag: "answer-0", prompt: "Which SEO tools?" },
+        { tag: "answer-rejected", prompt: "Which SEO trends?" },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      pending: [{ tag: "answer-0" }],
+      providerCostUsd: 0.003,
+      providerCostKnown: true,
+      providerCallMayHaveStarted: true,
+    });
+    expect(await repo.getObservation("answer-0")).toMatchObject({
+      status: "pending",
     });
   });
 

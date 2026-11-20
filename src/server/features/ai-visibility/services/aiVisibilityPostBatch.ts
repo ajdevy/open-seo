@@ -47,15 +47,10 @@ export async function postAiBatch(
     posted = result.tasks;
     if (result.hold) hold = { ...result.hold, tasks: posted };
     providerCostUsd = result.providerCostUsd;
-    const submittedTags = new Set(batch.tasks.map((task) => task.tag));
-    const postedTags = new Set(posted.map((task) => task.tag));
-    const representsEverySubmittedTask =
-      submittedTags.size === batch.tasks.length &&
-      postedTags.size === posted.length &&
-      posted.length === batch.tasks.length &&
-      batch.tasks.every((task) => postedTags.has(task.tag));
+    // The adapter checks one-to-one coverage and exact costs against every raw
+    // provider response entry before it filters rejected tasks out of `tasks`.
+    // A rejected entry is not a missing cost when that raw coverage is exact.
     providerCostKnown =
-      representsEverySubmittedTask &&
       result.providerCostKnown &&
       Number.isFinite(providerCostUsd) &&
       providerCostUsd >= 0;

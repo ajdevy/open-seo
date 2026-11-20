@@ -512,6 +512,13 @@
       "when": 1795181168039,
       "tag": "0072_slim_iron_lad",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "6",
+      "when": 1795194629000,
+      "tag": "0073_legacy_terminal_spend_guard",
+      "breakpoints": true
     }
   ]
 }

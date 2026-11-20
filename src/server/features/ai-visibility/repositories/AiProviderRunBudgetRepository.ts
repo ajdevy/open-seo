@@ -3,12 +3,15 @@ import { db } from "@/db";
 import { getBatchRows, runBatchWithResults } from "@/db/runBatch";
 import {
   AI_PROVIDER_BUDGET_WINDOW_MS,
+  AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS,
   getAiProviderBudgetUsage,
   getAiProviderGlobalBudgetUsage,
   usageTotalSql,
 } from "./AiProviderRunBudgetUsageRepository";
 export {
   AI_PROVIDER_BUDGET_WINDOW_MS,
+  AI_PROVIDER_GLOBAL_BUDGET_USD_CENTS,
+  AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS,
   getAiProviderBudgetUsage,
   getAiProviderGlobalBudgetUsage,
   type AiProviderBudgetUsage,
@@ -18,10 +21,6 @@ import {
   aiProviderRunBudgetLocks,
   aiProviderRunReservations,
 } from "@/db/schema";
-
-export const AI_PROVIDER_GLOBAL_BUDGET_USD_CENTS = 800;
-export const AI_PROVIDER_GLOBAL_BUDGET_USD_MICROS =
-  AI_PROVIDER_GLOBAL_BUDGET_USD_CENTS * 10_000;
 
 const GLOBAL_BUDGET_LOCK_ID = "provider-run-budget";
 export type AiProviderRunBudgetTransaction = Parameters<

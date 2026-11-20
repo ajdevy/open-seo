@@ -11,7 +11,10 @@ describe("provider run budget migration", () => {
         CREATE TABLE projects (id TEXT PRIMARY KEY NOT NULL);
         CREATE TABLE ai_runs (
           id TEXT PRIMARY KEY NOT NULL,
-          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          status TEXT,
+          created_at TEXT,
+          completed_at TEXT
         );
         CREATE TABLE ai_provider_run_reservations (
           id TEXT PRIMARY KEY NOT NULL,
@@ -33,7 +36,8 @@ describe("provider run budget migration", () => {
         CREATE INDEX ai_provider_run_reservations_project_created_idx
           ON ai_provider_run_reservations(project_id, created_at);
         INSERT INTO projects (id) VALUES ('project');
-        INSERT INTO ai_runs (id, project_id) VALUES ('run', 'project');
+        INSERT INTO ai_runs (id, project_id, status, created_at)
+          VALUES ('run', 'project', 'running', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         INSERT INTO ai_provider_run_reservations (
           id, project_id, run_id, reserved_usd_micros, accounted_usd_micros,
           status, created_at
@@ -49,6 +53,37 @@ describe("provider run budget migration", () => {
       ).replaceAll("--> statement-breakpoint", "");
       await client.executeMultiple(migration);
 
+      await client.execute(`
+        INSERT INTO ai_runs (id, project_id, status, created_at, completed_at)
+        VALUES (
+          'legacy-terminal-run',
+          'project',
+          'completed',
+          strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-6 days'),
+          strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')
+        )
+      `);
+      const terminalMigration = readFileSync(
+        "drizzle/sqlite/0073_legacy_terminal_spend_guard.sql",
+        "utf8",
+      ).replaceAll("--> statement-breakpoint", "");
+      await client.executeMultiple(terminalMigration);
+
+      const legacyGuard = await client.execute(
+        "SELECT project_id, run_id, reserved_usd_micros, accounted_usd_micros, status, reconciliation_reference FROM ai_provider_run_reservations WHERE id = ?",
+        ["legacy-terminal-spend-guard"],
+      );
+      expect(legacyGuard.rows).toEqual([
+        expect.objectContaining({
+          project_id: "project",
+          run_id: "legacy-terminal-run",
+          reserved_usd_micros: 8_000_000,
+          accounted_usd_micros: null,
+          status: "legacy_guard",
+          reconciliation_reference: "migration:legacy-terminal-spend-window",
+        }),
+      ]);
+
       const foreignKeys = await client.execute(
         "PRAGMA foreign_key_list('ai_provider_run_reservations')",
       );
@@ -63,6 +98,17 @@ describe("provider run budget migration", () => {
       expect(result.rows).toHaveLength(1);
       expect(result.rows[0]?.status).toBe("unknown");
       expect(result.rows[0]?.reserved_usd_micros).toBe(2_000_000);
+
+      const preservedLegacyGuard = await client.execute(
+        "SELECT status, reserved_usd_micros FROM ai_provider_run_reservations WHERE id = ?",
+        ["legacy-terminal-spend-guard"],
+      );
+      expect(preservedLegacyGuard.rows).toEqual([
+        expect.objectContaining({
+          status: "legacy_guard",
+          reserved_usd_micros: 8_000_000,
+        }),
+      ]);
     } finally {
       client.close();
     }
