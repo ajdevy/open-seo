@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { aiPrompts, aiTrackers, projects } from "@/db/schema";
+import {
+  aiPrompts,
+  aiProviderRunReservations,
+  aiTrackers,
+  projects,
+} from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { runScheduledAiVisibility } from "./scheduledAiVisibility";
 import { configuration } from "./aiVisibilityTestFixtures";
@@ -156,6 +161,49 @@ it("skips a scheduled run when its project rolling provider budget is exhausted"
     { trigger: "scheduled", status: "failed" },
   ]);
   expect(workflow.create).not.toHaveBeenCalled();
+});
+
+it("rejects a scheduled run prepared from an older project budget", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
+  await dueTracker("project", false);
+  const original = await repo.getConfiguration("project");
+  if (!original) throw new Error("test tracker configuration was not created");
+  const staleBudgetCents = original.tracker.weeklyProviderBudgetCents;
+  await repo.updateTracker(original.tracker.id, {
+    weeklyProviderBudgetCents: 50,
+  });
+
+  const getConfiguration = repo.getConfiguration.bind(repo);
+  let reads = 0;
+  vi.spyOn(repo, "getConfiguration").mockImplementation(async (projectId) => {
+    const current = await getConfiguration(projectId);
+    if (!current) return current;
+    reads++;
+    return reads === 1
+      ? {
+          ...current,
+          tracker: {
+            ...current.tracker,
+            weeklyProviderBudgetCents: staleBudgetCents,
+          },
+        }
+      : current;
+  });
+
+  await runScheduledAiVisibility();
+
+  expect(reads).toBe(2);
+  expect(workflow.create).not.toHaveBeenCalled();
+  expect(await repo.listRuns("project")).toMatchObject([
+    { trigger: "scheduled", status: "failed" },
+  ]);
+  expect((await repo.getTracker("project"))?.lastSkipReason).toContain(
+    "saved project provider budget no longer matches",
+  );
+  await expect(
+    testDb.db.select().from(aiProviderRunReservations),
+  ).resolves.toEqual([]);
 });
 
 it("resumes the same scheduled run after the cron stops after its durable claim", async () => {
