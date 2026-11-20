@@ -31,6 +31,8 @@ const SCHEDULED_RETRY_NOTICE =
   "The scheduled check is durably queued and will be retried automatically.";
 const SCHEDULED_RESERVATION_UNRESOLVED_NOTICE =
   "The scheduled check's provider-budget reservation could not be confirmed. No workflow was started, and the run must be reconciled before retry.";
+const SCHEDULED_RESERVATION_CONTENTION_NOTICE =
+  "Another scheduled recovery currently owns the provider-budget reservation. This run remains queued and will be retried automatically.";
 
 function withoutScheduledRetryNotice(reason: string | null | undefined) {
   if (reason === SCHEDULED_RETRY_NOTICE) return null;
@@ -178,6 +180,21 @@ export async function resumePendingScheduledRuns(input: {
         const message = reservation.message;
         if (!message)
           throw new Error("Provider budget refusal had no message.");
+        if (reservation.admission.reason === "run_in_progress") {
+          await scheduledRepo.setPendingScheduledRunNotice({
+            trackerId: pending.trackerId,
+            runId,
+            lastSkipReason: withScheduledRetryNotice(
+              [
+                withoutScheduledRetryNotice(pending.lastSkipReason),
+                SCHEDULED_RESERVATION_CONTENTION_NOTICE,
+              ]
+                .filter(Boolean)
+                .join(" "),
+            ),
+          });
+          continue;
+        }
         if (reservation.admission.reason === "cost_ceiling_unavailable")
           await releaseAiProviderRunBudget(run.id);
         await failAiRun(run.id, AI_ANSWER_FAILURES.notStarted);

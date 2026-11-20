@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { aiProviderRunReservations, projects } from "@/db/schema";
+import {
+  aiProviderRunBudgetLocks,
+  aiProviderRunReservations,
+  projects,
+} from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { aiCostForAnswers } from "./aiVisibilityCost";
 import { configuration } from "./aiVisibilityTestFixtures";
@@ -166,6 +170,73 @@ it("reuses the provider hold after a crash between reserve and workflow start", 
 
   await runScheduledAiVisibility();
 
+  expect(workflow.create).toHaveBeenCalledTimes(1);
+  expect(workflow.create.mock.calls[0]?.[0]).toMatchObject({ id: runId });
+  expect(
+    await testDb.db.select().from(aiProviderRunReservations),
+  ).toMatchObject([{ runId, status: "reserved" }]);
+  expect((await repo.getTracker("project"))?.pendingScheduledRunId).toBeNull();
+});
+
+it("defers a concurrent recovery without failing or clearing its shared hold", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
+  await dueTracker();
+  const runId = "scheduled-outbox-concurrent-recovery";
+  const createdAt = "2026-09-01T05:00:00.000Z";
+  await persistPendingScheduledRun(runId, "project", createdAt);
+  const reservationCost = aiCostForAnswers(
+    ["chatgpt"],
+    false,
+    "queued",
+  ).providerCostUsd;
+  const reserveUsdMicros = Math.round(reservationCost * 1e6);
+  await testDb.db
+    .insert(aiProviderRunBudgetLocks)
+    .values({ id: "provider-run-budget", version: 1 })
+    .onConflictDoNothing();
+  await testDb.client.execute(`
+    CREATE TRIGGER insert_concurrent_scheduled_recovery_hold
+    AFTER UPDATE ON ai_provider_run_budget_locks
+    WHEN NEW.id = 'provider-run-budget'
+    BEGIN
+      INSERT INTO ai_provider_run_reservations (
+        id, project_id, run_id, reserved_usd_micros, status, created_at
+      ) VALUES (
+        'scheduled-outbox-concurrent-owner', 'project', '${runId}',
+        ${reserveUsdMicros}, 'reserved', '${createdAt}'
+      );
+    END;
+  `);
+  workflow.get.mockRejectedValue(new Error("workflow instance not found"));
+
+  const deferred = await resumePendingScheduledRuns({
+    answerBudget: 1,
+    deadline: Date.now() + 60_000,
+  });
+
+  expect(deferred).toEqual({ started: 0, answersStarted: 0 });
+  expect(workflow.create).not.toHaveBeenCalled();
+  expect(await repo.listRuns("project")).toMatchObject([
+    { id: runId, trigger: "scheduled", status: "queued" },
+  ]);
+  expect(
+    await testDb.db.select().from(aiProviderRunReservations),
+  ).toMatchObject([{ runId, status: "reserved" }]);
+  expect((await repo.getTracker("project"))?.pendingScheduledRunId).toBe(runId);
+  expect((await repo.getTracker("project"))?.lastSkipReason).toContain(
+    "Another scheduled recovery currently owns the provider-budget reservation",
+  );
+
+  await testDb.client.execute(
+    "DROP TRIGGER insert_concurrent_scheduled_recovery_hold",
+  );
+  const recovered = await resumePendingScheduledRuns({
+    answerBudget: 1,
+    deadline: Date.now() + 60_000,
+  });
+
+  expect(recovered).toEqual({ started: 1, answersStarted: 1 });
   expect(workflow.create).toHaveBeenCalledTimes(1);
   expect(workflow.create.mock.calls[0]?.[0]).toMatchObject({ id: runId });
   expect(
