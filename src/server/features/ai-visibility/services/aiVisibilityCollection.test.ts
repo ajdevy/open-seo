@@ -68,7 +68,11 @@ const liveAnswer = {
 } as const;
 const billedLiveAnswer = {
   status: "fulfilled",
-  value: { data: liveAnswer.value, providerCostUsd: 0.004 },
+  value: {
+    data: liveAnswer.value,
+    providerCostUsd: 0.004,
+    providerCostKnown: true,
+  },
 } as const;
 const providerFailure = {
   status: "failed",
@@ -78,7 +82,11 @@ const providerFailure = {
 } as const;
 const billedProviderFailure = {
   status: "fulfilled",
-  value: { data: providerFailure, providerCostUsd: 0.004 },
+  value: {
+    data: providerFailure,
+    providerCostUsd: 0.004,
+    providerCostKnown: true,
+  },
 } as const;
 
 afterEach(() => {
@@ -223,6 +231,7 @@ describe("AI answer collection", () => {
       tasks: [{ tag: "answer-0", taskId: "task", costUsd: 0.002 }],
       hold: null,
       providerCostUsd: 0.003,
+      providerCostKnown: true,
     });
 
     const result = await postAiBatch(runId, customer, market, {
@@ -248,6 +257,7 @@ describe("AI answer collection", () => {
       tasks: [{ tag: "answer-0", taskId: "task", costUsd: 0.002 }],
       hold: null,
       providerCostUsd: 0.003,
+      providerCostKnown: true,
     });
 
     const { pending } = await postAiBatch(runId, customer, market, {
@@ -335,6 +345,25 @@ describe("AI answer collection", () => {
     expect(dataforseo.trackingLiveBatchWithCosts).toHaveBeenCalledOnce();
     expect(outcome).toEqual({
       providerCostUsd: 0.004,
+      providerCostKnown: false,
+    });
+  });
+
+  it("keeps the scheduled provider cost unknown when task_post omits its cost", async () => {
+    dataforseo.trackingTaskPost.mockResolvedValue({
+      tasks: [{ tag: "answer-0", taskId: "task", costUsd: 0 }],
+      hold: null,
+      providerCostUsd: 0,
+      providerCostKnown: false,
+    });
+
+    const result = await postAiBatch(runId, customer, market, {
+      engine: "chatgpt",
+      tasks: [{ tag: "answer-0", prompt: "Which SEO tools?" }],
+    });
+
+    expect(result).toMatchObject({
+      providerCostUsd: 0,
       providerCostKnown: false,
     });
   });

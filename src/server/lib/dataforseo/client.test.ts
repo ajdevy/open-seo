@@ -143,7 +143,10 @@ import { DataforseoChargedTaskError } from "@/server/lib/dataforseo/envelope";
 import { AppError } from "@/server/lib/errors";
 import { fetchBacklinksSummary } from "@/server/lib/dataforseo/backlinks";
 import { fetchRankCheckSerp } from "@/server/lib/dataforseo/serp";
-import { postAiTrackingTasks } from "@/server/lib/dataforseo/ai-tracking";
+import {
+  fetchAiTrackingLiveAnswer,
+  postAiTrackingTasks,
+} from "@/server/lib/dataforseo/ai-tracking";
 
 const billingCustomer = {
   organizationId: "org_123",
@@ -354,6 +357,39 @@ describe("AI visibility queued posts", () => {
     );
 
     expect(finalizeMock.mock.calls[0][0]).toMatchObject({ action: "release" });
+  });
+});
+
+describe("AI visibility live provider cost", () => {
+  it("preserves unknown cost metadata through the metered client", async () => {
+    isHostedServerAuthModeMock.mockResolvedValue(false);
+    vi.mocked(fetchAiTrackingLiveAnswer).mockResolvedValue({
+      data: { status: "completed", result: { markdown: "OpenSEO" } },
+      billing: {
+        path: ["v3", "ai_optimization", "chat_gpt", "llm_scraper", "live"],
+        costUsd: 0,
+        costKnown: false,
+      },
+    });
+
+    const client = createDataforseoClient(billingCustomer);
+    const [outcome] = await client.aiSearch.trackingLiveBatchWithCosts([
+      {
+        engine: "chatgpt",
+        locationCode: 2840,
+        languageCode: "en",
+        task: { tag: "answer-a", prompt: "Which SEO tools?" },
+      },
+    ]);
+
+    expect(outcome).toMatchObject({
+      status: "fulfilled",
+      value: {
+        data: { status: "completed" },
+        providerCostUsd: 0,
+        providerCostKnown: false,
+      },
+    });
   });
 });
 

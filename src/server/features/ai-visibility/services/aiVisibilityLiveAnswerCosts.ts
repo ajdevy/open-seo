@@ -29,6 +29,7 @@ export async function fetchAiLiveAnswersWithCosts(
   let settled: PromiseSettledResult<{
     data: AiTrackingAnswer;
     providerCostUsd: number;
+    providerCostKnown: boolean;
   }>[];
   try {
     settled = await createDataforseoClient(
@@ -50,7 +51,9 @@ export async function fetchAiLiveAnswersWithCosts(
         answer: outcome.value.data,
         providerCostUsd,
         providerCostKnown:
-          Number.isFinite(providerCostUsd) && providerCostUsd >= 0,
+          outcome.value.providerCostKnown &&
+          Number.isFinite(providerCostUsd) &&
+          providerCostUsd >= 0,
       };
     }
     const chargedError =
@@ -68,6 +71,7 @@ export async function fetchAiLiveAnswersWithCosts(
       providerCostUsd,
       providerCostKnown:
         chargedError !== null &&
+        chargedError.billing.costKnown !== false &&
         Number.isFinite(providerCostUsd) &&
         providerCostUsd >= 0,
     };

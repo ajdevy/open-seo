@@ -38,6 +38,7 @@ export async function postAiTrackingTasksOnHold(
   tasks: PostedAiTrackingTask[];
   hold: AiTrackingHold | null;
   providerCostUsd: number;
+  providerCostKnown: boolean;
 }> {
   if (!(await isHostedServerAuthMode())) {
     const response = await postAiTrackingTasks(input);
@@ -45,6 +46,7 @@ export async function postAiTrackingTasksOnHold(
       tasks: response.data,
       hold: null,
       providerCostUsd: response.billing.costUsd,
+      providerCostKnown: response.billing.costKnown !== false,
     };
   }
   const billingCustomer = await getOrCreateOrganizationCustomer(customer);
@@ -66,6 +68,7 @@ export async function postAiTrackingTasksOnHold(
       tasks: response.data,
       hold: { hold, path: response.billing.path },
       providerCostUsd: response.billing.costUsd,
+      providerCostKnown: response.billing.costKnown !== false,
     };
   } catch (error) {
     // No task came back, so no answer will arrive to pay for.

@@ -30,14 +30,24 @@ export async function meterDataforseoCalls<T>(
   callCredits: number[],
   creditFeature: CreditFeature | undefined,
   withProviderCost: true,
-): Promise<PromiseSettledResult<{ data: T; providerCostUsd: number }>[]>;
+): Promise<
+  PromiseSettledResult<{
+    data: T;
+    providerCostUsd: number;
+    providerCostKnown: boolean;
+  }>[]
+>;
 export async function meterDataforseoCalls<T>(
   customer: BillingCustomerContext,
   executes: Array<() => Promise<DataforseoApiResponse<T>>>,
   callCredits: number[],
   creditFeature?: CreditFeature,
   withProviderCost = false,
-): Promise<PromiseSettledResult<T | { data: T; providerCostUsd: number }>[]> {
+): Promise<
+  PromiseSettledResult<
+    T | { data: T; providerCostUsd: number; providerCostKnown: boolean }
+  >[]
+> {
   if (executes.length === 0) return [];
   const isHostedMode = await isHostedServerAuthMode();
 
@@ -46,7 +56,11 @@ export async function meterDataforseoCalls<T>(
       executes.map(async (execute) => {
         const result = await execute();
         return withProviderCost
-          ? { data: result.data, providerCostUsd: result.billing.costUsd }
+          ? {
+              data: result.data,
+              providerCostUsd: result.billing.costUsd,
+              providerCostKnown: result.billing.costKnown !== false,
+            }
           : result.data;
       }),
     );
@@ -73,7 +87,11 @@ export async function meterDataforseoCalls<T>(
           const result = await execute();
           billed[index] = result.billing;
           return withProviderCost
-            ? { data: result.data, providerCostUsd: result.billing.costUsd }
+            ? {
+                data: result.data,
+                providerCostUsd: result.billing.costUsd,
+                providerCostKnown: result.billing.costKnown !== false,
+              }
             : result.data;
         } catch (error) {
           if (!(error instanceof DataforseoChargedTaskError)) throw error;

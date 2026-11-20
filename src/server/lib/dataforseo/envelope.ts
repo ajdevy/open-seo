@@ -12,6 +12,8 @@ import type { ErrorCode } from "@/shared/error-codes";
 export type DataforseoApiCallCost = {
   path: string[];
   costUsd: number;
+  /** False when the provider completed the call but omitted cost metadata. */
+  costKnown?: boolean;
 };
 
 export type DataforseoApiResponse<T> = {

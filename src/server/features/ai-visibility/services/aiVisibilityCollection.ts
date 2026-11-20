@@ -224,13 +224,17 @@ export async function postAiBatch(
     if (result.hold) hold = { ...result.hold, tasks: posted };
     providerCostUsd = result.providerCostUsd;
     providerCostKnown =
-      Number.isFinite(providerCostUsd) && providerCostUsd >= 0;
+      result.providerCostKnown &&
+      Number.isFinite(providerCostUsd) &&
+      providerCostUsd >= 0;
   } catch (cause) {
     error = asAppError(cause)?.code ?? "INTERNAL_ERROR";
     if (cause instanceof DataforseoChargedTaskError) {
       providerCostUsd = cause.billing.costUsd;
       providerCostKnown =
-        Number.isFinite(providerCostUsd) && providerCostUsd >= 0;
+        cause.billing.costKnown !== false &&
+        Number.isFinite(providerCostUsd) &&
+        providerCostUsd >= 0;
     }
     console.warn(`[ai-visibility] ${runId} task_post failed:`, cause);
   }

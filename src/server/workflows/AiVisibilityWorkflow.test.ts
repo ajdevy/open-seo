@@ -248,6 +248,42 @@ describe("AI visibility workflow", () => {
     expect(mocks.markProviderBudgetUnknown).not.toHaveBeenCalled();
   });
 
+  it("keeps a scheduled provider reservation unknown when task_post omits cost", async () => {
+    mocks.post.mockResolvedValue({
+      pending: [task],
+      hold,
+      providerCostUsd: 0,
+      providerCostKnown: false,
+    });
+
+    await execute();
+
+    expect(mocks.markProviderBudgetUnknown).toHaveBeenCalledExactlyOnceWith(
+      "run",
+    );
+    expect(mocks.settleProviderBudget).not.toHaveBeenCalled();
+  });
+
+  it("keeps a manual provider reservation unknown when live cost metadata is absent", async () => {
+    mocks.prepare.mockResolvedValue({
+      market: { locationCode: 2840, languageCode: "en" },
+      modelBatches: [],
+      live: true,
+      batches: [[]],
+    });
+    mocks.live.mockResolvedValue({
+      providerCostUsd: 0,
+      providerCostKnown: false,
+    });
+
+    await execute();
+
+    expect(mocks.markProviderBudgetUnknown).toHaveBeenCalledExactlyOnceWith(
+      "run",
+    );
+    expect(mocks.settleProviderBudget).not.toHaveBeenCalled();
+  });
+
   it("finishes the run when the collection window closes, then reads missing answers late before settling", async () => {
     mocks.collect.mockResolvedValue({ pending: [task], retry: [] });
     await execute();
