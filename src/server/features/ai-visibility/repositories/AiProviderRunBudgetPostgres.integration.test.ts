@@ -37,6 +37,7 @@ const ids = {
   projectB: `budget-test-project-b-${randomUUID()}`,
 };
 const now = new Date("2026-11-20T12:00:00.000Z");
+let databaseValidated = false;
 
 function assertDisposableTestDatabase(value: string) {
   const url = new URL(value);
@@ -68,6 +69,7 @@ function assertDisposableTestDatabase(value: string) {
 describePostgres("provider budget admission on PostgreSQL", () => {
   beforeAll(async () => {
     assertDisposableTestDatabase(connectionString);
+    databaseValidated = true;
     await withPgClient(async () => {
       await db.insert(organization).values({
         id: ids.organization,
@@ -137,7 +139,8 @@ describePostgres("provider budget admission on PostgreSQL", () => {
   }, 30_000);
 
   afterAll(async () => {
-    if (!connectionString) return;
+    if (!databaseValidated) return;
+    assertDisposableTestDatabase(connectionString);
     await withPgClient(async () => {
       await db
         .delete(aiProviderRunReservations)
@@ -184,17 +187,25 @@ describePostgres("provider budget admission on PostgreSQL", () => {
       ),
     );
 
+    const winnerIndex = admissions.findIndex((admission) => admission.admitted);
+    expect(winnerIndex).toBeGreaterThanOrEqual(0);
     expect(admissions.filter((admission) => admission.admitted)).toHaveLength(
       1,
     );
     expect(admissions.filter((admission) => !admission.admitted)).toMatchObject(
       [{ reason: "global_budget_exceeded" }],
     );
+    const winningProjectId = winnerIndex === 0 ? ids.projectA : ids.projectB;
+    const losingProjectId = winnerIndex === 0 ? ids.projectB : ids.projectA;
     await expect(
-      withPgClient(() => getAiProviderBudgetUsage(ids.projectA, now.getTime())),
+      withPgClient(() =>
+        getAiProviderBudgetUsage(winningProjectId, now.getTime()),
+      ),
     ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 5_000_000 });
     await expect(
-      withPgClient(() => getAiProviderBudgetUsage(ids.projectB, now.getTime())),
+      withPgClient(() =>
+        getAiProviderBudgetUsage(losingProjectId, now.getTime()),
+      ),
     ).resolves.toEqual({ accountedUsdMicros: 0, heldUsdMicros: 0 });
   }, 30_000);
 });
