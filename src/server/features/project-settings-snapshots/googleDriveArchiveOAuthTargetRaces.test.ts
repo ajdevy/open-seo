@@ -31,6 +31,7 @@ import {
   verification,
 } from "@/db/schema";
 import { handleGoogleDriveArchiveRequest } from "./googleDriveArchiveOAuthRoutes";
+import { callbackProbeAwareFetch } from "./googleDriveArchiveCallbackTestUtils";
 import {
   deliverPendingProjectSettingsSnapshots,
   type ProjectSettingsSnapshotArchivePort,
@@ -151,20 +152,18 @@ it("blocks a folder change that races with target-bound ID reservation", async (
   const verificationStarted = new Promise<void>((resolve) => {
     folderVerificationStarted = resolve;
   });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () => {
-      folderVerificationStarted();
-      await folderVerification;
-      return Response.json({
-        id: "folder-new-123",
-        name: "New archive",
-        mimeType: "application/vnd.google-apps.folder",
-        trashed: false,
-        capabilities: { canAddChildren: true },
-      });
-    }),
-  );
+  const verifyFolderFetch = vi.fn(async () => {
+    folderVerificationStarted();
+    await folderVerification;
+    return Response.json({
+      id: "folder-new-123",
+      name: "New archive",
+      mimeType: "application/vnd.google-apps.folder",
+      trashed: false,
+      capabilities: { canAddChildren: true },
+    });
+  });
+  vi.stubGlobal("fetch", callbackProbeAwareFetch(verifyFolderFetch));
 
   const folderChange = handleGoogleDriveArchiveRequest(
     new Request(ORIGIN + "/api/google-drive/archive/folder", {

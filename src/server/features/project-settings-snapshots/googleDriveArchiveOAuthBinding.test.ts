@@ -45,6 +45,7 @@ vi.mock("@/server/lib/runtime-env", () => ({
 
 import { db } from "@/db";
 import { googleDriveArchiveConnections, verification } from "@/db/schema";
+import { callbackProbeAwareFetch } from "./googleDriveArchiveCallbackTestUtils";
 import { handleGoogleDriveArchiveRequest } from "./googleDriveArchiveOAuthRoutes";
 
 const ORIGIN = "https://autogeo.flexsentlabs.com";
@@ -97,6 +98,7 @@ beforeEach(async () => {
   state.accountId = "google-account-1";
   Object.keys(state.env).forEach((key) => delete state.env[key]);
   setSyntheticConfig();
+  vi.stubGlobal("fetch", callbackProbeAwareFetch());
   await db.delete(googleDriveArchiveConnections);
   await db.delete(verification);
   await state.testDb.seedProject();
@@ -131,11 +133,8 @@ it("starts drive.file OAuth with single-use state and PKCE", async () => {
   const stateToken = url.searchParams.get("state");
   const challenge = url.searchParams.get("code_challenge");
   expect(stateToken).toMatch(/^[A-Za-z0-9_-]{40,64}$/u);
-  expect(url.searchParams.get("scope")?.split(" ")).toEqual([
-    "openid",
-    "email",
-    DRIVE_SCOPE,
-  ]);
+  expect(url.searchParams.get("scope")?.split(" ")).toEqual([DRIVE_SCOPE]);
+  expect(url.searchParams.get("include_granted_scopes")).toBe("false");
   expect(url.searchParams.get("redirect_uri")).toBe(CALLBACK);
   expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   expect(url.searchParams.has("client_secret")).toBe(false);
@@ -234,11 +233,11 @@ it("does not exchange an OAuth code from a browser without the initiating sessio
       access_token: "synthetic-google-access-token",
       refresh_token: "synthetic-google-refresh-token",
       expires_in: 3600,
-      scope: ["openid", "email", DRIVE_SCOPE].join(" "),
+      scope: DRIVE_SCOPE,
       id_token: "synthetic-id-token",
     }),
   );
-  vi.stubGlobal("fetch", fetcher);
+  vi.stubGlobal("fetch", callbackProbeAwareFetch(fetcher));
 
   const response = requireResponse(
     await handleGoogleDriveArchiveRequest(
@@ -287,7 +286,7 @@ it("requires the initiating user and current admin role when completing OAuth", 
   );
   state.setRole("member");
   const fetcher = vi.fn();
-  vi.stubGlobal("fetch", fetcher);
+  vi.stubGlobal("fetch", callbackProbeAwareFetch(fetcher));
 
   const response = requireResponse(
     await handleGoogleDriveArchiveRequest(
@@ -330,7 +329,7 @@ it("does not attach a Google account when another user completes the state", asy
   );
   state.setIdentity({ userId: "another-owner" });
   const fetcher = vi.fn();
-  vi.stubGlobal("fetch", fetcher);
+  vi.stubGlobal("fetch", callbackProbeAwareFetch(fetcher));
 
   const response = requireResponse(
     await handleGoogleDriveArchiveRequest(

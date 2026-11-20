@@ -12,7 +12,9 @@ const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
 const archiveStatusSchema = z.object({
   configured: z.boolean(),
+  callbackReady: z.boolean(),
   connected: z.boolean(),
+  unconfirmedSnapshots: z.number().int().nonnegative(),
   status: z.enum(["connected", "reauthorization_required"]).nullable(),
   accountEmail: z.string().email().nullable(),
   folder: z.object({ id: z.string(), name: z.string() }).nullable(),
@@ -68,13 +70,25 @@ async function parseJson<T>(
   schema: z.ZodType<T>,
 ): Promise<T> {
   if (!response.ok) {
+    const errorPayload: unknown = await response.json().catch(() => null);
+    const errorCode =
+      typeof errorPayload === "object" &&
+      errorPayload !== null &&
+      "error" in errorPayload &&
+      typeof errorPayload.error === "string"
+        ? errorPayload.error
+        : null;
     if (response.status === 403)
       throw new Error(
         "Only an Every App owner or admin can manage this archive.",
       );
+    if (errorCode === "google_drive_callback_unavailable")
+      throw new Error(
+        "Google OAuth callback is not reachable yet. Connection and folder selection are disabled.",
+      );
     if (response.status === 503)
       throw new Error(
-        "Google Drive archive is not configured for this app yet.",
+        "Google Drive archive settings or callback are not ready for this app yet.",
       );
     if (response.status === 409)
       throw new Error(
@@ -310,60 +324,82 @@ export function GoogleDriveArchiveSettings() {
       ) : unavailableMessage ? (
         <p className="text-sm text-muted-foreground">{unavailableMessage}</p>
       ) : status?.configured ? (
-        <div className="flex flex-wrap items-center gap-2">
-          {status.connected ? (
-            <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-              <HardDrive className="size-4" />
-              {status.accountEmail}
-              {status.folder
-                ? " · " + status.folder.name
-                : " · No folder selected"}
-              {status.status === "reauthorization_required"
-                ? " · Reconnect required"
-                : ""}
-            </span>
-          ) : (
-            <span className="text-sm text-muted-foreground">
-              No Google Drive account connected.
-            </span>
-          )}
-          {status.pickerReady ? (
-            status.connected && status.status !== "reauthorization_required" ? (
-              <>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void selectFolder()}
-                >
-                  <FolderOpen />
-                  {status.folder ? "Change folder" : "Choose folder"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  pending={disconnectMutation.isPending}
-                  onClick={() => disconnectMutation.mutate()}
-                >
-                  <Unplug />
-                  Disconnect
-                </Button>
-              </>
+        <div className="space-y-2">
+          {status.unconfirmedSnapshots > 0 ? (
+            <p className="text-sm text-amber-700" role="status">
+              {status.unconfirmedSnapshots} project settings
+              {status.unconfirmedSnapshots === 1
+                ? " snapshot is"
+                : " snapshots are"}{" "}
+              waiting for Drive confirmation. Only confirmed snapshots can be
+              restored after server loss.
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            {status.connected ? (
+              <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                <HardDrive className="size-4" />
+                {status.accountEmail ?? "Google Drive account"}
+                {status.folder
+                  ? " · " + status.folder.name
+                  : " · No folder selected"}
+                {status.status === "reauthorization_required"
+                  ? " · Reconnect required"
+                  : ""}
+              </span>
             ) : (
+              <span className="text-sm text-muted-foreground">
+                No Google Drive account connected.
+              </span>
+            )}
+            {status.connected ? (
               <Button
                 size="sm"
-                pending={connectMutation.isPending}
-                onClick={() => connectMutation.mutate()}
+                variant="ghost"
+                pending={disconnectMutation.isPending}
+                onClick={() => disconnectMutation.mutate()}
               >
-                {status.connected
-                  ? "Reconnect Google Drive"
-                  : "Connect Google Drive"}
+                <Unplug />
+                Disconnect
               </Button>
-            )
-          ) : (
-            <span className="text-sm text-muted-foreground">
-              Google OAuth and Picker settings are incomplete.
-            </span>
-          )}
+            ) : null}
+            {status.callbackReady && status.pickerReady ? (
+              status.connected ? (
+                status.status !== "reauthorization_required" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void selectFolder()}
+                  >
+                    <FolderOpen />
+                    {status.folder ? "Change folder" : "Choose folder"}
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    pending={connectMutation.isPending}
+                    onClick={() => connectMutation.mutate()}
+                  >
+                    Reconnect Google Drive
+                  </Button>
+                )
+              ) : (
+                <Button
+                  size="sm"
+                  pending={connectMutation.isPending}
+                  onClick={() => connectMutation.mutate()}
+                >
+                  Connect Google Drive
+                </Button>
+              )
+            ) : (
+              <span className="text-sm text-muted-foreground" role="status">
+                {!status.callbackReady
+                  ? "Google OAuth callback is not reachable yet. Connection and folder selection are disabled."
+                  : "Google OAuth and Picker settings are incomplete."}
+              </span>
+            )}
+          </div>
         </div>
       ) : null}
     </section>

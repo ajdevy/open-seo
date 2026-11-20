@@ -10,13 +10,13 @@ export const GOOGLE_DRIVE_ARCHIVE_CALLBACK_PATH =
 export const API_ROOT = "/api/google-drive/archive";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-export const GOOGLE_USERINFO_URL =
-  "https://openidconnect.googleapis.com/v1/userinfo";
 export const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
+export const GOOGLE_DRIVE_ABOUT_URL =
+  "https://www.googleapis.com/drive/v3/about";
 export const GOOGLE_DRIVE_FILES_URL =
   "https://www.googleapis.com/drive/v3/files";
 export const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
-export const OAUTH_SCOPES = ["openid", "email", GOOGLE_DRIVE_SCOPE] as const;
+export const OAUTH_SCOPES = [GOOGLE_DRIVE_SCOPE] as const;
 const STATE_PREFIX = "google-drive-archive:";
 const STATE_TTL_MS = 10 * 60_000;
 const BROWSER_BINDING_LENGTH = 43;
@@ -43,12 +43,6 @@ export const tokenResponseSchema = z.object({
   refresh_token: z.string().min(1).optional(),
   scope: z.string().optional(),
   id_token: z.string().min(1).optional(),
-});
-
-export const userInfoSchema = z.object({
-  sub: z.string().min(1),
-  email: z.string().email(),
-  email_verified: z.boolean(),
 });
 
 export const folderSelectionSchema = z.object({

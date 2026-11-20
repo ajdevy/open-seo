@@ -177,7 +177,7 @@ export const googleDriveArchiveConnections = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
     googleAccountId: text("google_account_id").notNull(),
-    accountEmail: text("account_email").notNull(),
+    accountEmail: text("account_email"),
     accessTokenCiphertext: text("access_token_ciphertext").notNull(),
     refreshTokenCiphertext: text("refresh_token_ciphertext").notNull(),
     accessTokenExpiresAt: timestampColumn("access_token_expires_at").notNull(),

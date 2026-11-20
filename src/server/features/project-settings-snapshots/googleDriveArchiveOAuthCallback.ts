@@ -1,10 +1,9 @@
-import { getGoogleAccountId } from "@/server/features/google/googleIdToken";
 import { hasOrgPermission } from "@/lib/org-permissions";
+import { googleDriveArchiveCallbackProbeResponse } from "./googleDriveArchiveCallbackReadiness";
 import { saveConnection } from "./googleDriveArchiveOAuth";
+import { getGoogleDriveAccountIdentity } from "./googleDriveArchiveOAuthAccount";
 import {
   GOOGLE_DRIVE_SCOPE,
-  GOOGLE_USERINFO_URL,
-  REQUEST_TIMEOUT_MS,
   codeVerifier,
   consumeState,
   genericError,
@@ -15,7 +14,6 @@ import {
   readState,
   redirect,
   sameBindingHash,
-  userInfoSchema,
   type DriveArchiveConfig,
 } from "./googleDriveArchiveOAuthShared";
 
@@ -91,6 +89,11 @@ export async function handleGoogleDriveArchiveOAuthCallback(
 ): Promise<Response> {
   try {
     const config = await readConfig();
+    const probe = googleDriveArchiveCallbackProbeResponse(
+      request,
+      config?.redirectUri ?? null,
+    );
+    if (probe) return probe;
     if (!config) return callbackBridgeResponse();
     const requestUrl = new URL(request.url);
     if (`${requestUrl.origin}${requestUrl.pathname}` !== config.redirectUri)
@@ -151,35 +154,23 @@ export async function completeGoogleDriveArchiveOAuth(input: {
     grant_type: "authorization_code",
     code_verifier: verifier,
   });
-  if (!tokens || !tokens.id_token)
-    return genericError(400, "google_token_exchange_failed");
+  if (!tokens) return genericError(400, "google_token_exchange_failed");
   const scopes = new Set((tokens.scope ?? "").split(/\s+/u).filter(Boolean));
-  if (
-    !scopes.has(GOOGLE_DRIVE_SCOPE) ||
-    !scopes.has("openid") ||
-    !scopes.has("email")
-  )
-    return genericError(400, "google_scope_missing");
-  const googleAccountId = await getGoogleAccountId(
-    tokens.id_token,
-    input.config.clientId,
-  );
-  const userInfoResponse = await fetch(GOOGLE_USERINFO_URL, {
-    headers: { Authorization: `Bearer ${tokens.access_token}` },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  if (!userInfoResponse.ok)
+  if (scopes.size !== 1 || !scopes.has(GOOGLE_DRIVE_SCOPE))
+    return genericError(400, "google_scope_invalid");
+  let identity: Awaited<ReturnType<typeof getGoogleDriveAccountIdentity>>;
+  try {
+    identity = await getGoogleDriveAccountIdentity(tokens.access_token);
+  } catch {
     return genericError(400, "google_account_unverified");
-  const userInfo = userInfoSchema.parse(await userInfoResponse.json());
-  if (!userInfo.email_verified || userInfo.sub !== googleAccountId)
-    return genericError(400, "google_account_unverified");
+  }
   try {
     await saveConnection({
       config: input.config,
       state,
       tokens,
-      googleAccountId,
-      accountEmail: userInfo.email,
+      googleAccountId: identity.googleAccountId,
+      accountEmail: identity.accountEmail,
     });
   } catch (error) {
     if (
