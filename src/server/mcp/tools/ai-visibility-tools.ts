@@ -55,6 +55,8 @@ function runNextAction(run: {
 function recoveryFor(error: AiVisibilityError) {
   if (error.runId)
     return `Read get_ai_visibility_run for run ${error.runId}. Do not start another check to poll it.`;
+  if (error.reason === "PROVIDER_COST_CEILING_UNAVAILABLE")
+    return "This operation is paused until its provider cost can be reserved against the shared budget. No provider request was started.";
   if (/cost|credit|limit/i.test(error.reason))
     return "Request a fresh cost estimate and get the user's approval for any increased spend before retrying.";
   return "Read get_ai_visibility_tracker and resolve the reported issue before retrying.";
