@@ -212,6 +212,7 @@ class WorkflowReviewSafetyTest(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertIn(command, workflow)
+        self.assertIn("pnpm test:ci --maxWorkers=4", workflow)
         self.assertNotIn("pnpm deploy", workflow)
 
 

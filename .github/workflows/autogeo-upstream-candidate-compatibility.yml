@@ -50,7 +50,7 @@ jobs:
       - name: Build application
         run: pnpm build
       - name: Run application and restore tests
-        run: pnpm test:ci
+        run: pnpm test:ci --maxWorkers=4
       - name: Run backup-manifest tests
         run: pnpm test:standalone:backup
       - name: Run selective-restore tests
