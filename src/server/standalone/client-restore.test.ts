@@ -88,6 +88,89 @@ describe("selective client restore", () => {
     expect(response.status).toBe(404);
   });
 
+  it("preserves tracker schedule settings without restoring an outbox pointer", async () => {
+    await testDb.db
+      .update(aiTrackers)
+      .set({
+        scheduleWeekday: 3,
+        scheduleHour: 10,
+        scheduleMinute: 30,
+        scheduleTimeZone: "Europe/Moscow",
+        weeklyProviderBudgetCents: 375,
+        pendingScheduledRunId: "source-pending-run",
+      })
+      .where(eq(aiTrackers.id, "tracker-a"));
+
+    const archive = await exportArchive();
+    expect(archive.payload.aiTrackers[0]).toMatchObject({
+      scheduleWeekday: 3,
+      scheduleHour: 10,
+      scheduleMinute: 30,
+      scheduleTimeZone: "Europe/Moscow",
+      weeklyProviderBudgetCents: 375,
+    });
+    expect(archive.payload.aiTrackers[0]).not.toHaveProperty(
+      "pendingScheduledRunId",
+    );
+
+    const response = await postRestore({
+      command: "import",
+      targetOrganizationId: "target-a",
+      archive,
+    });
+    expect(response.status).toBe(200);
+    const imported = importResultSchema.parse(await response.json());
+    const trackerRows = await testDb.db
+      .select()
+      .from(aiTrackers)
+      .where(eq(aiTrackers.projectId, imported.importedProjectIds[0]));
+    expect(trackerRows[0]).toMatchObject({
+      scheduleWeekday: 3,
+      scheduleHour: 10,
+      scheduleMinute: 30,
+      scheduleTimeZone: "Europe/Moscow",
+      weeklyProviderBudgetCents: 375,
+      pendingScheduledRunId: null,
+    });
+  });
+
+  it("imports v1 archives without later tracker fields using database defaults", async () => {
+    const archive = await exportArchive();
+    const legacyPayload = structuredClone(archive.payload);
+    for (const tracker of legacyPayload.aiTrackers) {
+      delete tracker.scheduleWeekday;
+      delete tracker.scheduleHour;
+      delete tracker.scheduleMinute;
+      delete tracker.scheduleTimeZone;
+      delete tracker.weeklyProviderBudgetCents;
+    }
+    const legacyArchive = {
+      ...archive,
+      payload: legacyPayload,
+      contentSha256: await sha256Json(legacyPayload),
+    };
+
+    const response = await postRestore({
+      command: "import",
+      targetOrganizationId: "target-a",
+      archive: legacyArchive,
+    });
+    expect(response.status).toBe(200);
+    const imported = importResultSchema.parse(await response.json());
+    const trackerRows = await testDb.db
+      .select()
+      .from(aiTrackers)
+      .where(eq(aiTrackers.projectId, imported.importedProjectIds[0]));
+    expect(trackerRows[0]).toMatchObject({
+      scheduleWeekday: null,
+      scheduleHour: null,
+      scheduleMinute: null,
+      scheduleTimeZone: null,
+      weeklyProviderBudgetCents: 800,
+      pendingScheduledRunId: null,
+    });
+  });
+
   it("imports Client A twice with question versions and answers while preserving Client B and all memberships", async () => {
     await testDb.db
       .update(projects)

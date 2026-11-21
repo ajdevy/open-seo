@@ -69,8 +69,16 @@ const trackerRow = z
     locationCode: z.number(),
     languageCode: z.string(),
     scheduleInterval: z.enum(["daily", "weekly", "monthly"]),
+    // These fields were added after v1 archives first shipped. Optional
+    // parsing keeps existing archives readable; import normalizes the values
+    // to the current database defaults before verification.
+    scheduleWeekday: z.number().int().nullable().optional(),
+    scheduleHour: z.number().int().nullable().optional(),
+    scheduleMinute: z.number().int().nullable().optional(),
+    scheduleTimeZone: z.string().nullable().optional(),
     nextCheckAt: z.string().nullable(),
     lastSkipReason: z.string().nullable(),
+    weeklyProviderBudgetCents: z.number().int().nonnegative().optional(),
     createdAt: z.string(),
   })
   .strict();
