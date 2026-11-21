@@ -10,6 +10,7 @@ import {
   googleTokenRequest,
   hashBrowserBinding,
   jsonResponse,
+  readGoogleDriveArchiveRedirectUri,
   readConfig,
   readState,
   redirect,
@@ -88,12 +89,16 @@ export async function handleGoogleDriveArchiveOAuthCallback(
   request: Request,
 ): Promise<Response> {
   try {
-    const config = await readConfig();
+    // Callback ownership must be provable before an OAuth client exists.
+    // Keep this public, side-effect-free probe independent of client secrets
+    // and token encryption configuration; real OAuth handling still requires
+    // the complete config below.
     const probe = googleDriveArchiveCallbackProbeResponse(
       request,
-      config?.redirectUri ?? null,
+      await readGoogleDriveArchiveRedirectUri(),
     );
     if (probe) return probe;
+    const config = await readConfig();
     if (!config) return callbackBridgeResponse();
     const requestUrl = new URL(request.url);
     if (`${requestUrl.origin}${requestUrl.pathname}` !== config.redirectUri)

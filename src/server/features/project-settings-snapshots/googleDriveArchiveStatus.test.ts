@@ -30,6 +30,7 @@ import { handleGoogleDriveArchiveOAuthCallback } from "./googleDriveArchiveOAuth
 import {
   GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_PARAMETER,
   GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_VERSION,
+  GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_ACCEPT,
   GOOGLE_DRIVE_ARCHIVE_CALLBACK_READY_HEADER,
   GOOGLE_DRIVE_ARCHIVE_CALLBACK_READY_VALUE,
 } from "./googleDriveArchiveCallbackReadiness";
@@ -206,4 +207,35 @@ it("confirms only the configured callback route through a side-effect-free readi
     ),
   );
   expect(wrongOrigin.status).toBe(404);
+
+  const wrongOriginAcceptProbe = await handleGoogleDriveArchiveOAuthCallback(
+    new Request(
+      "https://wrong.example.com/api/google-drive/archive/oauth/callback",
+      { headers: { Accept: GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_ACCEPT } },
+    ),
+  );
+  expect(wrongOriginAcceptProbe.status).toBe(404);
+});
+
+it("confirms callback readiness before OAuth client credentials are configured", async () => {
+  for (const name of [
+    "GOOGLE_DRIVE_ARCHIVE_CLIENT_ID",
+    "GOOGLE_DRIVE_ARCHIVE_CLIENT_SECRET",
+    "GOOGLE_DRIVE_ARCHIVE_TOKEN_KEY_B64",
+    "GOOGLE_DRIVE_ARCHIVE_PICKER_API_KEY",
+    "GOOGLE_DRIVE_ARCHIVE_PROJECT_NUMBER",
+  ]) {
+    delete state.env[name];
+  }
+
+  const response = await handleGoogleDriveArchiveOAuthCallback(
+    new Request(CALLBACK, {
+      headers: { Accept: GOOGLE_DRIVE_ARCHIVE_CALLBACK_PROBE_ACCEPT },
+    }),
+  );
+
+  expect(response.status).toBe(204);
+  expect(response.headers.get(GOOGLE_DRIVE_ARCHIVE_CALLBACK_READY_HEADER)).toBe(
+    GOOGLE_DRIVE_ARCHIVE_CALLBACK_READY_VALUE,
+  );
 });

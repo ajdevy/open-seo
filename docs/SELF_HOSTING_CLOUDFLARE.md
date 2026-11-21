@@ -58,6 +58,38 @@ pnpm deploy:selfhost --yes
 
 This provisions the D1 database, KV namespaces, and R2 bucket, applies the database migrations, deploys the Workers, and generates the session secret. The secret is kept in Alchemy's state in your account, so later deploys keep everyone signed in.
 
+### Use a custom hostname
+
+Add `SELFHOST_CUSTOM_DOMAIN=autogeo.flexsentlabs.com` to `.env.selfhost` before
+the first deploy. The hostname must be in a Cloudflare zone controlled by the
+account used by Alchemy. The fixed `selfhost` stage attaches that hostname to
+the app Worker, uses it for Better Auth's public URL, and protects that same
+hostname when `AUTH_MODE=cloudflare_access`. Preview stages and the hosted
+`app.openseo.so` stage ignore this setting.
+
+### Connect the Google Drive snapshot archive
+
+The archive uses a dedicated Google OAuth web client with only the
+`https://www.googleapis.com/auth/drive.file` scope. It requires a separate
+Picker API key restricted to the exact app origin and Drive Picker API.
+
+1. Set `SELFHOST_CUSTOM_DOMAIN` and
+   `GOOGLE_DRIVE_ARCHIVE_REDIRECT_URI=https://seo.example.com/api/google-drive/archive/oauth/callback`.
+2. Deploy and verify a query-free `GET` to the callback path with
+   `Accept: application/vnd.open-seo.drive-callback-probe` returns HTTP 204
+   with `x-open-seo-drive-archive-callback: ready` for that exact origin and
+   path. This check needs no OAuth client or client secret.
+3. Only after readiness passes, create a dedicated OAuth client with that
+   exact redirect URI and the `drive.file` scope. Do not reuse the Google
+   Search Console client.
+4. Set `GOOGLE_DRIVE_ARCHIVE_CLIENT_ID`,
+   `GOOGLE_DRIVE_ARCHIVE_CLIENT_SECRET`, and
+   `GOOGLE_DRIVE_ARCHIVE_TOKEN_KEY_B64`. Set the restricted Picker API key and
+   Google Cloud project number if using the folder picker, then redeploy.
+
+The archive is disabled while only the redirect URI is configured. No Drive
+write or migration is run by deploying the callback route.
+
 ## 5) Create your account
 
 1. Open the Worker URL printed at the end of the deploy.
