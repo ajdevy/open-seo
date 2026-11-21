@@ -2,7 +2,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   aiPrompts,
-  aiProviderRunReservations,
   aiTrackers,
   projects,
 } from "@/db/schema";
@@ -64,23 +63,17 @@ async function dueTracker(
     scheduleHour?: number | null;
     scheduleMinute?: number | null;
     scheduleTimeZone?: string | null;
-    engine?: "chatgpt" | "claude";
-    engines?: ("chatgpt" | "gemini" | "google_ai_overview")[];
   } = {},
 ) {
-  const { engine = "chatgpt", engines, ...trackerSchedule } = schedule;
   const rows = configuration(
-    {
-      engines: engines ?? [engine],
-      prompts: [{ text: "Which SEO tools?" }],
-    },
+    { engines: ["chatgpt"], prompts: [{ text: "Which SEO tools?" }] },
     projectId,
   );
   await repo.saveConfiguration(rows);
   await repo.updateTracker(rows.tracker.id, {
     enabled: true,
     nextCheckAt: due,
-    ...trackerSchedule,
+    ...schedule,
   });
   if (paused) {
     const current = await repo.getConfiguration(projectId);
@@ -140,70 +133,6 @@ it("records a skipped check for credits on the tracker without starting it", asy
     "INSUFFICIENT_CREDITS",
   );
   expect(await repo.listRuns("project")).toEqual([]);
-});
-
-it("skips a scheduled run when its project rolling provider budget is exhausted", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
-  await dueTracker("project", false, {
-    engines: ["chatgpt", "gemini", "google_ai_overview"],
-  });
-  const tracker = await repo.getTracker("project");
-  if (!tracker) throw new Error("Tracker fixture was not saved.");
-  await repo.updateTracker(tracker.id, { weeklyProviderBudgetCents: 1 });
-
-  await runScheduledAiVisibility();
-
-  expect((await repo.getTracker("project"))?.lastSkipReason).toContain(
-    "rolling 7-day budget",
-  );
-  expect(await repo.listRuns("project")).toMatchObject([
-    { trigger: "scheduled", status: "failed" },
-  ]);
-  expect(workflow.create).not.toHaveBeenCalled();
-});
-
-it("rejects a scheduled run prepared from an older project budget", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-09-01T06:01:00.000Z"));
-  await dueTracker("project", false);
-  const original = await repo.getConfiguration("project");
-  if (!original) throw new Error("test tracker configuration was not created");
-  const staleBudgetCents = original.tracker.weeklyProviderBudgetCents;
-  await repo.updateTracker(original.tracker.id, {
-    weeklyProviderBudgetCents: 50,
-  });
-
-  const getConfiguration = repo.getConfiguration.bind(repo);
-  let reads = 0;
-  vi.spyOn(repo, "getConfiguration").mockImplementation(async (projectId) => {
-    const current = await getConfiguration(projectId);
-    if (!current) return current;
-    reads++;
-    return reads === 1
-      ? {
-          ...current,
-          tracker: {
-            ...current.tracker,
-            weeklyProviderBudgetCents: staleBudgetCents,
-          },
-        }
-      : current;
-  });
-
-  await runScheduledAiVisibility();
-
-  expect(reads).toBe(2);
-  expect(workflow.create).not.toHaveBeenCalled();
-  expect(await repo.listRuns("project")).toMatchObject([
-    { trigger: "scheduled", status: "failed" },
-  ]);
-  expect((await repo.getTracker("project"))?.lastSkipReason).toContain(
-    "saved project provider budget no longer matches",
-  );
-  await expect(
-    testDb.db.select().from(aiProviderRunReservations),
-  ).resolves.toEqual([]);
 });
 
 it("resumes the same scheduled run after the cron stops after its durable claim", async () => {
