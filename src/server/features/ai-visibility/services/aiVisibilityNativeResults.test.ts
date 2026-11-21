@@ -110,6 +110,25 @@ describe("native model result storage", () => {
     );
   });
 
+  it("rejects visibility eligibility without completed search evidence at persistence", async () => {
+    await expect(
+      saveAiNativeResult(
+        result({
+          eligible_for_visibility: true,
+          search_status: "unknown",
+          search_evidence: [
+            { tool: "web_search", status: "unknown", evidence_ref: "event-1" },
+          ],
+        }),
+      ),
+    ).rejects.toThrow(/completed search evidence/i);
+
+    expect(await testDb.db.select().from(aiNativeResults)).toHaveLength(0);
+    expect(await testDb.db.select().from(aiNativeSearchEvidence)).toHaveLength(
+      0,
+    );
+  });
+
   it("keeps models and routes separate and reads normalized evidence with the run", async () => {
     await saveAiNativeResult(result());
     await saveAiNativeResult(

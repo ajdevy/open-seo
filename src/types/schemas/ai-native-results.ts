@@ -41,6 +41,61 @@ function failedResultIssues(value: {
   return issues;
 }
 
+function visibilityEligibilityIssues(
+  value: {
+    resultStatus: string;
+    answer: string | null;
+    searchStatus: string;
+    searchEvidence: readonly { status: string }[];
+    eligibleForVisibility: boolean | null;
+  },
+  fields: {
+    resultStatus: string;
+    answer: string;
+    searchStatus: string;
+    searchEvidence: string;
+  },
+) {
+  if (value.eligibleForVisibility !== true) return [];
+
+  const issues: Array<{ path: [string]; message: string }> = [];
+  if (value.resultStatus !== "completed")
+    issues.push({
+      path: [fields.resultStatus],
+      message: "Only a completed result can be eligible for visibility.",
+    });
+  if (!value.answer?.trim())
+    issues.push({
+      path: [fields.answer],
+      message: "A visibility-eligible result must include an answer.",
+    });
+  if (value.searchStatus !== "completed")
+    issues.push({
+      path: [fields.searchStatus],
+      message: "A visibility-eligible result requires completed search.",
+    });
+  if (!value.searchEvidence.some((event) => event.status === "completed"))
+    issues.push({
+      path: [fields.searchEvidence],
+      message:
+        "A visibility-eligible result requires completed search evidence.",
+    });
+  return issues;
+}
+
+const storageEligibilityFields = {
+  resultStatus: "result_status",
+  answer: "answer",
+  searchStatus: "search_status",
+  searchEvidence: "search_evidence",
+};
+const recordEligibilityFields = {
+  resultStatus: "resultStatus",
+  answer: "answer",
+  searchStatus: "searchStatus",
+  searchEvidence: "searchEvidence",
+};
+
 /** Storage contract for one model and route result. Status values stay open. */
 export const aiNativeResultSchema = z
   .object({
@@ -68,6 +123,17 @@ export const aiNativeResultSchema = z
   })
   .superRefine((value, ctx) => {
     for (const issue of failedResultIssues(value))
+      ctx.addIssue({ code: "custom", ...issue });
+    for (const issue of visibilityEligibilityIssues(
+      {
+        resultStatus: value.result_status,
+        answer: value.answer,
+        searchStatus: value.search_status,
+        searchEvidence: value.search_evidence,
+        eligibleForVisibility: value.eligible_for_visibility,
+      },
+      storageEligibilityFields,
+    ))
       ctx.addIssue({ code: "custom", ...issue });
   });
 
@@ -118,33 +184,17 @@ export const recordAiNativeResultSchema = z
     }))
       ctx.addIssue({ code: "custom", ...issue });
 
-    if (value.eligibleForVisibility === true) {
-      if (value.resultStatus !== "completed")
-        ctx.addIssue({
-          code: "custom",
-          path: ["resultStatus"],
-          message: "Only a completed result can be eligible for visibility.",
-        });
-      if (!value.answer?.trim())
-        ctx.addIssue({
-          code: "custom",
-          path: ["answer"],
-          message: "A visibility-eligible result must include an answer.",
-        });
-      if (value.searchStatus !== "completed")
-        ctx.addIssue({
-          code: "custom",
-          path: ["searchStatus"],
-          message: "A visibility-eligible result requires completed search.",
-        });
-      if (!value.searchEvidence.some((event) => event.status === "completed"))
-        ctx.addIssue({
-          code: "custom",
-          path: ["searchEvidence"],
-          message:
-            "A visibility-eligible result requires completed search evidence.",
-        });
-    }
+    for (const issue of visibilityEligibilityIssues(
+      {
+        resultStatus: value.resultStatus,
+        answer: value.answer,
+        searchStatus: value.searchStatus,
+        searchEvidence: value.searchEvidence,
+        eligibleForVisibility: value.eligibleForVisibility,
+      },
+      recordEligibilityFields,
+    ))
+      ctx.addIssue({ code: "custom", ...issue });
   });
 
 export type CreateAiNativeRunInput = z.infer<typeof createAiNativeRunSchema>;
