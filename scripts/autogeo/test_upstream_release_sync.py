@@ -182,6 +182,16 @@ class WorkflowReviewSafetyTest(unittest.TestCase):
         self.assertIn("gh pr create", workflow)
         self.assertIn("--draft", workflow)
 
+    def test_policy_tests_run_on_isolated_read_only_runner(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/autogeo-upstream-sync-tests.yml").read_text()
+        self.assertIn("pull_request:", workflow)
+        self.assertIn("runs-on: ubuntu-24.04", workflow)
+        self.assertNotIn("self-hosted", workflow)
+        self.assertIn("permissions:\n  contents: read", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn("python3 -I -B -m unittest discover", workflow)
+
     def test_candidate_compatibility_uses_an_isolated_read_only_runner(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (
