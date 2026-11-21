@@ -66,6 +66,35 @@ export type DriveArchiveConfig = {
   projectNumber: string | undefined;
 };
 
+export function normalizeGoogleDriveArchiveRedirectUri(value: string): string {
+  const normalized = value.trim();
+  const parsedRedirect = new URL(normalized);
+  if (
+    !["https:", "http:"].includes(parsedRedirect.protocol) ||
+    parsedRedirect.pathname !== GOOGLE_DRIVE_ARCHIVE_CALLBACK_PATH ||
+    parsedRedirect.search ||
+    parsedRedirect.hash ||
+    parsedRedirect.username ||
+    parsedRedirect.password ||
+    (parsedRedirect.protocol !== "https:" &&
+      parsedRedirect.hostname !== "localhost" &&
+      !parsedRedirect.hostname.endsWith(".localhost"))
+  )
+    throw new Error("Google Drive OAuth callback configuration is invalid.");
+  return normalized;
+}
+
+export async function readGoogleDriveArchiveRedirectUri(): Promise<
+  string | null
+> {
+  const redirectUri = await getOptionalEnvValue(
+    "GOOGLE_DRIVE_ARCHIVE_REDIRECT_URI",
+  );
+  return redirectUri?.trim()
+    ? normalizeGoogleDriveArchiveRedirectUri(redirectUri)
+    : null;
+}
+
 export function googleDriveTokenContext(
   config: DriveArchiveConfig,
   organizationId: string,
@@ -130,20 +159,9 @@ export async function readConfig(): Promise<DriveArchiveConfig | null> {
   if (supplied.every((value) => !value)) return null;
   if (supplied.some((value) => !value?.trim()))
     throw new Error("Google Drive OAuth configuration is incomplete.");
-  const normalizedRedirect = redirectUri!.trim();
-  const parsedRedirect = new URL(normalizedRedirect);
-  if (
-    !["https:", "http:"].includes(parsedRedirect.protocol) ||
-    parsedRedirect.pathname !== GOOGLE_DRIVE_ARCHIVE_CALLBACK_PATH ||
-    parsedRedirect.search ||
-    parsedRedirect.hash ||
-    parsedRedirect.username ||
-    parsedRedirect.password ||
-    (parsedRedirect.protocol !== "https:" &&
-      parsedRedirect.hostname !== "localhost" &&
-      !parsedRedirect.hostname.endsWith(".localhost"))
-  )
-    throw new Error("Google Drive OAuth callback configuration is invalid.");
+  const normalizedRedirect = normalizeGoogleDriveArchiveRedirectUri(
+    redirectUri!,
+  );
   decodeTokenKey(tokenKey!.trim());
   return {
     clientId: clientId!.trim(),

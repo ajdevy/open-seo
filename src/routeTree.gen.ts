@@ -76,6 +76,7 @@ import { Route as AppPProjectIdReportsTemplatesRouteImport } from './routes/_app
 import { Route as AppPProjectIdSettingsIndexRouteImport } from './routes/_app/p/$projectId/settings/index'
 import { Route as AppPProjectIdSettingsContextRouteImport } from './routes/_app/p/$projectId/settings/context'
 import { Route as AppPProjectIdSettingsIntegrationsRouteImport } from './routes/_app/p/$projectId/settings/integrations'
+import { Route as ApiGoogleDriveArchiveOauthCallbackRouteImport } from './routes/api/google-drive/archive/oauth/callback'
 import { Route as ReportMapGrantZXYRouteImport } from './routes/report-map/$grant/$z/$x/$y'
 import { Route as AppPProjectIdAiVisibilityPromptsPromptIdRouteImport } from './routes/_app/p/$projectId/ai-visibility/prompts/$promptId'
 import { Route as AppPProjectIdAuditIssuesResultIdRouteImport } from './routes/_app/p/$projectId/audit/issues/$resultId'
@@ -434,6 +435,12 @@ const AppPProjectIdSettingsIntegrationsRoute =
     path: '/integrations',
     getParentRoute: () => AppPProjectIdSettingsRoute,
   } as any)
+const ApiGoogleDriveArchiveOauthCallbackRoute =
+  ApiGoogleDriveArchiveOauthCallbackRouteImport.update({
+    id: '/api/google-drive/archive/oauth/callback',
+    path: '/api/google-drive/archive/oauth/callback',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ReportMapGrantZXYRoute = ReportMapGrantZXYRouteImport.update({
   id: '/report-map/$grant/$z/$x/$y',
   path: '/report-map/$grant/$z/$x/$y',
@@ -517,6 +524,7 @@ export interface FileRoutesByFullPath {
   '/p/$projectId/reports/templates': typeof AppPProjectIdReportsTemplatesRoute
   '/p/$projectId/settings/context': typeof AppPProjectIdSettingsContextRoute
   '/p/$projectId/settings/integrations': typeof AppPProjectIdSettingsIntegrationsRoute
+  '/api/google-drive/archive/oauth/callback': typeof ApiGoogleDriveArchiveOauthCallbackRoute
   '/report-map/$grant/$z/$x/$y': typeof ReportMapGrantZXYRoute
   '/p/$projectId/ai-visibility/': typeof AppPProjectIdAiVisibilityIndexRoute
   '/p/$projectId/audit/': typeof AppPProjectIdAuditIndexRoute
@@ -581,6 +589,7 @@ export interface FileRoutesByTo {
   '/p/$projectId/reports/templates': typeof AppPProjectIdReportsTemplatesRoute
   '/p/$projectId/settings/context': typeof AppPProjectIdSettingsContextRoute
   '/p/$projectId/settings/integrations': typeof AppPProjectIdSettingsIntegrationsRoute
+  '/api/google-drive/archive/oauth/callback': typeof ApiGoogleDriveArchiveOauthCallbackRoute
   '/report-map/$grant/$z/$x/$y': typeof ReportMapGrantZXYRoute
   '/p/$projectId/ai-visibility': typeof AppPProjectIdAiVisibilityIndexRoute
   '/p/$projectId/audit': typeof AppPProjectIdAuditIndexRoute
@@ -655,6 +664,7 @@ export interface FileRoutesById {
   '/_app/p/$projectId/reports/templates': typeof AppPProjectIdReportsTemplatesRoute
   '/_app/p/$projectId/settings/context': typeof AppPProjectIdSettingsContextRoute
   '/_app/p/$projectId/settings/integrations': typeof AppPProjectIdSettingsIntegrationsRoute
+  '/api/google-drive/archive/oauth/callback': typeof ApiGoogleDriveArchiveOauthCallbackRoute
   '/report-map/$grant/$z/$x/$y': typeof ReportMapGrantZXYRoute
   '/_app/p/$projectId/ai-visibility/': typeof AppPProjectIdAiVisibilityIndexRoute
   '/_app/p/$projectId/audit/': typeof AppPProjectIdAuditIndexRoute
@@ -727,6 +737,7 @@ export interface FileRouteTypes {
     | '/p/$projectId/reports/templates'
     | '/p/$projectId/settings/context'
     | '/p/$projectId/settings/integrations'
+    | '/api/google-drive/archive/oauth/callback'
     | '/report-map/$grant/$z/$x/$y'
     | '/p/$projectId/ai-visibility/'
     | '/p/$projectId/audit/'
@@ -791,6 +802,7 @@ export interface FileRouteTypes {
     | '/p/$projectId/reports/templates'
     | '/p/$projectId/settings/context'
     | '/p/$projectId/settings/integrations'
+    | '/api/google-drive/archive/oauth/callback'
     | '/report-map/$grant/$z/$x/$y'
     | '/p/$projectId/ai-visibility'
     | '/p/$projectId/audit'
@@ -864,6 +876,7 @@ export interface FileRouteTypes {
     | '/_app/p/$projectId/reports/templates'
     | '/_app/p/$projectId/settings/context'
     | '/_app/p/$projectId/settings/integrations'
+    | '/api/google-drive/archive/oauth/callback'
     | '/report-map/$grant/$z/$x/$y'
     | '/_app/p/$projectId/ai-visibility/'
     | '/_app/p/$projectId/audit/'
@@ -899,6 +912,7 @@ export interface RootRouteChildren {
   STokenIndexRoute: typeof STokenIndexRoute
   ApiGa4OauthCallbackRoute: typeof ApiGa4OauthCallbackRoute
   ApiGscOauthCallbackRoute: typeof ApiGscOauthCallbackRoute
+  ApiGoogleDriveArchiveOauthCallbackRoute: typeof ApiGoogleDriveArchiveOauthCallbackRoute
   ReportMapGrantZXYRoute: typeof ReportMapGrantZXYRoute
   ApiLocalSeoMapsProjectIdZXYRoute: typeof ApiLocalSeoMapsProjectIdZXYRoute
 }
@@ -1374,6 +1388,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppPProjectIdSettingsIntegrationsRouteImport
       parentRoute: typeof AppPProjectIdSettingsRoute
     }
+    '/api/google-drive/archive/oauth/callback': {
+      id: '/api/google-drive/archive/oauth/callback'
+      path: '/api/google-drive/archive/oauth/callback'
+      fullPath: '/api/google-drive/archive/oauth/callback'
+      preLoaderRoute: typeof ApiGoogleDriveArchiveOauthCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/report-map/$grant/$z/$x/$y': {
       id: '/report-map/$grant/$z/$x/$y'
       path: '/report-map/$grant/$z/$x/$y'
@@ -1621,6 +1642,8 @@ const rootRouteChildren: RootRouteChildren = {
   STokenIndexRoute: STokenIndexRoute,
   ApiGa4OauthCallbackRoute: ApiGa4OauthCallbackRoute,
   ApiGscOauthCallbackRoute: ApiGscOauthCallbackRoute,
+  ApiGoogleDriveArchiveOauthCallbackRoute:
+    ApiGoogleDriveArchiveOauthCallbackRoute,
   ReportMapGrantZXYRoute: ReportMapGrantZXYRoute,
   ApiLocalSeoMapsProjectIdZXYRoute: ApiLocalSeoMapsProjectIdZXYRoute,
 }
