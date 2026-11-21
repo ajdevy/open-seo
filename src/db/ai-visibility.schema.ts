@@ -35,8 +35,18 @@ export const aiTrackers = sqliteTable(
     })
       .notNull()
       .default("weekly"),
+    scheduleWeekday: integer("schedule_weekday"),
+    scheduleHour: integer("schedule_hour"),
+    scheduleMinute: integer("schedule_minute"),
+    scheduleTimeZone: text("schedule_time_zone"),
     nextCheckAt: text("next_check_at"),
     lastSkipReason: text("last_skip_reason"),
+    weeklyProviderBudgetCents: integer("weekly_provider_budget_cents")
+      .notNull()
+      .default(800),
+    // Durable outbox pointer for a scheduled run whose workflow start has not
+    // yet been confirmed. Cleared only after the workflow is known to exist.
+    pendingScheduledRunId: text("pending_scheduled_run_id"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [
@@ -94,6 +104,52 @@ export const aiRuns = sqliteTable(
       .on(t.trackerId)
       .where(sql`${t.status} IN ('queued', 'running')`),
   ],
+);
+
+// One provider-neutral upper-bound reservation per paid run. Open reservations
+// remain in the rolling budget until their outcome is known and reconciled.
+export const aiProviderRunReservations = sqliteTable(
+  "ai_provider_run_reservations",
+  {
+    id: text("id").primaryKey(),
+    // Keep spend history independent of project/run lifecycle so deleting
+    // either record cannot erase unresolved provider spend.
+    projectId: text("project_id").notNull(),
+    runId: text("run_id").notNull(),
+    reservedUsdMicros: integer("reserved_usd_micros").notNull(),
+    accountedUsdMicros: integer("accounted_usd_micros"),
+    status: text("status", {
+      enum: ["reserved", "settled", "unknown", "released", "legacy_guard"],
+    })
+      .notNull()
+      .default("reserved"),
+    createdAt: text("created_at").notNull(),
+    settledAt: text("settled_at"),
+    reconciliationReference: text("reconciliation_reference"),
+    reconciledAt: text("reconciled_at"),
+  },
+  (t) => [
+    uniqueIndex("ai_provider_run_reservations_run_idx").on(t.runId),
+    // Enforces AC5 across all provider routes and closes the concurrent
+    // read-then-reserve race for every paid run in this project.
+    uniqueIndex("ai_provider_run_reservations_project_active_idx")
+      .on(t.projectId)
+      .where(sql`${t.status} = 'reserved'`),
+    index("ai_provider_run_reservations_project_created_idx").on(
+      t.projectId,
+      t.createdAt,
+    ),
+  ],
+);
+
+// A singleton row serializes rolling-budget admissions across projects. The
+// write lock is held only for the reservation transaction, not for the run.
+export const aiProviderRunBudgetLocks = sqliteTable(
+  "ai_provider_run_budget_locks",
+  {
+    id: text("id").primaryKey(),
+    version: integer("version").notNull().default(0),
+  },
 );
 
 // One answer per prompt and engine in a run. Rows are created pending when the

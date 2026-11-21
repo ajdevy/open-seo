@@ -1,6 +1,5 @@
 import { env } from "cloudflare:workers";
 import { z } from "zod";
-import { runBatch } from "@/db/runBatch";
 import {
   checkUsageCreditsDepleted,
   type BillingCustomerContext,
@@ -17,10 +16,17 @@ import { AppError } from "@/server/lib/errors";
 import { isHostedServerAuthMode } from "@/server/lib/runtime-env";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import {
+  researchKeywordsValue,
   writeConfiguration,
   writeResearchKeywords,
 } from "../repositories/aiVisibilityConfigurationRepository";
 import {
+  commitProjectSettingsMutation,
+  makeProjectSettingsSnapshot,
+  readProjectSettingsRows,
+} from "@/server/features/project-settings-snapshots/snapshotRepository";
+import {
+  enableWebsiteTrackingSchedule,
   prepareWebsiteTracking,
   startWebsiteTrackingRun,
 } from "./websiteTrackingSetup";
@@ -187,14 +193,39 @@ export async function runAiResearchSetup(
     { projectId: input.projectId, suggestedTopics: topics },
     project,
   );
-  await runBatch((tx) => [
-    ...(tracking ? writeConfiguration(tx, tracking) : []),
-    ...writeResearchKeywords(tx, input.projectId, [
-      ...topics.map((topic) => topic.name),
-      ...review.suggestedKeywords,
-    ]),
-  ]);
-  if (tracking && runSeededTracking)
+  const keywordNames = [
+    ...topics.map((topic) => topic.name),
+    ...review.suggestedKeywords,
+  ];
+  const trackingSaved = await commitProjectSettingsMutation(
+    input.projectId,
+    async () => {
+      const state = await readProjectSettingsRows(input.projectId);
+      if (!state) throw new AppError("NOT_FOUND");
+      const trackingToWrite = state.tracker ? null : tracking;
+      return {
+        snapshot: makeProjectSettingsSnapshot({
+          ...state,
+          project: {
+            ...state.project,
+            aiResearchKeywords:
+              state.project.aiResearchKeywords ??
+              researchKeywordsValue(keywordNames),
+          },
+          tracker: trackingToWrite?.tracker ?? state.tracker,
+          questions: trackingToWrite?.prompts ?? state.questions,
+        }),
+        write: (tx) => [
+          ...(trackingToWrite ? writeConfiguration(tx, trackingToWrite) : []),
+          ...writeResearchKeywords(tx, input.projectId, keywordNames),
+        ],
+        result: trackingToWrite !== null,
+      };
+    },
+  );
+  if (trackingSaved)
+    await enableWebsiteTrackingSchedule(input.projectId, customer);
+  if (trackingSaved && runSeededTracking)
     await startWebsiteTrackingRun(input.projectId, customer);
   return { review: null };
 }

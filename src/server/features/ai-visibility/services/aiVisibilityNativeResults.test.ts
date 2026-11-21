@@ -20,7 +20,7 @@ const { testDb } = await vi.hoisted(async () => {
 });
 vi.mock("cloudflare:workers", () => ({ env: { DATABASE_PROVIDER: "d1" } }));
 vi.mock("@/db", () => ({ db: testDb.db }));
-vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/db/runBatch", () => testDb.runBatchModule);
 
 const runId = "native-run";
 const timestamp = "2026-10-01T12:00:00.000Z";
@@ -128,7 +128,6 @@ describe("native model result storage", () => {
       0,
     );
   });
-
   it("keeps models and routes separate and reads normalized evidence with the run", async () => {
     await saveAiNativeResult(result());
     await saveAiNativeResult(

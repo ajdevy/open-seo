@@ -2,6 +2,13 @@ import { runBatch } from "@/db/runBatch";
 import { ProjectContextRepository } from "@/server/features/project-context/repositories/ProjectContextRepository";
 import { resolveContextUpdates } from "@/server/features/project-context/services/contextUpdateOps";
 import { ReportTemplateRepository } from "@/server/features/reports/repositories/ReportTemplateRepository";
+import { AppError } from "@/server/lib/errors";
+import {
+  commitProjectSettingsMutation,
+  makeProjectSettingsSnapshot,
+  readProjectSettingsRows,
+  type ProjectSettingsSnapshotContext,
+} from "@/server/features/project-settings-snapshots/snapshotRepository";
 import {
   CUSTOM_SECTION_KEY_PREFIX,
   PROJECT_CONTEXT_SECTION_KEYS,
@@ -16,6 +23,8 @@ import {
 // caps and normalization live in contextUpdateOps.
 const RESEARCH_LOG_RETENTION_DAYS = 90;
 const RESEARCH_LOG_LIMIT = 20;
+type Tx = Parameters<Parameters<typeof runBatch>[0]>[0];
+type ResolvedContextOp = ReturnType<typeof resolveContextUpdates>[number];
 
 type ProjectContext = {
   sections: {
@@ -127,6 +136,136 @@ function dayStamp(offsetDays = 0): string {
   return date.toISOString().slice(0, 10);
 }
 
+function projectedSnapshotContext(
+  context: ProjectSettingsSnapshotContext,
+  operations: ResolvedContextOp[],
+): ProjectSettingsSnapshotContext {
+  const sections = new Map(context.sections.map((row) => [row.key, row]));
+  const competitors = new Map(
+    context.competitors.map((row) => [row.domain, row]),
+  );
+  const keyPages = new Map(context.keyPages.map((row) => [row.url, row]));
+
+  for (const operation of operations) {
+    switch (operation.kind) {
+      case "upsertSection": {
+        const previous = sections.get(operation.key);
+        sections.set(operation.key, {
+          key: operation.key,
+          title: operation.title ?? previous?.title ?? null,
+          content: operation.content,
+        });
+        break;
+      }
+      case "deleteSection":
+        sections.delete(operation.key);
+        break;
+      case "upsertCompetitors":
+        for (const row of operation.rows) {
+          const previous = competitors.get(row.domain);
+          competitors.set(row.domain, {
+            domain: row.domain,
+            name: row.name ?? previous?.name ?? null,
+            notes: row.notes ?? previous?.notes ?? null,
+          });
+        }
+        break;
+      case "deleteCompetitors":
+        for (const domain of operation.domains) competitors.delete(domain);
+        break;
+      case "upsertKeyPages":
+        for (const row of operation.rows) {
+          const previous = keyPages.get(row.url);
+          keyPages.set(row.url, {
+            url: row.url,
+            role: row.role ?? previous?.role ?? "other",
+            topic: row.topic ?? previous?.topic ?? null,
+            notes: row.notes ?? previous?.notes ?? null,
+          });
+        }
+        break;
+      case "deleteKeyPages":
+        for (const url of operation.urls) keyPages.delete(url);
+        break;
+      case "appendResearchLog":
+      case "deleteResearchLog":
+        break;
+    }
+  }
+
+  return {
+    sections: [...sections.values()],
+    competitors: [...competitors.values()],
+    keyPages: [...keyPages.values()],
+  };
+}
+
+function writeResolvedContextUpdates(
+  projectId: string,
+  resolved: ResolvedContextOp[],
+  updatedBy: ContextAuthor,
+  tx: Tx,
+) {
+  return resolved.flatMap((op): Promise<unknown>[] => {
+    switch (op.kind) {
+      case "upsertSection":
+        return [
+          ProjectContextRepository.upsertSection(tx, {
+            projectId,
+            key: op.key,
+            title: op.title,
+            content: op.content,
+            updatedBy,
+          }),
+        ];
+      case "deleteSection":
+        return [ProjectContextRepository.deleteSection(tx, projectId, op.key)];
+      case "upsertCompetitors":
+        return ProjectContextRepository.upsertCompetitors(
+          tx,
+          projectId,
+          op.rows,
+          updatedBy,
+        );
+      case "deleteCompetitors":
+        return ProjectContextRepository.deleteCompetitors(
+          tx,
+          projectId,
+          op.domains,
+        );
+      case "upsertKeyPages":
+        return ProjectContextRepository.upsertKeyPages(
+          tx,
+          projectId,
+          op.rows,
+          updatedBy,
+        );
+      case "deleteKeyPages":
+        return ProjectContextRepository.deleteKeyPages(tx, projectId, op.urls);
+      case "deleteResearchLog":
+        return ProjectContextRepository.deleteResearchLogEntries(
+          tx,
+          projectId,
+          op.ids,
+        );
+      case "appendResearchLog":
+        return [
+          ProjectContextRepository.appendResearchLogEntry(tx, {
+            projectId,
+            entryDate: dayStamp(),
+            summary: op.summary,
+            createdBy: updatedBy,
+          }),
+          ProjectContextRepository.pruneResearchLogBefore(
+            tx,
+            projectId,
+            dayStamp(-RESEARCH_LOG_RETENTION_DAYS),
+          ),
+        ];
+    }
+  });
+}
+
 /**
  * Applies the patch ops in order, then returns the resulting context. The batch
  * is resolved and capped up front, so a call that trips a limit writes nothing
@@ -137,92 +276,59 @@ export async function applyContextUpdates(
   updates: ProjectContextUpdate[],
   updatedBy: ContextAuthor,
 ): Promise<ProjectContext> {
-  const [sectionRows, competitorRows, keyPageRows] = await Promise.all([
-    ProjectContextRepository.listSections(projectId),
-    ProjectContextRepository.listCompetitors(projectId),
-    ProjectContextRepository.listKeyPages(projectId),
-  ]);
-
-  const resolved = resolveContextUpdates(updates, {
-    customKeys: new Set(
-      sectionRows
-        .map((row) => row.key)
-        .filter((key) => key.startsWith(CUSTOM_SECTION_KEY_PREFIX)),
-    ),
-    domains: new Set(competitorRows.map((row) => row.domain)),
-    urls: new Set(keyPageRows.map((row) => row.url)),
-  });
-
-  // One atomic batch (D1 batch / PG transaction): a mid-batch failure rolls
-  // everything back, which is what lets callers retry a whole batch safely.
-  await runBatch((tx) =>
-    resolved.flatMap((op): Promise<unknown>[] => {
-      switch (op.kind) {
-        case "upsertSection":
-          return [
-            ProjectContextRepository.upsertSection(tx, {
-              projectId,
-              key: op.key,
-              title: op.title,
-              content: op.content,
-              updatedBy,
-            }),
-          ];
-        case "deleteSection":
-          return [
-            ProjectContextRepository.deleteSection(tx, projectId, op.key),
-          ];
-        case "upsertCompetitors":
-          return ProjectContextRepository.upsertCompetitors(
-            tx,
-            projectId,
-            op.rows,
-            updatedBy,
-          );
-        case "deleteCompetitors":
-          return ProjectContextRepository.deleteCompetitors(
-            tx,
-            projectId,
-            op.domains,
-          );
-        case "upsertKeyPages":
-          return ProjectContextRepository.upsertKeyPages(
-            tx,
-            projectId,
-            op.rows,
-            updatedBy,
-          );
-        case "deleteKeyPages":
-          return ProjectContextRepository.deleteKeyPages(
-            tx,
-            projectId,
-            op.urls,
-          );
-        case "deleteResearchLog":
-          return ProjectContextRepository.deleteResearchLogEntries(
-            tx,
-            projectId,
-            op.ids,
-          );
-        case "appendResearchLog":
-          return [
-            ProjectContextRepository.appendResearchLogEntry(tx, {
-              projectId,
-              entryDate: dayStamp(),
-              summary: op.summary,
-              createdBy: updatedBy,
-            }),
-            // The log only has to answer "was this bought recently?", so it
-            // is pruned on write instead of growing forever.
-            ProjectContextRepository.pruneResearchLogBefore(
-              tx,
-              projectId,
-              dayStamp(-RESEARCH_LOG_RETENTION_DAYS),
-            ),
-          ];
-      }
-    }),
+  const hasSettingsUpdates = updates.some(
+    (update) =>
+      !("appendResearchLog" in update) && !("removeResearchLog" in update),
   );
+
+  if (hasSettingsUpdates) {
+    await commitProjectSettingsMutation(projectId, async () => {
+      const state = await readProjectSettingsRows(projectId);
+      if (!state) throw new AppError("NOT_FOUND");
+
+      const resolved = resolveContextUpdates(updates, {
+        customKeys: new Set(
+          state.context.sections
+            .map((row) => row.key)
+            .filter((key) => key.startsWith(CUSTOM_SECTION_KEY_PREFIX)),
+        ),
+        domains: new Set(state.context.competitors.map((row) => row.domain)),
+        urls: new Set(state.context.keyPages.map((row) => row.url)),
+      });
+
+      return {
+        snapshot: makeProjectSettingsSnapshot({
+          ...state,
+          context: projectedSnapshotContext(state.context, resolved),
+        }),
+        write: (tx) =>
+          writeResolvedContextUpdates(projectId, resolved, updatedBy, tx),
+        result: undefined,
+      };
+    });
+  } else {
+    const [sectionRows, competitorRows, keyPageRows] = await Promise.all([
+      ProjectContextRepository.listSections(projectId),
+      ProjectContextRepository.listCompetitors(projectId),
+      ProjectContextRepository.listKeyPages(projectId),
+    ]);
+
+    const resolved = resolveContextUpdates(updates, {
+      customKeys: new Set(
+        sectionRows
+          .map((row) => row.key)
+          .filter((key) => key.startsWith(CUSTOM_SECTION_KEY_PREFIX)),
+      ),
+      domains: new Set(competitorRows.map((row) => row.domain)),
+      urls: new Set(keyPageRows.map((row) => row.url)),
+    });
+
+    // Research-log-only writes remain a single atomic batch and don't create a
+    // settings snapshot because the log is transient activity history.
+    await runBatch((tx) =>
+      writeResolvedContextUpdates(projectId, resolved, updatedBy, tx),
+    );
+  }
 
   return getProjectContext(projectId);
 }

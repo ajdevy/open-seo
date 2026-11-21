@@ -26,7 +26,7 @@ vi.mock("cloudflare:workers", () => ({
   env: { DATABASE_PROVIDER: "d1", AI_VISIBILITY_WORKFLOW: workflow },
 }));
 vi.mock("@/db", () => ({ db: testDb.db }));
-vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/db/runBatch", () => testDb.runBatchModule);
 vi.mock("@/server/lib/runtime-env", () => ({
   getOptionalEnvValue: async () => "dataforseo-key",
   isHostedServerAuthMode: async () => false,

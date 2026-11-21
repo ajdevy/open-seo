@@ -38,6 +38,9 @@ import { GDPR_STORAGE_ERASURE_PATH } from "@/shared/gdpr-erasure";
 import { handleOperatorRequest } from "@/server/standalone/admin";
 import { handleImport, isLegacyImportActive } from "@/server/standalone/import";
 import { hasOperatorSecret } from "@/server/standalone/operator-auth";
+import { handleGoogleDriveArchiveOAuthCallback } from "@/server/features/project-settings-snapshots/googleDriveArchiveOAuthCallback";
+import { GOOGLE_DRIVE_ARCHIVE_CALLBACK_PATH } from "@/server/features/project-settings-snapshots/googleDriveArchiveOAuthShared";
+import { handleGoogleDriveArchiveRequest } from "@/server/features/project-settings-snapshots/googleDriveArchiveOAuthRoutes";
 
 const startHandler = createStartHandler(defaultStreamHandler);
 
@@ -177,6 +180,12 @@ function handleFetch(
   env: Env,
   ctx: ExecutionContext,
 ): Response | Promise<Response> {
+  if (new URL(request.url).pathname === GOOGLE_DRIVE_ARCHIVE_CALLBACK_PATH) {
+    setRuntimeAuthMode(env.AUTH_MODE);
+    return handleGoogleDriveArchiveOAuthCallback(
+      requestWithPublicOrigin(request),
+    );
+  }
   if (getAuthMode(env.AUTH_MODE) === "everyapp") {
     return handleEveryAppRequest(request, env, ctx);
   }
@@ -193,6 +202,10 @@ async function handleAppRequest(
   const publicRequest = requestWithPublicOrigin(request);
   const pathname = new URL(publicRequest.url).pathname;
   ctx.waitUntil(maybeSendSelfHostHeartbeat(pathname));
+
+  const driveArchiveResponse =
+    await handleGoogleDriveArchiveRequest(publicRequest);
+  if (driveArchiveResponse) return driveArchiveResponse;
 
   // Standalone Docker operator tooling (account commands, legacy import).
   // Both handlers answer 404 without the operator secret; the block is also
@@ -324,6 +337,17 @@ export default {
         const { runScheduledAiVisibility } =
           await import("@/server/features/ai-visibility/services/scheduledAiVisibility");
         await runScheduledAiVisibility();
+      }),
+      withPgClient(async () => {
+        try {
+          const { deliverPendingProjectSettingsSnapshotsFromCron } =
+            await import("@/server/features/project-settings-snapshots/snapshotDeliveryCron");
+          await deliverPendingProjectSettingsSnapshotsFromCron();
+        } catch {
+          console.error("[cron] Project settings snapshot delivery failed", {
+            reason: "snapshot_delivery_failed",
+          });
+        }
       }),
       withPgClient(() => sendFirstAuditEmails()),
     ]);

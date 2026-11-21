@@ -1,9 +1,22 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { runBatch } from "@/db/runBatch";
 import { normalizeAiSuggestion } from "@/shared/ai-prompt-suggestions";
-import { aiTrackers, aiPrompts, projects } from "@/db/schema";
-import type { aiRuns, aiObservations } from "@/db/schema";
+import {
+  aiTrackers,
+  aiPrompts,
+  aiRuns,
+  aiObservations,
+  projects,
+  aiProviderRunReservations,
+} from "@/db/schema";
+import {
+  commitProjectSettingsMutation,
+  makeProjectSettingsSnapshot,
+  readProjectSettingsRows,
+} from "@/server/features/project-settings-snapshots/snapshotRepository";
+import { AiVisibilityError } from "../services/aiVisibilityErrors";
+import { lockAiProviderRunBudget } from "./AiProviderRunBudgetRepository";
 
 export type TrackerRow = typeof aiTrackers.$inferSelect;
 export type PromptRow = typeof aiPrompts.$inferSelect;
@@ -13,6 +26,94 @@ type Tx = Parameters<Parameters<typeof runBatch>[0]>[0];
 export interface ConfigurationRows {
   tracker: TrackerRow;
   prompts: PromptRow[];
+}
+
+const SCHEDULED_RUN_SCOPE_CHANGED_REASON =
+  "The scheduled check was canceled because tracking was paused or its " +
+  "saved scope changed before provider dispatch.";
+const SCHEDULED_RUN_CONFIGURATION_CHANGED_REASON =
+  "The scheduled check was canceled because tracking settings changed before provider dispatch.";
+const SCHEDULED_RUN_SCOPE_FIELDS = [
+  "chatgpt",
+  "gemini",
+  "googleAiOverview",
+  "claude",
+  "perplexity",
+  "locationCode",
+  "languageCode",
+] as const;
+
+/**
+ * Prevents a queued scheduled run from being dispatched after tracking is
+ * paused or its scope is removed. Keep the writes in the caller's transaction.
+ */
+export function cancelQueuedScheduledRuns(
+  tx: Tx,
+  trackerId: string,
+  reason = SCHEDULED_RUN_SCOPE_CHANGED_REASON,
+  runId?: string,
+) {
+  // Cancellation and workflow dispatch both compete to transition the run out
+  // of `queued`. Record cancellation first; only runs whose compare-and-set
+  // succeeds here may have their provider reservation released.
+  const cancelledAt = new Date().toISOString();
+  const queuedRun = and(
+    eq(aiRuns.trackerId, trackerId),
+    eq(aiRuns.trigger, "scheduled"),
+    eq(aiRuns.status, "queued"),
+    runId ? eq(aiRuns.id, runId) : undefined,
+  );
+  const cancelledRuns = tx
+    .select({ id: aiRuns.id })
+    .from(aiRuns)
+    .where(
+      and(
+        eq(aiRuns.trackerId, trackerId),
+        eq(aiRuns.trigger, "scheduled"),
+        eq(aiRuns.status, "failed"),
+        eq(aiRuns.completedAt, cancelledAt),
+        runId ? eq(aiRuns.id, runId) : undefined,
+      ),
+    );
+  return [
+    tx
+      .update(aiRuns)
+      .set({ status: "failed", completedAt: cancelledAt })
+      .where(queuedRun),
+    tx
+      .update(aiObservations)
+      .set({ status: "failed", error: reason })
+      .where(
+        and(
+          inArray(aiObservations.runId, cancelledRuns),
+          eq(aiObservations.status, "pending"),
+        ),
+      ),
+    tx
+      .update(aiTrackers)
+      .set({ pendingScheduledRunId: null, lastSkipReason: reason })
+      .where(
+        and(
+          eq(aiTrackers.id, trackerId),
+          inArray(aiTrackers.pendingScheduledRunId, cancelledRuns),
+        ),
+      ),
+    tx
+      .update(aiTrackers)
+      .set({ lastSkipReason: reason })
+      .where(and(eq(aiTrackers.id, trackerId), exists(cancelledRuns))),
+    // Only a run transitioned by the cancellation compare-and-set can match
+    // this marker. A dispatch that won the transition keeps its reservation.
+    tx
+      .update(aiProviderRunReservations)
+      .set({ status: "released" })
+      .where(
+        and(
+          inArray(aiProviderRunReservations.runId, cancelledRuns),
+          eq(aiProviderRunReservations.status, "reserved"),
+        ),
+      ),
+  ];
 }
 
 export async function getTracker(projectId: string) {
@@ -44,16 +145,114 @@ export async function saveConfiguration(rows: ConfigurationRows) {
   await runBatch((tx) => writeConfiguration(tx, rows));
 }
 
-/** Upserts the tracker's collection settings and every prompt. */
+const SNAPSHOTTED_TRACKER_FIELDS = new Set([
+  "enabled",
+  "chatgpt",
+  "gemini",
+  "googleAiOverview",
+  "claude",
+  "perplexity",
+  "locationCode",
+  "languageCode",
+  "scheduleInterval",
+  "weeklyProviderBudgetCents",
+]);
+
+/** Updates tracker settings and their snapshot in one project mutation. */
+export async function updateTracker(
+  id: string,
+  values: Partial<TrackerRow>,
+  options: { cancelQueuedRuns?: boolean } = {},
+) {
+  const cancelQueuedRuns = options.cancelQueuedRuns !== false;
+  if (!Object.keys(values).some((key) => SNAPSHOTTED_TRACKER_FIELDS.has(key))) {
+    await db.update(aiTrackers).set(values).where(eq(aiTrackers.id, id));
+    return;
+  }
+
+  const [tracker] = await db
+    .select({ projectId: aiTrackers.projectId })
+    .from(aiTrackers)
+    .where(eq(aiTrackers.id, id))
+    .limit(1);
+  if (!tracker) return;
+
+  await commitProjectSettingsMutation(tracker.projectId, async () => {
+    const state = await readProjectSettingsRows(tracker.projectId);
+    if (!state?.tracker || state.tracker.id !== id)
+      throw new Error("The saved AI tracker is not available.");
+    const nextTracker = {
+      ...state.tracker,
+      enabled: values.enabled ?? state.tracker.enabled,
+      chatgpt: values.chatgpt ?? state.tracker.chatgpt,
+      gemini: values.gemini ?? state.tracker.gemini,
+      googleAiOverview:
+        values.googleAiOverview ?? state.tracker.googleAiOverview,
+      claude: values.claude ?? state.tracker.claude,
+      perplexity: values.perplexity ?? state.tracker.perplexity,
+      locationCode: values.locationCode ?? state.tracker.locationCode,
+      languageCode: values.languageCode ?? state.tracker.languageCode,
+      scheduleInterval:
+        values.scheduleInterval ?? state.tracker.scheduleInterval,
+      weeklyProviderBudgetCents:
+        values.weeklyProviderBudgetCents ??
+        state.tracker.weeklyProviderBudgetCents,
+    };
+    if (values.enabled === true) {
+      if (!state.questions.some((prompt) => !prompt.paused && !prompt.archived))
+        throw new AiVisibilityError(
+          "NO_ACTIVE_PROMPTS",
+          "Add active prompts before enabling scheduled tracking.",
+        );
+      if (
+        !nextTracker.chatgpt &&
+        !nextTracker.gemini &&
+        !nextTracker.googleAiOverview &&
+        !nextTracker.claude &&
+        !nextTracker.perplexity
+      )
+        throw new AiVisibilityError(
+          "NO_ACTIVE_ENGINES",
+          "Select at least one AI engine before enabling scheduled tracking.",
+        );
+    }
+    return {
+      snapshot: makeProjectSettingsSnapshot({
+        ...state,
+        tracker: nextTracker,
+      }),
+      write: (tx) => [
+        ...(values.weeklyProviderBudgetCents !== undefined
+          ? [lockAiProviderRunBudget(tx)]
+          : []),
+        ...(cancelQueuedRuns &&
+        (values.enabled === false ||
+          SCHEDULED_RUN_SCOPE_FIELDS.some((key) => values[key] !== undefined))
+          ? cancelQueuedScheduledRuns(
+              tx,
+              id,
+              values.lastSkipReason ?? "Scheduled tracking is paused.",
+            )
+          : []),
+        tx.update(aiTrackers).set(values).where(eq(aiTrackers.id, id)),
+      ],
+      result: undefined,
+    };
+  });
+}
+
+/** Upserts collection settings and pauses trackers whose saved scope is empty. */
 export function writeConfiguration(tx: Tx, rows: ConfigurationRows) {
   const { tracker } = rows;
   return [
+    lockAiProviderRunBudget(tx),
     tx
       .insert(aiTrackers)
       .values(tracker)
       .onConflictDoUpdate({
         target: aiTrackers.id,
         set: {
+          enabled: tracker.enabled,
           chatgpt: tracker.chatgpt,
           gemini: tracker.gemini,
           googleAiOverview: tracker.googleAiOverview,
@@ -61,6 +260,7 @@ export function writeConfiguration(tx: Tx, rows: ConfigurationRows) {
           perplexity: tracker.perplexity,
           locationCode: tracker.locationCode,
           languageCode: tracker.languageCode,
+          weeklyProviderBudgetCents: tracker.weeklyProviderBudgetCents,
         },
       }),
     ...rows.prompts.map((prompt) =>
@@ -76,6 +276,13 @@ export function writeConfiguration(tx: Tx, rows: ConfigurationRows) {
           },
         }),
     ),
+    ...cancelQueuedScheduledRuns(
+      tx,
+      tracker.id,
+      tracker.enabled
+        ? SCHEDULED_RUN_CONFIGURATION_CHANGED_REASON
+        : SCHEDULED_RUN_SCOPE_CHANGED_REASON,
+    ),
   ];
 }
 
@@ -85,6 +292,17 @@ export function writeResearchKeywords(
   projectId: string,
   names: string[],
 ) {
+  return [
+    tx
+      .update(projects)
+      .set({ aiResearchKeywords: researchKeywordsValue(names) })
+      .where(
+        and(eq(projects.id, projectId), isNull(projects.aiResearchKeywords)),
+      ),
+  ];
+}
+
+export function researchKeywordsValue(names: string[]) {
   // One keyword per line, so a keyword itself never holds a line break.
   const keywords = [
     ...new Map(
@@ -94,12 +312,5 @@ export function writeResearchKeywords(
       ]),
     ).values(),
   ].filter(Boolean);
-  return [
-    tx
-      .update(projects)
-      .set({ aiResearchKeywords: keywords.join("\n") || null })
-      .where(
-        and(eq(projects.id, projectId), isNull(projects.aiResearchKeywords)),
-      ),
-  ];
+  return keywords.join("\n") || null;
 }

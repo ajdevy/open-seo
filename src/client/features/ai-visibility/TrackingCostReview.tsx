@@ -28,8 +28,10 @@ import { ScheduleField } from "@/client/features/rank-tracking/ScheduleField";
 import {
   localScheduleTimeFrom,
   randomScheduleDate,
-  withBrowserTimeZone,
+  scheduleTimeForAiVisibilityRequest,
+  type LocalScheduleTime,
 } from "@/client/features/rank-tracking/scheduleTime";
+import { DEFAULT_AI_WEEKLY_SCHEDULE } from "@/shared/ai-visibility-schedule";
 import { AiLoading, AiQueryError, aiMoney, aiVisibilityKey } from "./shared";
 
 const costEstimateQueryOptions = ({
@@ -101,14 +103,38 @@ export function TrackingCostReview({
   const [scheduleInterval, setScheduleInterval] = useState<AiScheduleInterval>(
     tracker.scheduleInterval,
   );
-  // Shown and edited in the browser's timezone; the server converts it to UTC.
-  const [scheduleTime, setScheduleTime] = useState(() =>
-    localScheduleTimeFrom(
-      tracker.enabled && tracker.nextCheckAt
-        ? new Date(tracker.nextCheckAt)
-        : randomScheduleDate(),
-    ),
-  );
+  // Keep a saved IANA timezone, or use the selected default for a new tracker.
+  const [scheduleTime, setScheduleTime] = useState<LocalScheduleTime>(() => {
+    if (
+      tracker.scheduleWeekday !== null &&
+      tracker.scheduleHour !== null &&
+      tracker.scheduleMinute !== null &&
+      tracker.scheduleTimeZone
+    )
+      return {
+        weekday: tracker.scheduleWeekday,
+        hour: tracker.scheduleHour,
+        minute: tracker.scheduleMinute,
+        timeZone: tracker.scheduleTimeZone,
+      };
+    if (tracker.enabled && tracker.nextCheckAt)
+      return localScheduleTimeFrom(new Date(tracker.nextCheckAt));
+    return tracker.scheduleInterval === "weekly"
+      ? DEFAULT_AI_WEEKLY_SCHEDULE
+      : localScheduleTimeFrom(randomScheduleDate());
+  });
+  const savedWallClockSchedule =
+    tracker.scheduleWeekday !== null &&
+    tracker.scheduleHour !== null &&
+    tracker.scheduleMinute !== null &&
+    tracker.scheduleTimeZone !== null
+      ? {
+          weekday: tracker.scheduleWeekday,
+          hour: tracker.scheduleHour,
+          minute: tracker.scheduleMinute,
+          timeZone: tracker.scheduleTimeZone,
+        }
+      : null;
   const [scheduleTimeEdited, setScheduleTimeEdited] = useState(false);
   const estimate = useQuery({
     ...costEstimateQueryOptions({
@@ -123,6 +149,20 @@ export function TrackingCostReview({
   // Run now collects live answers; scheduled runs use the cheaper queue.
   const runCostUsd =
     (mode === "check" ? cost?.runNowCostUsd : cost?.costUsd) ?? 0;
+  const providerRunCostUsd =
+    (mode === "check" ? cost?.runNowProviderCostUsd : cost?.providerCostUsd) ??
+    0;
+  const fitsWeeklyProviderBudget = Boolean(
+    cost &&
+    cost.providerCostBounded &&
+    providerRunCostUsd <= cost.weeklyProviderBudgetAvailableUsd,
+  );
+  const exceedsInstallationBudget = Boolean(
+    cost && providerRunCostUsd > cost.weeklyProviderBudgetGlobalAvailableUsd,
+  );
+  const exceedsProjectBudget = Boolean(
+    cost && providerRunCostUsd > cost.weeklyProjectProviderBudgetAvailableUsd,
+  );
   const start = useMutation({
     mutationFn: async () => {
       if (!cost) throw new Error("Review the estimate before starting.");
@@ -137,7 +177,10 @@ export function TrackingCostReview({
               !tracker.enabled ||
               scheduleTimeEdited ||
               scheduleInterval !== tracker.scheduleInterval
-                ? withBrowserTimeZone(scheduleTime)
+                ? scheduleTimeForAiVisibilityRequest(
+                    scheduleInterval,
+                    scheduleTime,
+                  )
                 : undefined,
           },
         });
@@ -174,6 +217,7 @@ export function TrackingCostReview({
           <Button
             disabled={
               !cost ||
+              !fitsWeeklyProviderBudget ||
               // Approve only the current price, not the preloaded one
               // still being refreshed.
               estimate.isFetching ||
@@ -209,13 +253,30 @@ export function TrackingCostReview({
                 allowManual={false}
                 schedule={scheduleInterval}
                 onScheduleChange={(value) => {
-                  if (value !== "manual") setScheduleInterval(value);
+                  if (value === "manual") return;
+                  if (value === "weekly" && scheduleInterval !== "weekly") {
+                    setScheduleTime(
+                      savedWallClockSchedule ?? DEFAULT_AI_WEEKLY_SCHEDULE,
+                    );
+                  } else if (
+                    value !== "weekly" &&
+                    scheduleInterval === "weekly" &&
+                    scheduleTime.timeZone
+                  ) {
+                    setScheduleTime({
+                      weekday: scheduleTime.weekday,
+                      hour: scheduleTime.hour,
+                      minute: scheduleTime.minute,
+                    });
+                  }
+                  setScheduleInterval(value);
                 }}
                 scheduleTime={scheduleTime}
                 onScheduleTimeChange={(time) => {
                   setScheduleTime(time);
                   setScheduleTimeEdited(true);
                 }}
+                showTimeZone
               />
             )}
             <Field>
@@ -226,9 +287,40 @@ export function TrackingCostReview({
                 {aiMoney(runCostUsd)}
               </span>
               <FieldDescription>
-                {/* No per-answer price: engines cost different amounts. */}
+                {cost.providerCostBounded
+                  ? "This is the conservative run ceiling, including up to three provider attempts per answer."
+                  : "This is an informational forecast only. A selected LLM Responses route has variable token or web-search charges without an enforceable run ceiling."}
+              </FieldDescription>
+              {!cost.providerCostBounded && (
+                <FieldDescription className="text-destructive">
+                  Paid runs and scheduling are disabled for this selection.
+                </FieldDescription>
+              )}
+              <FieldDescription>
                 {`${cost.observations} ${cost.observations === 1 ? "answer" : "answers"}${mode === "schedule" ? ` · about ${aiMoney(cost.monthlyCostUsd)} a month (${cost.checksPerMonth} ${cost.checksPerMonth === 1 ? "run" : "runs"})` : " · live answers, ready in a few minutes"}`}
               </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel>Weekly provider budget</FieldLabel>
+              <FieldDescription>
+                {`${aiMoney(cost.weeklyProviderBudgetUsd)} installation-wide over a rolling 7 days: ${aiMoney(cost.weeklyProviderBudgetAccountedUsd)} accounted, ${aiMoney(cost.weeklyProviderBudgetHeldUsd)} reserved, and ${aiMoney(cost.weeklyProviderBudgetGlobalAvailableUsd)} globally available. This project's ${aiMoney(cost.weeklyProjectProviderBudgetUsd)} cap has ${aiMoney(cost.weeklyProjectProviderBudgetAvailableUsd)} available; this run can use up to ${aiMoney(cost.weeklyProviderBudgetAvailableUsd)} under both limits.`}
+              </FieldDescription>
+              <FieldDescription>
+                {`This run reserves up to ${aiMoney(providerRunCostUsd)} for all selected provider routes, including retry allowance.`}
+              </FieldDescription>
+              {exceedsProjectBudget && (
+                <FieldDescription className="text-destructive">
+                  This run exceeds the remaining project budget. Increase the
+                  project cap or reduce the run scope.
+                </FieldDescription>
+              )}
+              {exceedsInstallationBudget && (
+                <FieldDescription className="text-destructive">
+                  This run exceeds the remaining installation-wide rolling 7-day
+                  budget. Reduce the run scope or wait until the rolling window
+                  has room.
+                </FieldDescription>
+              )}
             </Field>
             {start.error && <AiQueryError error={start.error} />}
           </>

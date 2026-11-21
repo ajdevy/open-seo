@@ -28,6 +28,8 @@ export function aiEngineUsesModelApi(
 ): engine is AiModelApiEngine {
   return engine === "claude" || engine === "perplexity";
 }
+/** Maximum paid attempts allowed for a single provider answer. */
+export const AI_PROVIDER_MAX_ATTEMPTS_PER_ANSWER = 3;
 /**
  * Raw DataForSEO USD for one answer, standard queue. AI Overviews is one
  * organic SERP page ($0.0006) plus the async overview load ($0.0006).
@@ -66,6 +68,11 @@ export interface AiTracker {
   locationCode: number;
   languageCode: string;
   scheduleInterval: AiScheduleInterval;
+  scheduleWeekday: number | null;
+  scheduleHour: number | null;
+  scheduleMinute: number | null;
+  scheduleTimeZone: string | null;
+  weeklyProviderBudgetUsd: number;
   nextCheckAt: string | null;
   lastSkipReason: string | null;
   createdAt: string;
@@ -77,7 +84,7 @@ export interface AiCapability {
   unsupportedLocationCodes: number[];
   maxPromptLength: number;
   note: string;
-  /** Every run asks the model's API, at live API pricing. */
+  /** This engine uses a variable-cost model route that may not be run yet. */
   modelApi: boolean;
 }
 export interface AiRun {
@@ -95,6 +102,12 @@ export interface AiRun {
 export interface AiTrackerState {
   configured: boolean;
   tracker: AiTracker | null;
+  /** Latest encrypted settings snapshot and whether the remote copy is confirmed. */
+  settingsSnapshot?: {
+    revision: number | null;
+    status: "unavailable" | "unconfirmed" | "confirmed";
+    recoverableAfterServerLoss: boolean;
+  };
   /** Topics of unarchived prompts, in name order. */
   topics: string[];
   prompts: AiPrompt[];
@@ -128,6 +141,9 @@ export interface AiCostEstimate {
   engineCount: number;
   observations: number;
   providerCostUsd: number;
+  /** False when a selected provider route has no enforceable maximum charge. */
+  providerCostBounded: boolean;
+  runNowProviderCostUsd: number;
   costUsd: number;
   costCredits: number;
   /** A one-off Run now check collects live answers, at the live price. */
@@ -136,6 +152,18 @@ export interface AiCostEstimate {
   scheduleInterval: AiScheduleInterval;
   checksPerMonth: number;
   monthlyCostUsd: number;
+  weeklyProviderBudgetUsd: number;
+  weeklyProviderBudgetAccountedUsd: number;
+  weeklyProviderBudgetHeldUsd: number;
+  weeklyProviderBudgetAvailableUsd: number;
+  weeklyProviderBudgetGlobalAvailableUsd: number;
+  weeklyProjectProviderBudgetUsd: number;
+  weeklyProjectProviderBudgetAccountedUsd: number;
+  weeklyProjectProviderBudgetHeldUsd: number;
+  weeklyProjectProviderBudgetAvailableUsd: number;
+  runNowProviderBudgetRemainingUsd: number;
+  weeklyProviderBudgetScope: "installation";
+  weeklyProviderBudgetWindowDays: 7;
   currency: "USD";
   warnings: string[];
 }

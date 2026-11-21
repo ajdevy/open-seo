@@ -2,6 +2,7 @@ import type {
   RankCheckScheduleTime,
   RankTrackingConfig,
 } from "@/types/schemas/rank-tracking";
+import type { AiScheduleInterval } from "@/shared/ai-visibility";
 
 export const WEEKDAYS = [
   "Sunday",
@@ -18,6 +19,8 @@ export type LocalScheduleTime = {
   weekday: number;
   hour: number;
   minute: number;
+  /** Optional explicit IANA timezone. Without one, use the browser timezone. */
+  timeZone?: string;
 };
 
 export function localScheduleTimeFrom(date: Date): LocalScheduleTime {
@@ -53,8 +56,17 @@ export function withBrowserTimeZone(
 ): RankCheckScheduleTime {
   return {
     ...time,
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timeZone: time.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
+}
+
+/** Build the schedule-time field sent by AI Visibility for the selected cadence. */
+export function scheduleTimeForAiVisibilityRequest(
+  interval: AiScheduleInterval,
+  time: LocalScheduleTime,
+): RankCheckScheduleTime {
+  if (interval === "weekly") return withBrowserTimeZone(time);
+  return { hour: time.hour, minute: time.minute };
 }
 
 /** City part of the IANA name plus today's offset: "Los Angeles (UTC-7)". */
@@ -72,6 +84,22 @@ export function describeSchedule(
   interval: Exclude<RankTrackingConfig["scheduleInterval"], "manual">,
   time: LocalScheduleTime,
 ): string {
+  const when =
+    interval === "daily"
+      ? "daily"
+      : interval === "weekly"
+        ? `weekly on ${WEEKDAYS[time.weekday]}s`
+        : "on the last day of each month";
+  if (time.timeZone) {
+    const wallClock = new Date(0);
+    wallClock.setUTCHours(time.hour, time.minute, 0, 0);
+    const localTime = wallClock.toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: "UTC",
+    });
+    return `Runs ${when} at ${localTime} (${time.timeZone})`;
+  }
   const date = nextLocalOccurrence(time);
   const localTime = date.toLocaleTimeString([], {
     hour: "numeric",
@@ -86,12 +114,6 @@ export function describeSchedule(
     interval === "weekly" && date.getUTCDay() !== date.getDay()
       ? `${WEEKDAYS[date.getUTCDay()].slice(0, 3)} `
       : "";
-  const when =
-    interval === "daily"
-      ? "daily"
-      : interval === "weekly"
-        ? `weekly on ${WEEKDAYS[time.weekday]}s`
-        : "on the last day of each month";
   return `Runs ${when} at ${localTime} (${utcWeekday}${utcTime} UTC)`;
 }
 

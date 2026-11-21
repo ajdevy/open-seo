@@ -7,6 +7,7 @@ const {
   research,
   workflow,
   prepareWebsiteTracking,
+  enableWebsiteTrackingSchedule,
   startWebsiteTrackingRun,
 } = vi.hoisted(() => ({
   getTracker: vi.fn(),
@@ -15,6 +16,7 @@ const {
   research: vi.fn(),
   workflow: { get: vi.fn(), create: vi.fn() },
   prepareWebsiteTracking: vi.fn(),
+  enableWebsiteTrackingSchedule: vi.fn(),
   startWebsiteTrackingRun: vi.fn(),
 }));
 
@@ -30,11 +32,13 @@ vi.mock("@/server/lib/runtime-env", () => ({
   isHostedServerAuthMode: async () => false,
 }));
 vi.mock("../repositories/aiVisibilityConfigurationRepository", () => ({
+  researchKeywordsValue: (names: string[]) => names.join("\n"),
   writeConfiguration: vi.fn(),
   writeResearchKeywords: vi.fn(),
 }));
 vi.mock("./websiteTrackingSetup", () => ({
   prepareWebsiteTracking,
+  enableWebsiteTrackingSchedule,
   startWebsiteTrackingRun,
 }));
 vi.mock("@/server/features/projects/repositories/ProjectRepository", () => ({
@@ -65,6 +69,34 @@ vi.mock("../repositories/AiVisibilityRepository", () => ({
 vi.mock("@/server/features/projects/services/websiteResearch", () => ({
   researchWebsite: research,
 }));
+vi.mock(
+  "@/server/features/project-settings-snapshots/snapshotRepository",
+  () => ({
+    commitProjectSettingsMutation: async (
+      _projectId: string,
+      prepare: () => Promise<{
+        result: unknown;
+      }>,
+    ) => (await prepare()).result,
+    makeProjectSettingsSnapshot: vi.fn(() => ({ projectId: "project" })),
+    readProjectSettingsRows: async () => ({
+      project: {
+        id: "project",
+        organizationId: "organization",
+        name: "OpenSEO",
+        domain: "openseo.so",
+        locationCode: 2840,
+        languageCode: "en",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        archivedAt: null,
+        aiResearchKeywords: null,
+        indexnowKey: null,
+      },
+      tracker: null,
+      questions: [],
+    }),
+  }),
+);
 
 import {
   getAiResearchSetup,
@@ -80,6 +112,7 @@ describe("runAiResearchSetup", () => {
     listResearchKeywords.mockResolvedValue([]);
     listCompetitors.mockResolvedValue([]);
     prepareWebsiteTracking.mockResolvedValue(null);
+    enableWebsiteTrackingSchedule.mockClear();
     research.mockResolvedValue({
       name: "OpenSEO",
       domain: "openseo.so",
@@ -116,6 +149,11 @@ describe("runAiResearchSetup", () => {
     await runAiResearchSetup({ projectId: "project" }, customer, {
       runSeededTracking: true,
     });
+    expect(enableWebsiteTrackingSchedule).toHaveBeenCalledTimes(2);
+    expect(enableWebsiteTrackingSchedule).toHaveBeenCalledWith(
+      "project",
+      customer,
+    );
     expect(startWebsiteTrackingRun).toHaveBeenCalledWith("project", customer);
   });
 
