@@ -82,7 +82,29 @@ export async function loadPayload(
             .from(projectResearchLog)
             .where(inArray(projectResearchLog.projectId, projectIds)),
           db
-            .select()
+            // pendingScheduledRunId is a source outbox pointer, not portable
+            // client data; restore must never replay that dispatch.
+            .select({
+              id: aiTrackers.id,
+              projectId: aiTrackers.projectId,
+              enabled: aiTrackers.enabled,
+              chatgpt: aiTrackers.chatgpt,
+              gemini: aiTrackers.gemini,
+              claude: aiTrackers.claude,
+              perplexity: aiTrackers.perplexity,
+              googleAiOverview: aiTrackers.googleAiOverview,
+              locationCode: aiTrackers.locationCode,
+              languageCode: aiTrackers.languageCode,
+              scheduleInterval: aiTrackers.scheduleInterval,
+              scheduleWeekday: aiTrackers.scheduleWeekday,
+              scheduleHour: aiTrackers.scheduleHour,
+              scheduleMinute: aiTrackers.scheduleMinute,
+              scheduleTimeZone: aiTrackers.scheduleTimeZone,
+              nextCheckAt: aiTrackers.nextCheckAt,
+              lastSkipReason: aiTrackers.lastSkipReason,
+              weeklyProviderBudgetCents: aiTrackers.weeklyProviderBudgetCents,
+              createdAt: aiTrackers.createdAt,
+            })
             .from(aiTrackers)
             .where(inArray(aiTrackers.projectId, projectIds)),
         ])
