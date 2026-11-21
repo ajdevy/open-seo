@@ -127,6 +127,7 @@ describe("researchAiPrompts", () => {
   });
 
   it("filters and merges cached research without a provider call", async () => {
+    creditsDepleted.mockResolvedValue({ depleted: true });
     getCached.mockImplementation(async (key: string) => {
       if (key === "ai-visibility:prompt-research")
         return {
@@ -187,6 +188,7 @@ describe("researchAiPrompts", () => {
     expect(mentionsSearch).not.toHaveBeenCalled();
     expect(generateText).not.toHaveBeenCalled();
     expect(billResearchSpend).not.toHaveBeenCalled();
+    expect(creditsDepleted).not.toHaveBeenCalled();
   });
 
   it("refuses research when hosted credits are used up before buying any data", async () => {

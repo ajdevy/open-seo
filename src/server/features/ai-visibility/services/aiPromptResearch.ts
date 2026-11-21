@@ -73,14 +73,6 @@ export async function researchAiPrompts(
   await assertPaidAiSearchPlan(customer.organizationId, "Prompt Research");
   // Serve prompt and relevance data from cache only until both provider costs
   // can be reserved through the shared rolling budget.
-  if (
-    (await isHostedServerAuthMode()) &&
-    (await checkUsageCreditsDepleted(customer)).depleted
-  )
-    throw new AppError(
-      "INSUFFICIENT_CREDITS",
-      "You need usage credits to research prompts.",
-    );
   const state = await getTracker({ projectId: input.projectId });
   const keyword = normalizeAiSuggestion(input.keyword);
   // DataForSEO has ChatGPT prompt data only in US English.
@@ -146,6 +138,7 @@ async function loadPrompts(
   });
   const cached = cachedResearchSchema.safeParse(await getCached(cacheKey));
   if (cached.success) return cached.data;
+  await assertResearchCreditsAvailable(customer);
   throw new AiVisibilityError(
     "PROVIDER_COST_CEILING_UNAVAILABLE",
     "Prompt research cannot start until its DataForSEO cost can be reserved against the shared provider budget. No provider request was started.",
@@ -189,10 +182,24 @@ async function relevantQuestions(
   });
   const cached = z.array(z.string()).safeParse(await getCached(cacheKey));
   if (cached.success) return new Set(cached.data);
+  await assertResearchCreditsAvailable(customer);
   throw new AiVisibilityError(
     "PROVIDER_COST_CEILING_UNAVAILABLE",
     "Prompt relevance cannot start until its OpenRouter cost can be reserved against the shared provider budget. No provider request was started.",
   );
+}
+
+async function assertResearchCreditsAvailable(
+  customer: BillingCustomerContext,
+) {
+  if (
+    (await isHostedServerAuthMode()) &&
+    (await checkUsageCreditsDepleted(customer)).depleted
+  )
+    throw new AppError(
+      "INSUFFICIENT_CREDITS",
+      "You need usage credits to research prompts.",
+    );
 }
 
 // "…most accurate?" and "…the most accurate?", or the same question with
