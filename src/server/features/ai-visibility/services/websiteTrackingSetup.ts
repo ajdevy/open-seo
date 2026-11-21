@@ -7,8 +7,9 @@ import type { SaveProjectWebsiteSetup } from "@/types/schemas/projectWebsite";
 import { AppError } from "@/server/lib/errors";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { startRun } from "./aiVisibilityRuns";
+import { setSchedule } from "./aiVisibilitySchedule";
 
-/** Seeds weekly tracking from website setup's first three suggested topics. */
+/** Prepares paused weekly tracking from the first three suggested topics. */
 export async function prepareWebsiteTracking(
   input: Pick<SaveProjectWebsiteSetup, "projectId" | "suggestedTopics">,
   market: { locationCode: number; languageCode: string },
@@ -52,6 +53,24 @@ export async function prepareWebsiteTracking(
     patch: { engines: ["chatgpt"], prompts },
     now: new Date().toISOString(),
   }).rows;
+}
+
+/** Enables a seeded schedule only after the server validates its scope/access. */
+export async function enableWebsiteTrackingSchedule(
+  projectId: string,
+  billing: BillingCustomerContext,
+) {
+  try {
+    return await setSchedule(
+      { projectId, enabled: true, scheduleInterval: "weekly" },
+      billing,
+    );
+  } catch (error) {
+    // Website/research setup stays saved; the tracker remains paused and the
+    // error is surfaced in server logs when recurring collection is not ready.
+    console.warn(`[ai-visibility] ${projectId} weekly schedule:`, error);
+    return null;
+  }
 }
 
 /**

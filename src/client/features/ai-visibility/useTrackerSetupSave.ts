@@ -29,7 +29,7 @@ export function useTrackerSetupSave({
       });
       if (!scheduleWeekly) return { state: result.state };
       try {
-        // A first schedule also collects a baseline now.
+        // Persist the weekly slot; a live baseline is a separate Run now action.
         const scheduled = await setAiVisibilitySchedule({
           data: { projectId, enabled: true, scheduleInterval: "weekly" },
         });

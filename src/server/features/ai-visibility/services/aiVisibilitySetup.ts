@@ -9,7 +9,10 @@ import {
   readProjectSettingsRows,
 } from "@/server/features/project-settings-snapshots/snapshotRepository";
 
-/** Creates or edits tracking. A new tracker starts weekly, first check a week out. */
+/**
+ * Creates or edits tracking. A new tracker remains paused until scheduling
+ * passes server validation.
+ */
 export async function saveTracker(input: SaveAiTrackerInput) {
   const { projectId, ...patch } = input;
   const mutation = await commitProjectSettingsMutation(projectId, async () => {

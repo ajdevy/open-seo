@@ -81,19 +81,33 @@ export const estimateAiCostSchema = aiProjectSchema.extend({
     .describe("Optional proposed changes to estimate before saving."),
   promptIds: z.array(z.string().uuid()).min(1).max(100).optional(),
 });
-export const setAiScheduleSchema = aiProjectSchema.extend({
-  enabled: z.boolean(),
-  scheduleInterval: scheduleIntervalSchema
-    .optional()
-    .describe(
-      "Cadence when enabling. Defaults to the saved schedule, or weekly. Ignored when pausing.",
-    ),
-  scheduleTime: scheduleTimeSchema
-    .optional()
-    .describe(
-      "Run time when enabling. Omit to keep the current next check when the cadence is unchanged, or to pick a time between 04:00 and 10:00 UTC.",
-    ),
-});
+export const setAiScheduleSchema = aiProjectSchema
+  .extend({
+    enabled: z.boolean(),
+    scheduleInterval: scheduleIntervalSchema
+      .optional()
+      .describe(
+        "Cadence when enabling. Defaults to the saved schedule, or weekly. Ignored when pausing.",
+      ),
+    scheduleTime: scheduleTimeSchema
+      .optional()
+      .describe(
+        "Run time when enabling. For weekly schedules with a timezone, hour and minute are local time. Daily and monthly schedules use a UTC anchor. Omit to keep the current next check when the cadence is unchanged.",
+      ),
+  })
+  .superRefine((input, ctx) => {
+    if (
+      input.enabled &&
+      input.scheduleInterval === "weekly" &&
+      input.scheduleTime?.timeZone !== undefined &&
+      input.scheduleTime.weekday === undefined
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["scheduleTime", "weekday"],
+        message: "A weekday is required for a weekly schedule with a timezone.",
+      });
+  });
 export const runAiCheckSchema = aiProjectSchema.extend({
   maxCostUsd: z
     .number()
