@@ -46,7 +46,7 @@ function visibilityEligibilityIssues(
     resultStatus: string;
     answer: string | null;
     searchStatus: string;
-    searchEvidence: readonly { status: string }[];
+    searchEvidence: readonly { tool: string; status: string }[];
     eligibleForVisibility: boolean | null;
   },
   fields: {
@@ -74,7 +74,11 @@ function visibilityEligibilityIssues(
       path: [fields.searchStatus],
       message: "A visibility-eligible result requires completed search.",
     });
-  if (!value.searchEvidence.some((event) => event.status === "completed"))
+  if (
+    !value.searchEvidence.some(
+      (event) => event.tool === "web_search" && event.status === "completed",
+    )
+  )
     issues.push({
       path: [fields.searchEvidence],
       message:

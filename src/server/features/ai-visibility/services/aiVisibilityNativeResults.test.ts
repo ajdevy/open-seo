@@ -93,16 +93,18 @@ beforeEach(async () => {
 });
 
 describe("native model result storage", () => {
-  it("rejects unsupported search-evidence tools at the persistence boundary", async () => {
+  it("rejects non-web-search evidence for visibility eligibility at persistence", async () => {
     await expect(
       saveAiNativeResult(
         result({
+          eligible_for_visibility: true,
+          search_status: "completed",
           search_evidence: [
             { tool: "open_url", status: "completed", evidence_ref: "event-1" },
           ],
         }),
       ),
-    ).rejects.toThrow(/web_search/);
+    ).rejects.toThrow();
 
     expect(await testDb.db.select().from(aiNativeResults)).toHaveLength(0);
     expect(await testDb.db.select().from(aiNativeSearchEvidence)).toHaveLength(
