@@ -28,7 +28,7 @@ import { ScheduleField } from "@/client/features/rank-tracking/ScheduleField";
 import {
   localScheduleTimeFrom,
   randomScheduleDate,
-  withBrowserTimeZone,
+  scheduleTimeForAiVisibilityRequest,
   type LocalScheduleTime,
 } from "@/client/features/rank-tracking/scheduleTime";
 import { DEFAULT_AI_WEEKLY_SCHEDULE } from "@/shared/ai-visibility-schedule";
@@ -177,7 +177,10 @@ export function TrackingCostReview({
               !tracker.enabled ||
               scheduleTimeEdited ||
               scheduleInterval !== tracker.scheduleInterval
-                ? withBrowserTimeZone(scheduleTime)
+                ? scheduleTimeForAiVisibilityRequest(
+                    scheduleInterval,
+                    scheduleTime,
+                  )
                 : undefined,
           },
         });
