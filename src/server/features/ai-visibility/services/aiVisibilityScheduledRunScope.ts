@@ -1,5 +1,8 @@
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
-import type { RunRow } from "../repositories/AiVisibilityRepository";
+import type {
+  ConfigurationRows,
+  RunRow,
+} from "../repositories/AiVisibilityRepository";
 import { activeAiPrompts, trackerEngines } from "./aiVisibilityConfiguration";
 
 type ValidationStage = "queue" | "dispatch";
@@ -7,13 +10,17 @@ type ValidationStage = "queue" | "dispatch";
 export async function scheduledRunScopeError(
   run: RunRow,
   stage: ValidationStage,
+  savedConfig?: ConfigurationRows | null,
 ) {
   if (!(await repo.isProjectActive(run.projectId)))
     return stage === "dispatch"
       ? "The scheduled check was canceled because its project was archived before provider dispatch."
       : "The scheduled check was canceled because its project was archived before the queued check started.";
 
-  const config = await repo.getConfiguration(run.projectId);
+  const config =
+    savedConfig === undefined
+      ? await repo.getConfiguration(run.projectId)
+      : savedConfig;
   if (!config || !config.tracker.enabled)
     return stage === "dispatch"
       ? "Scheduled tracking was paused before provider dispatch."

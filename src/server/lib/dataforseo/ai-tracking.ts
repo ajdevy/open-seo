@@ -121,11 +121,31 @@ export async function postAiTrackingTasks(
     throw failedResponseError(response, "DataForSEO task_post failed");
   }
   // Cost is summed over every entry, accepted or not, so anything DataForSEO
-  // charged is metered.
+  // charged is metered. Cost is marked known only when the raw response maps
+  // one-to-one to every submitted task; filtering rejected entries below must
+  // not hide duplicate, extra, or missing provider entries from the caller.
   const posted: PostedAiTrackingTask[] = [];
   let costUsd = 0;
-  for (const entry of response.tasks ?? []) {
-    costUsd += entry.cost ?? 0;
+  const rawEntries = response.tasks ?? [];
+  const submittedTags = new Set(input.tasks.map((task) => task.tag));
+  const rawTags = rawEntries.map((entry) => entry.data?.tag);
+  let costKnown =
+    submittedTags.size === input.tasks.length &&
+    rawEntries.length === input.tasks.length &&
+    new Set(rawTags).size === rawTags.length &&
+    rawTags.every(
+      (tag): tag is string => typeof tag === "string" && submittedTags.has(tag),
+    );
+  for (const entry of rawEntries) {
+    if (
+      typeof entry.cost === "number" &&
+      Number.isFinite(entry.cost) &&
+      entry.cost >= 0
+    ) {
+      costUsd += entry.cost;
+    } else {
+      costKnown = false;
+    }
     const tag: unknown = entry.data?.tag;
     if (entry.status_code !== 20100 || !entry.id || typeof tag !== "string") {
       console.warn(
@@ -140,6 +160,7 @@ export async function postAiTrackingTasks(
     billing: {
       path: `${endpoint}/task_post`.slice(1).split("/"),
       costUsd,
+      costKnown,
     },
   };
 }
@@ -219,6 +240,18 @@ export async function fetchAiTrackingLiveAnswer(
   }
   return {
     data: aiTrackingAnswer(task),
-    billing: { path: endpoint.slice(1).split("/"), costUsd: task.cost ?? 0 },
+    billing: {
+      path: endpoint.slice(1).split("/"),
+      costUsd:
+        typeof task.cost === "number" &&
+        Number.isFinite(task.cost) &&
+        task.cost >= 0
+          ? task.cost
+          : 0,
+      costKnown:
+        typeof task.cost === "number" &&
+        Number.isFinite(task.cost) &&
+        task.cost >= 0,
+    },
   };
 }

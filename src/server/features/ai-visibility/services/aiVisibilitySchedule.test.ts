@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
+import { aiProviderRunReservations } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { setSchedule } from "./aiVisibilitySchedule";
 import { configuration, customer } from "./aiVisibilityTestFixtures";
@@ -15,12 +17,16 @@ vi.mock("cloudflare:workers", () => ({
   env: { DATABASE_PROVIDER: "d1", AI_VISIBILITY_WORKFLOW: { create: vi.fn() } },
 }));
 vi.mock("@/db", () => ({ db: testDb.db }));
-vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/db/runBatch", () => testDb.runBatchModule);
 vi.mock("@/server/lib/runtime-env", () => ({
   getOptionalEnvValue: async (name: string) =>
     name === "AUTOGEO_QUEUE_MASTER_KEY_B64" ? btoa("k".repeat(32)) : undefined,
 }));
 vi.mock("@/server/lib/provider-access", () => ({ hasDataforseoAccess }));
+vi.mock("@/server/lib/runtime-env", () => ({
+  getOptionalEnvValue: async (name: string) =>
+    name === "AUTOGEO_QUEUE_MASTER_KEY_B64" ? btoa("k".repeat(32)) : undefined,
+}));
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -70,6 +76,14 @@ it("cancels a queued scheduled run atomically when tracking is paused", async ()
   await repo.updateTracker(trackerId, {
     pendingScheduledRunId: runId,
   });
+  await testDb.db.insert(aiProviderRunReservations).values({
+    id: "queued-scheduled-before-pause-reservation",
+    projectId: "project",
+    runId,
+    reservedUsdMicros: 1_000_000,
+    status: "reserved",
+    createdAt: "2026-11-16T06:00:00.000Z",
+  });
 
   await setSchedule({ projectId: "project", enabled: false }, customer);
 
@@ -85,6 +99,12 @@ it("cancels a queued scheduled run atomically when tracking is paused", async ()
       error: "Scheduled tracking is paused.",
     },
   ]);
+  expect(await repo.startScheduledRunIfQueued(runId)).toBe(false);
+  const [reservation] = await testDb.db
+    .select()
+    .from(aiProviderRunReservations)
+    .where(eq(aiProviderRunReservations.runId, runId));
+  expect(reservation?.status).toBe("released");
 });
 
 it("cancels a queued scheduled run when the saved prompt scope changes", async () => {
@@ -156,7 +176,12 @@ it("rejects a weekly timezone schedule without a weekday before saving", async (
     },
   };
 
-  expect(setAiScheduleSchema.safeParse(input).success).toBe(false);
+  expect(
+    setAiScheduleSchema.safeParse({
+      ...input,
+      projectId: "00000000-0000-4000-8000-000000000001",
+    }).success,
+  ).toBe(false);
   const before = await repo.getTracker("project");
   if (!before) throw new Error("Tracker fixture was not saved.");
 

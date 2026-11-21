@@ -1,34 +1,44 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { aiPrompts, aiTrackers, projects } from "@/db/schema";
+import {
+  aiPrompts,
+  aiTrackers,
+  projects,
+} from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
 import { runScheduledAiVisibility } from "./scheduledAiVisibility";
 import { configuration } from "./aiVisibilityTestFixtures";
 
-const { testDb, workflow, hosted } = await vi.hoisted(async () => {
-  const { createAiVisibilityTestDb } = await import("../aiVisibilityTestDb");
-  return {
-    testDb: await createAiVisibilityTestDb(),
-    workflow: {
-      create: vi.fn(),
-      get: vi.fn(async () => ({
-        status: async () => ({ status: "queued" }),
-      })),
-    },
-    hosted: vi.fn(),
-  };
-});
+const { testDb, workflow, hosted, providerAccess } = await vi.hoisted(
+  async () => {
+    const { createAiVisibilityTestDb } = await import("../aiVisibilityTestDb");
+    return {
+      testDb: await createAiVisibilityTestDb(),
+      workflow: {
+        create: vi.fn(),
+        get: vi.fn(async () => ({
+          status: async () => ({ status: "queued" }),
+        })),
+      },
+      hosted: vi.fn(),
+      providerAccess: vi.fn(),
+    };
+  },
+);
 vi.mock("cloudflare:workers", () => ({
   env: { DATABASE_PROVIDER: "d1", AI_VISIBILITY_WORKFLOW: workflow },
 }));
 vi.mock("@/db", () => ({ db: testDb.db }));
-vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/db/runBatch", () => testDb.runBatchModule);
 vi.mock("@/server/lib/runtime-env", () => ({
   getOptionalEnvValue: async (name: string) =>
     name === "AUTOGEO_QUEUE_MASTER_KEY_B64"
       ? btoa("k".repeat(32))
       : "dataforseo-key",
   isHostedServerAuthMode: hosted,
+}));
+vi.mock("@/server/lib/provider-access", () => ({
+  hasDataforseoAccess: providerAccess,
 }));
 vi.mock("@/server/billing/subscription", () => ({
   getOrCreateOrganizationCustomer: async () => ({ id: "organization" }),
@@ -77,6 +87,11 @@ async function dueTracker(
 
 beforeEach(async () => {
   hosted.mockResolvedValue(false);
+  providerAccess.mockResolvedValue(true);
+  workflow.create.mockReset().mockResolvedValue(undefined);
+  workflow.get
+    .mockReset()
+    .mockRejectedValue(new Error("workflow instance not found"));
   await testDb.seedProject();
   await testDb.db.insert(projects).values({
     id: "paused-project",
@@ -346,7 +361,8 @@ it("retains a visible outbox claim when workflow creation cannot be confirmed", 
   await runScheduledAiVisibility();
 
   expect(await repo.listRuns("project")).toHaveLength(1);
-  expect(workflow.create.mock.calls.at(-1)?.[0]).toMatchObject({ id: runId });
+  expect(workflow.create).not.toHaveBeenCalled();
+  expect(workflow.get).toHaveBeenCalledWith(runId);
   expect((await repo.getTracker("project"))?.pendingScheduledRunId).toBeNull();
   expect((await repo.getTracker("project"))?.lastSkipReason).toBeNull();
 });

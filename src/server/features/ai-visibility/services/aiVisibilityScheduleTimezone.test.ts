@@ -114,7 +114,6 @@ it("clears weekly wall-clock settings when rescheduling another cadence", async 
       scheduleTime: {
         hour: 10,
         minute: 30,
-        timeZone: "Europe/Berlin",
       },
     },
     customer,

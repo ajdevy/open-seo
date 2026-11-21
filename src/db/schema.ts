@@ -133,6 +133,8 @@ export const {
   aiTrackers,
   aiPrompts,
   aiRuns,
+  aiProviderRunReservations,
+  aiProviderRunBudgetLocks,
   aiObservations,
   aiNativeResults,
   aiNativeSources,

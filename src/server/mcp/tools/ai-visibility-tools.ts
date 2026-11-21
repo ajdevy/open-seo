@@ -55,6 +55,8 @@ function runNextAction(run: {
 function recoveryFor(error: AiVisibilityError) {
   if (error.runId)
     return `Read get_ai_visibility_run for run ${error.runId}. Do not start another check to poll it.`;
+  if (error.reason === "PROVIDER_COST_CEILING_UNAVAILABLE")
+    return "This operation is paused until its provider cost can be reserved against the shared budget. No provider request was started.";
   if (/cost|credit|limit/i.test(error.reason))
     return "Request a fresh cost estimate and get the user's approval for any increased spend before retrying.";
   return "Read get_ai_visibility_tracker and resolve the reported issue before retrying.";
@@ -241,10 +243,10 @@ export const estimateAiVisibilityCostTool = defineAiTool({
   output: aiCostOutput,
   readOnly: true,
   description:
-    "Estimate one scheduled check, one-off check, and the monthly cost of a daily, weekly, or monthly schedule without collecting answers. Optional patch estimates proposed settings; promptIds estimates a check of those prompts. costUsd prices each scheduled check. runNowCostUsd prices a one-off check, which collects live answers within minutes at a higher price. Show the customer the relevant cost before enabling tracking or running a paid check, and pass the approved runNowCostUsd to run_ai_visibility_check as maxCostUsd.",
+    "Estimate one scheduled check, one-off check, and the monthly cost of a daily, weekly, or monthly schedule without collecting answers. Optional patch estimates proposed settings; promptIds estimates a check of those prompts. costUsd and runNowCostUsd are conservative cost ceilings that include up to three provider attempts per answer. The result shows the installation-wide rolling 7-day provider budget, the project cap, and the amount available under both limits. Show the customer the relevant ceiling and budget before enabling tracking or running a paid check, and pass the approved runNowCostUsd to run_ai_visibility_check as maxCostUsd.",
   execute: (s, a) => s.estimateCost(a),
   summarize: (d) =>
-    `${d.observations} answers: $${d.costUsd.toFixed(4)} (${d.costCredits} credits) per scheduled check, $${d.runNowCostUsd.toFixed(4)} (${d.runNowCostCredits} credits) to run now. Estimate on the ${d.scheduleInterval} schedule: $${d.monthlyCostUsd.toFixed(2)}/month (${d.checksPerMonth} ${d.checksPerMonth === 1 ? "check" : "checks"}).${d.warnings.length ? ` Warnings: ${d.warnings.join("; ")}` : ""}`,
+    `${d.observations} answers: up to $${d.costUsd.toFixed(4)} (${d.costCredits} credits) per scheduled check, up to $${d.runNowCostUsd.toFixed(4)} (${d.runNowCostCredits} credits) to run now. Rolling 7-day installation-wide provider budget: $${d.weeklyProviderBudgetUsd.toFixed(2)}, with $${d.weeklyProviderBudgetAccountedUsd.toFixed(4)} accounted, $${d.weeklyProviderBudgetHeldUsd.toFixed(4)} reserved, and $${d.weeklyProviderBudgetGlobalAvailableUsd.toFixed(4)} globally available. This project's $${d.weeklyProjectProviderBudgetUsd.toFixed(2)} cap has $${d.weeklyProjectProviderBudgetAvailableUsd.toFixed(4)} available; $${d.weeklyProviderBudgetAvailableUsd.toFixed(4)} is available under both limits. Estimate on the ${d.scheduleInterval} schedule: up to $${d.monthlyCostUsd.toFixed(2)}/month (${d.checksPerMonth} ${d.checksPerMonth === 1 ? "check" : "checks"}).${d.warnings.length ? ` Warnings: ${d.warnings.join("; ")}` : ""}`,
 });
 export const setAiVisibilityScheduleTool = defineAiTool({
   name: "set_ai_visibility_schedule",
@@ -270,7 +272,7 @@ export const runAiVisibilityCheckTool = defineAiTool({
   readOnly: false,
   openWorld: true,
   description:
-    "Start an explicitly approved one-off paid AI check, preserving the schedule. It collects live answers, so results arrive within minutes. maxCostUsd is the runNowCostUsd the user approved from estimate_ai_visibility_cost; the check is refused if it now costs more. Only one check runs per project at a time. Returns a run immediately. Never call this tool to poll: use get_ai_visibility_run with the returned run ID.",
+    "Start an explicitly approved one-off paid AI check, preserving the schedule. It collects live answers, so results arrive within minutes. maxCostUsd is the conservative runNowCostUsd ceiling the user approved from estimate_ai_visibility_cost; the check is refused if the ceiling, installation-wide rolling 7-day provider budget, or project cap is exceeded. Only one check runs per project at a time. Returns a run immediately. Never call this tool to poll: use get_ai_visibility_run with the returned run ID.",
   execute: (s, a, b) => s.runCheck(a, b),
   summarize: (d) =>
     `Run ${d.id}: ${d.status}, ${d.completed}/${d.expected} completed. ${runNextAction(d)}`,

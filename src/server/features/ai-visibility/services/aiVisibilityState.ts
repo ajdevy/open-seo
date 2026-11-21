@@ -94,6 +94,7 @@ export async function getTracker(input: {
       scheduleHour: tracker.scheduleHour,
       scheduleMinute: tracker.scheduleMinute,
       scheduleTimeZone: tracker.scheduleTimeZone,
+      weeklyProviderBudgetUsd: tracker.weeklyProviderBudgetCents / 100,
       nextCheckAt: tracker.nextCheckAt,
       lastSkipReason: tracker.lastSkipReason,
       createdAt: tracker.createdAt,

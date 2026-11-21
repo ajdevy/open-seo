@@ -116,17 +116,65 @@ describe("researchAiPrompts", () => {
     );
   });
 
-  it("reads US English ChatGPT prompts, keeps the ones the model finds on topic, merges near-duplicates, and flags the project", async () => {
+  it("blocks uncached paid provider dispatch until the shared budget can reserve it", async () => {
+    await expect(researchAiPrompts(input, customer)).rejects.toMatchObject({
+      reason: "PROVIDER_COST_CEILING_UNAVAILABLE",
+    });
+
+    expect(mentionsSearch).not.toHaveBeenCalled();
+    expect(generateText).not.toHaveBeenCalled();
+    expect(billResearchSpend).not.toHaveBeenCalled();
+  });
+
+  it("filters and merges cached research without a provider call", async () => {
+    creditsDepleted.mockResolvedValue({ depleted: true });
+    getCached.mockImplementation(async (key: string) => {
+      if (key === "ai-visibility:prompt-research")
+        return {
+          prompts: [
+            {
+              question: "what is the most accurate seo tool?",
+              answer: "Ahrefs or OpenSEO.",
+              volume: 40,
+              sources: [
+                {
+                  domain: "www.openseo.so",
+                  url: "https://www.openseo.so/a",
+                  title: null,
+                },
+              ],
+            },
+            {
+              question: "What is the most accurate SEO tool in 2026?",
+              answer: "Ahrefs or OpenSEO.",
+              volume: 138,
+              sources: [
+                {
+                  domain: "forbes.com",
+                  url: "https://forbes.com/b",
+                  title: null,
+                },
+              ],
+            },
+            {
+              question: "is moz a good seo tool?",
+              answer: "Moz has useful tools.",
+              volume: 71,
+              sources: [],
+            },
+          ],
+        };
+      if (key === "ai-visibility:prompt-relevance")
+        return [
+          "what is the most accurate seo tool?",
+          "What is the most accurate SEO tool in 2026?",
+          "is moz a good seo tool?",
+        ];
+      return null;
+    });
+
     const result = await researchAiPrompts(input, customer);
 
-    // ChatGPT data exists only in US English, whatever the tracker market.
-    expect(mentionsSearch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        platform: "chat_gpt",
-        locationCode: 2840,
-        languageCode: "en",
-      }),
-    );
     expect(result.prompts).toMatchObject([
       {
         text: "What is the most accurate SEO tool in 2026?",
@@ -137,10 +185,10 @@ describe("researchAiPrompts", () => {
       },
       { text: "Is moz a good seo tool?", tracked: true, sources: [] },
     ]);
-    expect(billResearchSpend).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "project" }),
-      [expect.objectContaining({ provider: "openrouter", costUsd: 0.003 })],
-    );
+    expect(mentionsSearch).not.toHaveBeenCalled();
+    expect(generateText).not.toHaveBeenCalled();
+    expect(billResearchSpend).not.toHaveBeenCalled();
+    expect(creditsDepleted).not.toHaveBeenCalled();
   });
 
   it("refuses research when hosted credits are used up before buying any data", async () => {
@@ -184,6 +232,31 @@ describe("researchAiPrompts", () => {
     expect(mentionsSearch).not.toHaveBeenCalled();
     expect(generateText).not.toHaveBeenCalled();
     expect(result.prompts[0].text).toBe("Which seo tool is free?");
+  });
+
+  it("blocks an uncached relevance request even when prompt research is cached", async () => {
+    getCached.mockImplementation(async (key: string) =>
+      key === "ai-visibility:prompt-research"
+        ? {
+            prompts: [
+              {
+                question: "which seo tool is free?",
+                answer: "OpenSEO offers a free plan.",
+                volume: 45,
+                sources: [],
+              },
+            ],
+          }
+        : null,
+    );
+
+    await expect(researchAiPrompts(input, customer)).rejects.toMatchObject({
+      reason: "PROVIDER_COST_CEILING_UNAVAILABLE",
+    });
+
+    expect(mentionsSearch).not.toHaveBeenCalled();
+    expect(generateText).not.toHaveBeenCalled();
+    expect(billResearchSpend).not.toHaveBeenCalled();
   });
 });
 

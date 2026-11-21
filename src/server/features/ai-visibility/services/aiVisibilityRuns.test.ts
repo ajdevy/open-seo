@@ -1,8 +1,9 @@
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { aiObservations, aiRuns } from "@/db/schema";
+import { aiObservations, aiProviderRunReservations, aiRuns } from "@/db/schema";
 import { AiVisibilityRepository as repo } from "../repositories/AiVisibilityRepository";
-import { runCheck } from "./aiVisibilityRuns";
+import { runCheck, startRun } from "./aiVisibilityRuns";
+import { estimateCost } from "./aiVisibilityCost";
 import { getTracker } from "./aiVisibilityState";
 import { configuration, customer } from "./aiVisibilityTestFixtures";
 import { sendCreditsExhaustedEvent } from "@/server/email/onboarding-drip";
@@ -20,9 +21,12 @@ vi.mock("cloudflare:workers", () => ({
   env: { DATABASE_PROVIDER: "d1", AI_VISIBILITY_WORKFLOW: workflow },
 }));
 vi.mock("@/db", () => ({ db: testDb.db }));
-vi.mock("@/db/runBatch", () => ({ runBatch: testDb.runBatch }));
+vi.mock("@/db/runBatch", () => testDb.runBatchModule);
 vi.mock("@/server/lib/runtime-env", () => ({
-  getOptionalEnvValue: async () => "dataforseo-key",
+  getOptionalEnvValue: async (name: string) =>
+    name === "AUTOGEO_QUEUE_MASTER_KEY_B64"
+      ? btoa("k".repeat(32))
+      : "dataforseo-key",
   isHostedServerAuthMode: hosted,
 }));
 vi.mock("@/server/billing/subscription", () => ({
@@ -133,6 +137,139 @@ describe("AI visibility checks", () => {
       runCheck({ projectId, maxCostUsd: 0.001 }, customer),
     ).rejects.toMatchObject({ reason: "COST_LIMIT_EXCEEDED" });
     expect(await repo.listRuns(projectId)).toEqual([]);
+  });
+
+  it("refuses a provider run above the saved rolling budget before workflow start", async () => {
+    const tracker = await repo.getTracker(projectId);
+    if (!tracker) throw new Error("Tracker fixture was not saved.");
+    await repo.updateTracker(tracker.id, { weeklyProviderBudgetCents: 1 });
+
+    await expect(
+      runCheck({ projectId, maxCostUsd: 1 }, customer),
+    ).rejects.toMatchObject({ reason: "PROVIDER_BUDGET_EXCEEDED" });
+
+    expect(workflow.create).not.toHaveBeenCalled();
+    expect(await repo.listRuns(projectId)).toMatchObject([
+      { status: "failed" },
+    ]);
+    expect(await testDb.db.select().from(aiProviderRunReservations)).toEqual(
+      [],
+    );
+    expect((await repo.getTracker(projectId))?.lastSkipReason).toContain(
+      "rolling 7-day budget",
+    );
+  });
+
+  it("refuses a manual run prepared from an older saved budget", async () => {
+    const staleConfig = await repo.getConfiguration(projectId);
+    if (!staleConfig) throw new Error("Tracker fixture was not saved.");
+    await repo.updateTracker(staleConfig.tracker.id, {
+      weeklyProviderBudgetCents: 50,
+    });
+
+    await expect(
+      startRun(staleConfig, "manual", customer),
+    ).rejects.toMatchObject({
+      reason: "PROVIDER_BUDGET_EXCEEDED",
+    });
+    expect(workflow.create).not.toHaveBeenCalled();
+    expect(await repo.listRuns(projectId)).toMatchObject([
+      { status: "failed" },
+    ]);
+    expect(await testDb.db.select().from(aiProviderRunReservations)).toEqual(
+      [],
+    );
+  });
+
+  it("reports an unbounded provider forecast and refuses paid model API runs", async () => {
+    const tracker = await repo.getTracker(projectId);
+    if (!tracker) throw new Error("Tracker fixture was not saved.");
+    await repo.updateTracker(tracker.id, { claude: true });
+
+    const estimate = await estimateCost({ projectId });
+    expect(estimate.providerCostBounded).toBe(false);
+    expect(estimate.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("no enforceable per-run ceiling"),
+      ]),
+    );
+
+    await expect(
+      runCheck({ projectId, maxCostUsd: 100 }, customer),
+    ).rejects.toMatchObject({ reason: "PROVIDER_COST_CEILING_UNAVAILABLE" });
+    expect(workflow.create).not.toHaveBeenCalled();
+    expect(await repo.listRuns(projectId)).toEqual([]);
+  });
+
+  it("includes an admitted run hold in the customer-facing budget estimate", async () => {
+    await runCheck({ projectId, maxCostUsd: 1 }, customer);
+
+    const estimate = await estimateCost({ projectId });
+
+    expect(estimate).toMatchObject({
+      weeklyProviderBudgetUsd: 8,
+      weeklyProviderBudgetAccountedUsd: 0,
+      weeklyProviderBudgetHeldUsd: 0.024,
+      weeklyProviderBudgetAvailableUsd: 7.976,
+      runNowProviderBudgetRemainingUsd: 7.952,
+      weeklyProviderBudgetScope: "installation",
+      weeklyProviderBudgetWindowDays: 7,
+    });
+  });
+
+  it("shows installation-wide reservations from other projects in the estimate", async () => {
+    const secondProjectId = "second-project";
+    await testDb.client.execute(`
+      INSERT INTO projects (id, organization_id, name, domain)
+      VALUES ('second-project', 'organization', 'Second project', 'second.example');
+    `);
+    const secondConfiguration = configuration(
+      { engines: ["claude"], prompts: [{ text: "Which SEO tools?" }] },
+      secondProjectId,
+    );
+    await repo.saveConfiguration(secondConfiguration);
+    const createdAt = new Date().toISOString();
+    await testDb.db.insert(aiRuns).values({
+      id: "second-project-run",
+      trackerId: secondConfiguration.tracker.id,
+      projectId: secondProjectId,
+      trigger: "manual",
+      status: "completed",
+      locationCode: 2840,
+      languageCode: "en",
+      createdAt,
+      completedAt: createdAt,
+    });
+    await testDb.db.insert(aiProviderRunReservations).values({
+      id: "second-project-reservation",
+      projectId: secondProjectId,
+      runId: "second-project-run",
+      reservedUsdMicros: 7_990_000,
+      status: "unknown",
+      createdAt,
+    });
+
+    const estimate = await estimateCost({ projectId });
+
+    expect(estimate).toMatchObject({
+      weeklyProviderBudgetUsd: 8,
+      weeklyProviderBudgetAccountedUsd: 0,
+      weeklyProviderBudgetHeldUsd: 7.99,
+      weeklyProviderBudgetAvailableUsd: 0.01,
+      weeklyProviderBudgetGlobalAvailableUsd: 0.01,
+      weeklyProviderBudgetScope: "installation",
+      weeklyProjectProviderBudgetUsd: 8,
+      weeklyProjectProviderBudgetAvailableUsd: 8,
+      weeklyProviderBudgetWindowDays: 7,
+    });
+
+    const refusedCheck = runCheck({ projectId, maxCostUsd: 1 }, customer);
+    await expect(refusedCheck).rejects.toHaveProperty(
+      "reason",
+      "PROVIDER_BUDGET_EXCEEDED",
+    );
+    await expect(refusedCheck).rejects.toThrow("installation-wide");
+    expect(workflow.create).not.toHaveBeenCalled();
   });
 
   it("refuses a check the credits cannot cover before it starts, and says why on the tracker", async () => {

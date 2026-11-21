@@ -3,6 +3,7 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import { pgStep } from "./pgStep";
 import { yieldingStep } from "./yieldingStep";
 import {
@@ -22,10 +23,15 @@ import {
   settleAiRun,
   type AiPostedHold,
 } from "@/server/features/ai-visibility/services/aiVisibilityBilling";
-import { runAiResearchSetup } from "@/server/features/ai-visibility/services/aiResearchKeywords";
 import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { AI_TRACKING_HOLD_TTL_MS } from "@/server/lib/dataforseo";
 import { describeError } from "@/server/lib/errors";
+import {
+  hasReservedAiProviderRunBudget,
+  markAiProviderRunBudgetUnknown,
+  releaseAiProviderRunBudget,
+  settleAiProviderRunBudget,
+} from "@/server/features/ai-visibility/repositories/AiProviderRunBudgetRepository";
 
 // One binding serves answer collection runs and the one-time research setup,
 // so setup needs no new workflow infrastructure.
@@ -91,27 +97,71 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     const step = yieldingStep(engineStep);
     const { payload } = event;
     if ("setupProjectId" in payload)
-      // No retries: each attempt is a paid model call. The user can retry.
-      return pgStep(
-        step,
-        "research-setup",
-        { retries: { limit: 0, delay: "1 second" }, timeout: "5 minutes" },
-        () =>
-          runAiResearchSetup(
-            { projectId: payload.setupProjectId },
-            payload.customer,
-            { runSeededTracking: payload.runSeededTracking },
-          ),
+      // Setup can call OpenRouter and live search, but has no shared provider-
+      // budget reservation/accounting path. Fail closed before dispatch.
+      throw new NonRetryableError(
+        "AI research setup is paused because it has no provider-budget reservation; no provider request was started.",
       );
     const { runId, customer } = payload;
+    const assertProviderBudgetReservation = async (stepName: string) => {
+      // This must be a distinct workflow step before the paid step. Its new
+      // name forces persisted workflows from older deployments to execute the
+      // reservation check even when their paid step result is already cached.
+      const isReserved = await pgStep(
+        step,
+        `provider-budget-${stepName}`,
+        FREE_STEP,
+        () => hasReservedAiProviderRunBudget(runId),
+      );
+      if (!isReserved)
+        throw new NonRetryableError(
+          "The provider budget reservation is missing or unresolved; no provider request was started.",
+        );
+    };
     let pending: AiPendingTask[] = [];
+    let providerCallMayHaveStarted = false;
+    let providerCostUsd = 0;
+    let providerCostKnown = true;
+    const runProviderStep = async <T>(run: () => Promise<T>) => {
+      const previousPossibleDispatch = providerCallMayHaveStarted;
+      // A failed Workflow step may have reached the provider before its result
+      // was lost, so only a returned explicit false can clear this attempt.
+      providerCallMayHaveStarted = true;
+      try {
+        const result = await run();
+        const explicitlyNotDispatched =
+          typeof result === "object" &&
+          result !== null &&
+          "providerCallMayHaveStarted" in result &&
+          result.providerCallMayHaveStarted === false;
+        providerCallMayHaveStarted =
+          previousPossibleDispatch || !explicitlyNotDispatched;
+        return result;
+      } catch (error) {
+        providerCallMayHaveStarted = true;
+        throw error;
+      }
+    };
     // Each posted batch holds credits until settle charges the answers that
     // arrived, once late reads end or the run fails.
     const holds: AiPostedHold[] = [];
     // A run in flight across the deploy that added holds replays an older
     // post output, the bare task list, which was charged when posted.
     const queue = (posted: Awaited<ReturnType<typeof postAiBatch>>) => {
-      if (Array.isArray(posted)) return pending.push(...posted);
+      if (Array.isArray(posted)) {
+        // Workflow state persisted by an older deployment has no per-call
+        // provider billing metadata, so retain its hold for reconciliation.
+        providerCostKnown = false;
+        return pending.push(...posted);
+      }
+      if (
+        typeof posted.providerCostUsd === "number" &&
+        Number.isFinite(posted.providerCostUsd) &&
+        posted.providerCostUsd >= 0 &&
+        posted.providerCostKnown
+      )
+        providerCostUsd += posted.providerCostUsd;
+      else providerCostKnown = false;
       if (posted.hold) holds.push(posted.hold);
       pending.push(...posted.pending);
     };
@@ -133,8 +183,15 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     };
     const markFailed = async (error: unknown) => {
       await settle();
-      await pgStep(step, "mark-failed", FREE_STEP, () =>
-        markAiRunFailed(runId),
+      await pgStep(step, "mark-failed-with-provider-budget", FREE_STEP, () =>
+        (async () => {
+          // Release only when the workflow proves no provider dispatch began.
+          // Otherwise preserve the full hold for evidence-based reconciliation.
+          if (providerCallMayHaveStarted)
+            await markAiProviderRunBudgetUnknown(runId);
+          else await releaseAiProviderRunBudget(runId);
+          await markAiRunFailed(runId);
+        })(),
       );
       throw error;
     };
@@ -167,13 +224,18 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       pending = round.pending;
       for (const [index, batch] of round.retry.entries()) {
         try {
+          await assertProviderBudgetReservation(`repost-${name}-${index}`);
           queue(
-            await pgStep(step, `repost-${name}-${index}`, SINGLE_ATTEMPT, () =>
-              postAiBatch(runId, customer, plan.market, batch),
+            await runProviderStep(() =>
+              pgStep(step, `repost-${name}-${index}`, SINGLE_ATTEMPT, () =>
+                postAiBatch(runId, customer, plan.market, batch),
+              ),
             ),
           );
         } catch (error) {
           // Its answers fail at finalize.
+          // A missing or unresolved run reservation may reflect older spend.
+          providerCostKnown = false;
           console.warn(
             `[ai-visibility] ${runId} repost-${name}: ${describeError(error)}`,
           );
@@ -190,37 +252,63 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
     // A batch whose step fails, on the engine's own error or a timeout, leaves
     // its answers pending for finalize to fail. The other batches still run,
     // so the run keeps every answer it got.
-    if (plan.live)
+    if (plan.live) {
       // Live runs save each live batch as it returns, so nothing is left
       // pending to poll.
-      for (const [index, tasks] of plan.batches.entries())
+      for (const [index, tasks] of plan.batches.entries()) {
         try {
-          await pgStep(step, `live-${index}`, LIVE_STEP, () =>
-            collectAiLiveBatch(runId, customer, plan.market, tasks),
+          await assertProviderBudgetReservation(`live-${index}`);
+          const outcome = await runProviderStep(() =>
+            pgStep(step, `live-${index}`, LIVE_STEP, () =>
+              collectAiLiveBatch(runId, customer, plan.market, tasks),
+            ),
           );
+          if (
+            outcome?.providerCostKnown &&
+            Number.isFinite(outcome.providerCostUsd) &&
+            outcome.providerCostUsd >= 0
+          )
+            providerCostUsd += outcome.providerCostUsd;
+          else providerCostKnown = false;
         } catch (error) {
+          providerCostKnown = false;
           console.warn(
             `[ai-visibility] ${runId} live-${index}: ${describeError(error)}`,
           );
         }
-    else
-      for (const [index, batch] of plan.batches.entries())
+      }
+    } else {
+      for (const [index, batch] of plan.batches.entries()) {
         try {
+          await assertProviderBudgetReservation(`post-${index}`);
           queue(
-            await pgStep(step, `post-${index}`, SINGLE_ATTEMPT, () =>
-              postAiBatch(runId, customer, plan.market, batch),
+            await runProviderStep(() =>
+              pgStep(step, `post-${index}`, SINGLE_ATTEMPT, () =>
+                postAiBatch(runId, customer, plan.market, batch),
+              ),
             ),
           );
         } catch (error) {
+          // A missing or unresolved run reservation may reflect older spend.
+          providerCostKnown = false;
           console.warn(
             `[ai-visibility] ${runId} post-${index}: ${describeError(error)}`,
           );
         }
-    // Claude and Perplexity answers come from the model API on every run.
-    // Queued answers process meanwhile, and each model batch is followed by
-    // one free read of them.
+      }
+    }
+    // Legacy workflow instances may still replay model API steps; their
+    // provider cost is unknown, so they remain held for reconciliation.
     for (const [index, batch] of plan.modelBatches.entries()) {
+      // This path never supplies a provider price, even when the new guard
+      // rejects the old step before reaching the provider.
+      providerCostKnown = false;
       try {
+        await assertProviderBudgetReservation(`model-${index}`);
+        providerCallMayHaveStarted = true;
+        // New model API dispatches are blocked before this step. An older
+        // persisted workflow plan can still replay it, so never settle its
+        // budget from an estimate or a missing legacy step result.
         await pgStep(step, `model-${index}`, LIVE_STEP, () =>
           collectAiModelBatch(runId, customer, plan.market, batch),
         );
@@ -278,5 +366,37 @@ export class AiVisibilityWorkflow extends WorkflowEntrypoint<
       }
     }
     await settle();
+    try {
+      await pgStep(step, "settle-provider-budget", FREE_STEP, async () => {
+        const accountedUsdMicros = Math.round(providerCostUsd * 1e6);
+        if (
+          providerCostKnown &&
+          Number.isSafeInteger(accountedUsdMicros) &&
+          accountedUsdMicros >= 0
+        )
+          await settleAiProviderRunBudget(
+            runId,
+            accountedUsdMicros,
+            new Date().toISOString(),
+          );
+        else await markAiProviderRunBudgetUnknown(runId);
+      });
+    } catch (error) {
+      // The run is already terminal, so a failed settlement will not be
+      // retried by the workflow. Make its still-held amount operator-visible.
+      try {
+        await pgStep(
+          step,
+          "mark-provider-budget-unknown-after-settlement-failure",
+          FREE_STEP,
+          () => markAiProviderRunBudgetUnknown(runId),
+        );
+      } catch (quarantineError) {
+        console.error(
+          `[ai-visibility] ${runId} provider budget quarantine failed: ${describeError(quarantineError)}`,
+        );
+      }
+      throw error;
+    }
   }
 }

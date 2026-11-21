@@ -228,6 +228,9 @@ describe("AI visibility assistant tools", () => {
       expect.objectContaining({ organizationId: "org_123", projectId }),
     );
   });
+});
+
+describe("AI visibility run and result output", () => {
   it("returns actionable typed conflicts with their run ID without retrying", async () => {
     mocks.service.runCheck.mockRejectedValue(
       new AiVisibilityError(

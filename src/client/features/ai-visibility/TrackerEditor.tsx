@@ -86,6 +86,7 @@ export function TrackerEditor({
     : defaultMarket;
   const defaultDraft: TrackerDraft = {
     engines,
+    weeklyProviderBudgetUsd: state.tracker?.weeklyProviderBudgetUsd ?? 8,
     ...(state.tracker
       ? {
           locationCode: state.tracker.locationCode,
@@ -117,6 +118,7 @@ export function TrackerEditor({
         ...(adding && state.tracker
           ? {}
           : {
+              weeklyProviderBudgetUsd: draft.weeklyProviderBudgetUsd,
               engines: draft.engines,
               locationCode: draft.locationCode,
               languageCode: draft.languageCode,

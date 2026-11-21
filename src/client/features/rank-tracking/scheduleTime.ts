@@ -2,6 +2,7 @@ import type {
   RankCheckScheduleTime,
   RankTrackingConfig,
 } from "@/types/schemas/rank-tracking";
+import type { AiScheduleInterval } from "@/shared/ai-visibility";
 
 export const WEEKDAYS = [
   "Sunday",
@@ -57,6 +58,15 @@ export function withBrowserTimeZone(
     ...time,
     timeZone: time.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
+}
+
+/** Build the schedule-time field sent by AI Visibility for the selected cadence. */
+export function scheduleTimeForAiVisibilityRequest(
+  interval: AiScheduleInterval,
+  time: LocalScheduleTime,
+): RankCheckScheduleTime {
+  if (interval === "weekly") return withBrowserTimeZone(time);
+  return { hour: time.hour, minute: time.minute };
 }
 
 /** City part of the IANA name plus today's offset: "Los Angeles (UTC-7)". */
