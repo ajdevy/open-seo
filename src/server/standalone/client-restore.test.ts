@@ -35,7 +35,10 @@ vi.mock("@/db/runBatch", () => ({
 
 import { seedClientRows } from "./client-restore-fixtures";
 import { handleClientRestore } from "./client-restore";
-import { clientRestoreArchiveSchema, sha256Json } from "./client-restore-schema";
+import {
+  clientRestoreArchiveSchema,
+  sha256Json,
+} from "./client-restore-schema";
 
 const importResultSchema = z.object({
   verified: z.boolean(),
