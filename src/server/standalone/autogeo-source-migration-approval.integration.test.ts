@@ -15,6 +15,7 @@ vi.mock("@/db", () => ({ db: testDb.db }));
 
 import { db } from "@/db";
 import { autoGeoSourceMigrationApprovals } from "@/db/schema";
+import type { AutoGeoMapping } from "./autogeo-source-adapter-schema";
 import {
   autoGeoSourceMigrationAuthorization,
   createAutoGeoSourceMigrationApproval,
@@ -24,27 +25,64 @@ import type { AutoGeoSourceMigrationApprovalEvidence } from "./autogeo-source-mi
 import { AUTOGEO_SOURCE_CONTRACT_REVISION } from "./autogeo-source-contract";
 import { reviewedMapping } from "./autogeo-source-migration.test-fixtures";
 
+function approvalInput(
+  overrides: Partial<
+    Pick<
+      AutoGeoSourceMigrationApprovalEvidence,
+      "clientRef" | "expiresAt" | "sourceReadEvidenceRef"
+    >
+  > = {},
+): AutoGeoSourceMigrationApprovalEvidence {
+  const { mappingEvidenceRef: _mappingEvidenceRef, ...originalMapping } =
+    reviewedMapping();
+  const mapping = {
+    ...originalMapping,
+    ...(typeof overrides.clientRef === "string"
+      ? { clientRef: overrides.clientRef }
+      : {}),
+  };
+  return {
+    clientRef: mapping.clientRef,
+    targetOrganizationId: "organization",
+    sourceContractRevision: AUTOGEO_SOURCE_CONTRACT_REVISION,
+    mapping,
+    sourceArtifactsFingerprint: `sha256:${"f".repeat(64)}`,
+    sourceReadEvidenceRef: `sha256:${"a".repeat(64)}`,
+    targetWriteEvidenceRef: `sha256:${"b".repeat(64)}`,
+    archiveDestinationEvidenceRef: `sha256:${"c".repeat(64)}`,
+    retentionEvidenceRef: `sha256:${"d".repeat(64)}`,
+    restoreEvidenceRef: `sha256:${"e".repeat(64)}`,
+    expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    ...overrides,
+  };
+}
+
 describe("AutoGeo per-client migration approvals", () => {
   afterAll(() => testDb.client.close());
 
+  it("rejects non-digest evidence references before creating an approval", async () => {
+    const input = approvalInput({
+      sourceReadEvidenceRef: "evidence/source-rights",
+    });
+
+    await expect(createAutoGeoSourceMigrationApproval(input)).rejects.toThrow(
+      "Migration evidence references must be SHA-256 digests.",
+    );
+  });
+
   it("requires exact client, target, contract and mapping evidence and supports revocation", async () => {
     await testDb.seedProject();
-    const input: AutoGeoSourceMigrationApprovalEvidence = {
+    const input: AutoGeoSourceMigrationApprovalEvidence = approvalInput({
       clientRef: `synthetic-client-${crypto.randomUUID()}`,
-      targetOrganizationId: "organization",
-      sourceContractRevision: AUTOGEO_SOURCE_CONTRACT_REVISION,
-      mappingEvidenceRef: "review/4-3/map-v1",
-      sourceReadEvidenceRef: "evidence/source-access",
-      targetWriteEvidenceRef: "evidence/target-write",
-      archiveDestinationEvidenceRef: "evidence/archive-folder",
-      retentionEvidenceRef: "evidence/retention-window",
-      restoreEvidenceRef: "evidence/restore-check",
-      expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
-    };
+    });
     const created = await createAutoGeoSourceMigrationApproval(input);
-    const mapping = reviewedMapping();
-    mapping.clientRef = input.clientRef;
-    mapping.mappingEvidenceRef = input.mappingEvidenceRef;
+    const { mappingEvidenceRef: _mappingEvidenceRef, ...mappingBase } =
+      reviewedMapping();
+    const mapping: AutoGeoMapping = {
+      ...mappingBase,
+      clientRef: input.clientRef,
+      mappingEvidenceRef: created.mappingEvidenceRef,
+    };
 
     await expect(
       autoGeoSourceMigrationAuthorization.authorize({
@@ -56,7 +94,7 @@ describe("AutoGeo per-client migration approvals", () => {
       status: "approved",
       clientRef: input.clientRef,
       targetOrganizationId: input.targetOrganizationId,
-      approvedBy: "standalone-operator",
+      approvedBy: "operator-secret-authenticated",
     });
     await expect(
       autoGeoSourceMigrationAuthorization.authorize({
@@ -69,7 +107,13 @@ describe("AutoGeo per-client migration approvals", () => {
       autoGeoSourceMigrationAuthorization.authorize({
         clientRef: input.clientRef,
         targetOrganizationId: input.targetOrganizationId,
-        mapping: { ...mapping, mappingEvidenceRef: "review/other-map" },
+        mapping: {
+          ...mapping,
+          projects: mapping.projects.map((project) => ({
+            ...project,
+            name: "Different map content",
+          })),
+        },
       }),
     ).resolves.toBeNull();
 
@@ -98,18 +142,9 @@ describe("AutoGeo per-client migration approvals", () => {
 
   it("rejects missing targets, expired evidence and duplicate active approvals", async () => {
     await testDb.seedProject();
-    const input: AutoGeoSourceMigrationApprovalEvidence = {
+    const input: AutoGeoSourceMigrationApprovalEvidence = approvalInput({
       clientRef: `synthetic-client-${crypto.randomUUID()}`,
-      targetOrganizationId: "organization",
-      sourceContractRevision: AUTOGEO_SOURCE_CONTRACT_REVISION,
-      mappingEvidenceRef: "review/4-3/map-v2",
-      sourceReadEvidenceRef: "evidence/source-access",
-      targetWriteEvidenceRef: "evidence/target-write",
-      archiveDestinationEvidenceRef: "evidence/archive-folder",
-      retentionEvidenceRef: "evidence/retention-window",
-      restoreEvidenceRef: "evidence/restore-check",
-      expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
-    };
+    });
     await expect(
       createAutoGeoSourceMigrationApproval({
         ...input,
@@ -138,18 +173,10 @@ describe("AutoGeo per-client migration approvals", () => {
   it("expires an old approval before recording a renewed approval", async () => {
     await testDb.seedProject();
     const approvedAt = new Date("2026-01-01T00:00:00.000Z");
-    const input: AutoGeoSourceMigrationApprovalEvidence = {
+    const input: AutoGeoSourceMigrationApprovalEvidence = approvalInput({
       clientRef: `synthetic-client-${crypto.randomUUID()}`,
-      targetOrganizationId: "organization",
-      sourceContractRevision: AUTOGEO_SOURCE_CONTRACT_REVISION,
-      mappingEvidenceRef: "review/4-3/renewed-map-v1",
-      sourceReadEvidenceRef: "evidence/source-access",
-      targetWriteEvidenceRef: "evidence/target-write",
-      archiveDestinationEvidenceRef: "evidence/archive-folder",
-      retentionEvidenceRef: "evidence/retention-window",
-      restoreEvidenceRef: "evidence/restore-check",
       expiresAt: new Date(approvedAt.getTime() + 60 * 60 * 1_000).toISOString(),
-    };
+    });
     const original = await createAutoGeoSourceMigrationApproval(
       input,
       approvedAt,

@@ -183,8 +183,12 @@ export async function fingerprintAutoGeoSourceArtifacts(
       sha256: await sha256(artifacts[path]),
     })),
   );
+  // Paths are untrusted and may be non-ASCII; use a locale-independent order
+  // so approval fingerprints are reproducible on every runtime.
   // oxlint-disable-next-line unicorn/no-array-sort
-  entries.sort((left, right) => left.path.localeCompare(right.path));
+  entries.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+  );
   return sha256(new TextEncoder().encode(JSON.stringify(entries)));
 }
 

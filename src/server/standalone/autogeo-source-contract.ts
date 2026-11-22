@@ -15,18 +15,33 @@ const promptFields = [
 ] as const;
 const answerRequiredFields = [
   "answer_id",
-  "run_id",
   "prompt_id",
-  "intent_category",
   "locale",
   "provider",
+  "retrieval_mode",
   "model_id",
-  "model_snapshot_date",
-  "requested_at",
+  "asked_utc",
   "status",
-  "answer_text",
+  "attempt",
+  "cost_usd",
+  "cost_source",
+] as const;
+const answerAllowedFields = [
+  ...answerRequiredFields,
+  "search_executed",
+  "search_executed_evidence",
+  "counts_toward_retrieval_metrics",
+  "text",
   "citations",
   "error",
+  "cost_rub",
+  "fx",
+  "usage",
+  "observed_version",
+  "provider_call_id",
+  "cost_error",
+  "idempotency_key",
+  "privacy_match",
 ] as const;
 const nonblank = z.string().refine((value) => value.trim().length > 0);
 
@@ -45,18 +60,30 @@ const promptRowSchema = z
 const answerRowSchema = z
   .object({
     answer_id: nonblank,
-    run_id: nonblank,
     prompt_id: nonblank,
-    intent_category: nonblank,
     locale: nonblank,
     provider: nonblank,
+    retrieval_mode: z.enum(["parametric", "retrieval"]),
     model_id: nonblank,
-    model_snapshot_date: z.string().date(),
-    requested_at: z.string().datetime(),
+    asked_utc: z.string().datetime(),
     status: z.enum(["ok", "error"]),
-    answer_text: z.string().nullable(),
-    citations: z.array(z.unknown()),
-    error: z.string().nullable(),
+    attempt: z.number().int().positive(),
+    cost_usd: z.number().finite().nonnegative(),
+    cost_source: nonblank,
+    search_executed: z.enum(["executed", "not_executed", "unknown"]).optional(),
+    search_executed_evidence: z.string().optional(),
+    counts_toward_retrieval_metrics: z.boolean().optional(),
+    text: z.string().optional(),
+    citations: z.array(z.unknown()).optional(),
+    error: z.string().optional(),
+    cost_rub: z.number().finite().nonnegative().optional(),
+    fx: z.unknown().optional(),
+    usage: z.unknown().optional(),
+    observed_version: z.string().optional(),
+    provider_call_id: z.string().nullable().optional(),
+    cost_error: z.string().optional(),
+    idempotency_key: nonblank.optional(),
+    privacy_match: z.unknown().optional(),
   })
   .strict();
 
@@ -99,8 +126,6 @@ export function classifyAutoGeoSourcePaths(
     if (answers) return { path, kind: "answers", runId: answers[1] };
     return { path, kind: knownPath.test(path) ? "archive-only" : "opaque" };
   });
-  if (classified.some((entry) => entry.kind === "private"))
-    throw new Error("private source path is excluded");
   if (classified.some((entry) => entry.kind === "invalid"))
     throw new Error("invalid source artifact path");
   return classified;
@@ -258,13 +283,12 @@ export function parseAutoGeoSourceRows(
       const rows = parseJsonl(
         artifacts[file.path],
         answerRequiredFields,
-        answerRequiredFields,
+        answerAllowedFields,
         answerRowSchema,
       );
       const ids = new Set<string>();
       for (const row of rows) {
-        if (row.run_id !== file.runId || ids.has(row.answer_id))
-          throw new Error("invalid_source_contract");
+        if (ids.has(row.answer_id)) throw new Error("invalid_source_contract");
         ids.add(row.answer_id);
       }
       runs.push({ runId: file.runId, rows });

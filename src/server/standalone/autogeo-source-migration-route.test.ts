@@ -79,6 +79,34 @@ function streamingRequest(body: ReadableStream<Uint8Array>) {
   );
 }
 
+function approvalPayload(
+  overrides: { clientRef?: string; targetOrganizationId?: string } = {},
+) {
+  const { mappingEvidenceRef: _mappingEvidenceRef, ...originalMapping } =
+    reviewedMapping();
+  const mapping = {
+    ...originalMapping,
+    ...(typeof overrides.clientRef === "string"
+      ? { clientRef: overrides.clientRef }
+      : {}),
+  };
+  return {
+    command: "approve",
+    clientRef: mapping.clientRef,
+    targetOrganizationId: "target-1",
+    sourceContractRevision: AUTOGEO_SOURCE_CONTRACT_REVISION,
+    mapping,
+    sourceArtifactsFingerprint: `sha256:${"f".repeat(64)}`,
+    sourceReadEvidenceRef: `sha256:${"a".repeat(64)}`,
+    targetWriteEvidenceRef: `sha256:${"b".repeat(64)}`,
+    archiveDestinationEvidenceRef: `sha256:${"c".repeat(64)}`,
+    retentionEvidenceRef: `sha256:${"d".repeat(64)}`,
+    restoreEvidenceRef: `sha256:${"e".repeat(64)}`,
+    expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   mocks.isOperatorRequest.mockReturnValue(true);
   mocks.getOptionalEnvValue.mockResolvedValue(
@@ -87,6 +115,7 @@ beforeEach(() => {
   mocks.createApproval.mockResolvedValue({
     approvalId: "00000000-0000-4000-8000-000000000001",
     approvedAt: "2026-11-22T00:00:00.000Z",
+    mappingEvidenceRef: `autogeo-evidence-v1:${"a".repeat(64)}:${"b".repeat(64)}:${"c".repeat(64)}`,
   });
   mocks.revokeApproval.mockResolvedValue(true);
   mocks.authorize.mockResolvedValue(null);
@@ -104,19 +133,7 @@ describe("standalone AutoGeo migration route", () => {
   });
 
   it("records an explicit, mapping-bound operator approval", async () => {
-    const body = {
-      command: "approve",
-      clientRef: "synthetic-client",
-      targetOrganizationId: "target-1",
-      sourceContractRevision: AUTOGEO_SOURCE_CONTRACT_REVISION,
-      mappingEvidenceRef: "review/4-3/map-v1",
-      sourceReadEvidenceRef: "evidence/source-read",
-      targetWriteEvidenceRef: "evidence/target-write",
-      archiveDestinationEvidenceRef: "evidence/archive-folder",
-      retentionEvidenceRef: "evidence/retention",
-      restoreEvidenceRef: "evidence/restore",
-      expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
-    };
+    const body = approvalPayload({ clientRef: "synthetic-client" });
     const response = await handleAutoGeoSourceMigrationRequest(
       request(JSON.stringify(body)),
     );
@@ -127,7 +144,8 @@ describe("standalone AutoGeo migration route", () => {
       clientRef: body.clientRef,
       targetOrganizationId: body.targetOrganizationId,
       sourceContractRevision: body.sourceContractRevision,
-      mappingEvidenceRef: body.mappingEvidenceRef,
+      mapping: body.mapping,
+      sourceArtifactsFingerprint: body.sourceArtifactsFingerprint,
       sourceReadEvidenceRef: body.sourceReadEvidenceRef,
       targetWriteEvidenceRef: body.targetWriteEvidenceRef,
       archiveDestinationEvidenceRef: body.archiveDestinationEvidenceRef,
@@ -143,19 +161,7 @@ describe("standalone AutoGeo migration route", () => {
     );
     const response = await handleAutoGeoSourceMigrationRequest(
       request(
-        JSON.stringify({
-          command: "approve",
-          clientRef: "synthetic-client",
-          targetOrganizationId: "target-1",
-          sourceContractRevision: AUTOGEO_SOURCE_CONTRACT_REVISION,
-          mappingEvidenceRef: "review/4-3/map-v1",
-          sourceReadEvidenceRef: "evidence/source-read",
-          targetWriteEvidenceRef: "evidence/target-write",
-          archiveDestinationEvidenceRef: "evidence/archive-folder",
-          retentionEvidenceRef: "evidence/retention",
-          restoreEvidenceRef: "evidence/restore",
-          expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
-        }),
+        JSON.stringify(approvalPayload({ clientRef: "synthetic-client" })),
       ),
     );
 
@@ -163,19 +169,7 @@ describe("standalone AutoGeo migration route", () => {
   });
 
   it("decodes streamed UTF-8 across tiny chunks and coalesces their text", async () => {
-    const body = {
-      command: "approve",
-      clientRef: "synthetic-client",
-      targetOrganizationId: "организация-1",
-      sourceContractRevision: AUTOGEO_SOURCE_CONTRACT_REVISION,
-      mappingEvidenceRef: "review/map-v1",
-      sourceReadEvidenceRef: "evidence/source-read",
-      targetWriteEvidenceRef: "evidence/target-write",
-      archiveDestinationEvidenceRef: "evidence/archive-folder",
-      retentionEvidenceRef: "evidence/retention",
-      restoreEvidenceRef: "evidence/restore",
-      expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
-    };
+    const body = approvalPayload({ targetOrganizationId: "организация-1" });
     const bytes = new TextEncoder().encode(JSON.stringify(body));
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {

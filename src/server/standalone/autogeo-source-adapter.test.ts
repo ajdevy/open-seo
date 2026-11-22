@@ -13,18 +13,23 @@ function bytes(value: string) {
 function sourceAnswer(): Record<string, unknown> {
   return {
     answer_id: "answer-1",
-    run_id: "run-1",
     prompt_id: "prompt-1",
-    intent_category: "product_research",
     provider: "provider-a",
     locale: "en",
+    retrieval_mode: "retrieval",
     model_id: "model-a",
-    model_snapshot_date: "2026-10-01",
-    requested_at: "2026-10-01T10:00:00.000Z",
+    asked_utc: "2026-10-01T10:00:00.000Z",
     status: "ok",
-    answer_text: "A synthetic answer.",
+    attempt: 1,
+    text: "A synthetic answer.",
     citations: ["https://example.test/source"],
-    error: null,
+    cost_usd: 0.001,
+    cost_source: "reported",
+    observed_version: "model-a-2026-10",
+    search_executed: "executed",
+    search_executed_evidence: "synthetic search evidence",
+    counts_toward_retrieval_metrics: true,
+    provider_call_id: "synthetic-call-1",
   };
 }
 
@@ -150,7 +155,7 @@ describe("AutoGeo source adapter", () => {
       questionVersion: 1,
       questionSnapshot: "What is Example?",
       requestedModel: "model-a",
-      observedModel: null,
+      observedModel: "model-a-2026-10",
       route: "unknown",
       resultStatus: "completed",
       searchStatus: "unknown",
@@ -249,8 +254,8 @@ describe("AutoGeo source adapter", () => {
     const source = sourceArtifacts() as Record<string, Uint8Array>;
     const path = "runs/run-1/answers.jsonl";
     const answer = sourceAnswer();
-    answer.answer_text = null;
-    answer.citations = [];
+    delete answer.text;
+    delete answer.citations;
     source[path] = bytes(`${JSON.stringify(answer)}\n`);
 
     const plan = await prepareAutoGeoClientRestore(source, reviewedMapping());
@@ -265,10 +270,16 @@ describe("AutoGeo source adapter", () => {
     const source = sourceArtifacts() as Record<string, Uint8Array>;
     const path = "runs/run-1/answers.jsonl";
     const answer = sourceAnswer();
-    answer.answer_text = null;
+    answer.text = "";
     answer.citations = [];
     answer.status = "error";
     answer.error = "synthetic provider failure";
+    answer.cost_usd = 0;
+    answer.cost_source = "unreported";
+    delete answer.observed_version;
+    delete answer.search_executed;
+    delete answer.search_executed_evidence;
+    delete answer.counts_toward_retrieval_metrics;
     source[path] = bytes(`${JSON.stringify(answer)}\n`);
     const mapping = reviewedMapping();
     mapping.answerMappings["run-1:answer-1"].sourceStatus = "error";
@@ -287,18 +298,15 @@ describe("AutoGeo source adapter", () => {
     });
   });
 
-  it("blocks private paths before reading their artifact bytes", async () => {
+  it("preserves private bytes in the archive and never interprets them as import rows", async () => {
     const source = sourceArtifacts() as Record<string, Uint8Array>;
-    Object.defineProperty(source, "private/client.jsonl", {
-      enumerable: true,
-      get() {
-        throw new Error("private bytes must not be read");
-      },
-    });
+    source["private/client.jsonl"] = bytes("not-json, preserved privately\n");
 
-    await expect(
-      prepareAutoGeoClientRestore(source, reviewedMapping()),
-    ).rejects.toThrow("private source path is excluded");
+    const plan = await prepareAutoGeoClientRestore(source, reviewedMapping());
+
+    expect(plan.archiveArtifacts).toEqual(source);
+    expect(plan.archive).not.toBeNull();
+    expect(plan.report.mappedAnswers).toBe(1);
   });
 
   it("does not map answers without explicit run, prompt, or collection-time evidence", async () => {
@@ -351,8 +359,7 @@ describe("AutoGeo source adapter", () => {
   it("rejects answer aliases absent from the pinned producer contract", async () => {
     const source = sourceArtifacts() as Record<string, Uint8Array>;
     const answer = sourceAnswer();
-    delete answer.answer_text;
-    answer.text = "A synthetic answer.";
+    answer.answer_text = "legacy alias must not be interpreted";
     source["runs/run-1/answers.jsonl"] = bytes(`${JSON.stringify(answer)}\n`);
 
     const plan = await prepareAutoGeoClientRestore(source, reviewedMapping());

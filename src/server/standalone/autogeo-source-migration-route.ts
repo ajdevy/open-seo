@@ -13,6 +13,7 @@ import {
   revokeAutoGeoSourceMigrationApproval,
 } from "./autogeo-source-migration-approval";
 import { AUTOGEO_SOURCE_CONTRACT_REVISION } from "./autogeo-source-contract";
+import { mappingApprovalSchema } from "./autogeo-source-adapter-schema";
 import { isOperatorRequest } from "./operator-auth";
 
 // This route materializes the parsed artifact set, archive plan, encrypted
@@ -26,6 +27,7 @@ const refSchema = z
   .min(1)
   .max(240)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,239}$/u);
+const digestRefSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
 const clientRefSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u);
 
 const commandSchema = z.discriminatedUnion("command", [
@@ -35,12 +37,13 @@ const commandSchema = z.discriminatedUnion("command", [
       clientRef: clientRefSchema,
       targetOrganizationId: idSchema,
       sourceContractRevision: z.literal(AUTOGEO_SOURCE_CONTRACT_REVISION),
-      mappingEvidenceRef: refSchema,
-      sourceReadEvidenceRef: refSchema,
-      targetWriteEvidenceRef: refSchema,
-      archiveDestinationEvidenceRef: refSchema,
-      retentionEvidenceRef: refSchema,
-      restoreEvidenceRef: refSchema,
+      mapping: mappingApprovalSchema,
+      sourceArtifactsFingerprint: digestRefSchema,
+      sourceReadEvidenceRef: digestRefSchema,
+      targetWriteEvidenceRef: digestRefSchema,
+      archiveDestinationEvidenceRef: digestRefSchema,
+      retentionEvidenceRef: digestRefSchema,
+      restoreEvidenceRef: digestRefSchema,
       expiresAt: z.string().datetime({ offset: true }),
     })
     .strict(),
@@ -281,7 +284,8 @@ export async function handleAutoGeoSourceMigrationRequest(
         clientRef: parsed.data.clientRef,
         targetOrganizationId: parsed.data.targetOrganizationId,
         sourceContractRevision: parsed.data.sourceContractRevision,
-        mappingEvidenceRef: parsed.data.mappingEvidenceRef,
+        mapping: parsed.data.mapping,
+        sourceArtifactsFingerprint: parsed.data.sourceArtifactsFingerprint,
         sourceReadEvidenceRef: parsed.data.sourceReadEvidenceRef,
         targetWriteEvidenceRef: parsed.data.targetWriteEvidenceRef,
         archiveDestinationEvidenceRef:

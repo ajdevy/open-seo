@@ -4,6 +4,7 @@ import {
   mappingSchema,
   type AutoGeoMapping,
 } from "./autogeo-source-adapter-schema";
+import { verifyAutoGeoMigrationEvidenceBinding } from "./autogeo-source-migration-evidence";
 import {
   AUTOGEO_SOURCE_CONTRACT_REVISION,
   type AutoGeoRestorePlan,
@@ -112,7 +113,7 @@ export type AutoGeoSourceMigrationResult =
     }
   | {
       status: "archived_unimported";
-      reason: "incomplete_source_mapping";
+      reason: "incomplete_source_mapping" | "authorization_required";
       report: AutoGeoRestorePlan["report"];
       archiveFileId: string;
     }
@@ -139,15 +140,16 @@ export type AutoGeoSourceMigrationResult =
       importedContentSha256: string;
     };
 
-function approvalMatches(
+async function approvalMatches(
   approval: AutoGeoMigrationApproval,
   mapping: AutoGeoMapping,
   targetOrganizationId: string,
   now: Date,
-): boolean {
+  sourceArtifactsFingerprint?: string,
+): Promise<boolean> {
   const approvedAt = Date.parse(approval.approvedAt);
   const expiresAt = Date.parse(approval.expiresAt);
-  return (
+  const fieldsMatch =
     approval.clientRef === mapping.clientRef &&
     approval.targetOrganizationId === targetOrganizationId &&
     approval.sourceContractRevision === mapping.sourceContractRevision &&
@@ -155,7 +157,14 @@ function approvalMatches(
     Number.isFinite(approvedAt) &&
     Number.isFinite(expiresAt) &&
     approvedAt <= now.getTime() &&
-    expiresAt > now.getTime()
+    expiresAt > now.getTime();
+  return (
+    fieldsMatch &&
+    (await verifyAutoGeoMigrationEvidenceBinding(
+      approval,
+      mapping,
+      sourceArtifactsFingerprint,
+    ))
   );
 }
 
@@ -212,11 +221,34 @@ export async function runAutoGeoSourceMigration(
   const approval = approvalSchema.safeParse(approvalResult);
   if (
     !approval.success ||
-    !approvalMatches(approval.data, mapping, input.targetOrganizationId, now())
+    !(await approvalMatches(
+      approval.data,
+      mapping,
+      input.targetOrganizationId,
+      now(),
+    ))
   )
     return { status: "blocked", reason: "authorization_required" };
 
   const artifacts = await input.readSourceArtifacts(approval.data);
+  let sourceArtifactsFingerprint: string;
+  try {
+    sourceArtifactsFingerprint =
+      await fingerprintAutoGeoSourceArtifacts(artifacts);
+  } catch {
+    return { status: "blocked", reason: "invalid_migration_request" };
+  }
+  if (
+    !(await approvalMatches(
+      approval.data,
+      mapping,
+      input.targetOrganizationId,
+      now(),
+      `sha256:${sourceArtifactsFingerprint}`,
+    ))
+  )
+    return { status: "blocked", reason: "authorization_required" };
+
   const plan = await prepareAutoGeoClientRestore(artifacts, mapping);
   const importEligible =
     plan.report.blockers.length === 0 && plan.archive !== null;
@@ -224,6 +256,8 @@ export async function runAutoGeoSourceMigration(
   const artifactsFingerprint = await fingerprintAutoGeoSourceArtifacts(
     plan.archiveArtifacts,
   );
+  if (artifactsFingerprint !== sourceArtifactsFingerprint)
+    return { status: "blocked", reason: "authorization_required" };
   const candidateEnvelope = await prepareEncryptedAutoGeoSourceArchive(
     {
       clientRef: mapping.clientRef,
@@ -335,6 +369,40 @@ export async function runAutoGeoSourceMigration(
     return {
       status: "archived_unimported",
       reason: "incomplete_source_mapping",
+      report: plan.report,
+      archiveFileId: delivery.fileId,
+    };
+
+  // Authorization may be revoked while the encrypted archive is being
+  // delivered. Re-resolve the exact approval after read-back and immediately
+  // before touching the target organization.
+  let latestApprovalResult: unknown;
+  try {
+    latestApprovalResult = await input.authorization.authorize({
+      clientRef: mapping.clientRef,
+      targetOrganizationId: input.targetOrganizationId,
+      mapping,
+    });
+  } catch {
+    latestApprovalResult = null;
+  }
+  const latestApproval = approvalSchema.safeParse(latestApprovalResult);
+  if (
+    !latestApproval.success ||
+    latestApproval.data.approvedAt !== approval.data.approvedAt ||
+    latestApproval.data.mappingEvidenceRef !==
+      approval.data.mappingEvidenceRef ||
+    !(await approvalMatches(
+      latestApproval.data,
+      mapping,
+      input.targetOrganizationId,
+      now(),
+      `sha256:${sourceArtifactsFingerprint}`,
+    ))
+  )
+    return {
+      status: "archived_unimported",
+      reason: "authorization_required",
       report: plan.report,
       archiveFileId: delivery.fileId,
     };

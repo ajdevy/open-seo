@@ -158,11 +158,10 @@ function mapAnswer(
     context;
   const prompt = uniquePrompts.get(answer.prompt_id);
   if (!prompt) return null;
-  if (
-    answer.locale !== prompt.row.locale ||
-    answer.intent_category !== prompt.row.intent_category
-  )
-    return null;
+  // The producer records intent on the prompt matrix, not on answer rows.
+  // Match the answer to that prompt and use the prompt's own locale as the
+  // source of truth; do not invent a per-answer intent field.
+  if (answer.locale !== prompt.row.locale) return null;
   const sourceKey = sourcePromptKey(prompt);
   const targetPromptId = promptMappings.targetIdBySourceKey.get(sourceKey);
   const answerMapping = mapping.answerMappings[`${runId}:${answer.answer_id}`];
@@ -181,7 +180,7 @@ function mapAnswer(
     (answer.status === "ok" && answerMapping.resultStatus !== "completed") ||
     (answer.status === "error" && answerMapping.resultStatus !== "failed") ||
     (answerMapping.resultStatus === "completed" &&
-      (answer.answer_text === null || answer.answer_text.length === 0))
+      (!answer.text || answer.text.length === 0))
   )
     return null;
 
@@ -196,11 +195,13 @@ function mapAnswer(
     questionVersion: prompt.version,
     questionSnapshot: prompt.row.text,
     requestedModel: answer.model_id,
-    observedModel: null,
+    observedModel: answer.observed_version?.trim()
+      ? answer.observed_version
+      : null,
     route: "unknown",
     resultStatus: answerMapping.resultStatus,
     answer:
-      answerMapping.resultStatus === "completed" ? answer.answer_text : null,
+      answerMapping.resultStatus === "completed" ? (answer.text ?? null) : null,
     searchStatus: "unknown",
     eligibleForVisibility: null,
     errorCode:

@@ -19,6 +19,7 @@ import { seedClientRows } from "./client-restore-fixtures";
 import { runAutoGeoSourceMigration } from "./autogeo-source-migration";
 import {
   migrationHarness,
+  bindMappingForMigration,
   reviewedMapping,
   syntheticSourceArtifacts,
   jsonlBytes,
@@ -31,7 +32,8 @@ describe("AutoGeo source migration orchestration", () => {
   afterAll(() => testDb.client.close());
 
   it("persists and reads back the encrypted source before an idempotent import", async () => {
-    const mapping = reviewedMapping();
+    const artifacts = syntheticSourceArtifacts();
+    const mapping = await bindMappingForMigration(reviewedMapping(), artifacts);
     const harness = migrationHarness();
     const archiveKey = await crypto.subtle.generateKey(
       { name: "AES-GCM", length: 256 },
@@ -54,7 +56,7 @@ describe("AutoGeo source migration orchestration", () => {
           archivePort: harness.archive,
           async readSourceArtifacts() {
             harness.events.push("source-read");
-            return syntheticSourceArtifacts();
+            return artifacts;
           },
         },
         testNow,
@@ -85,10 +87,14 @@ describe("AutoGeo source migration orchestration", () => {
     expect(harness.events.indexOf("drive-readback")).toBeGreaterThan(
       harness.events.indexOf("drive-write"),
     );
+    expect(harness.events.lastIndexOf("authorization")).toBeGreaterThan(
+      harness.events.indexOf("drive-readback"),
+    );
   });
 
   it("does not read source or archive when per-client authorization is denied", async () => {
     const harness = migrationHarness({ deny: true });
+    const mapping = await bindMappingForMigration();
     const archiveKey = await crypto.subtle.generateKey(
       { name: "AES-GCM", length: 256 },
       false,
@@ -99,7 +105,7 @@ describe("AutoGeo source migration orchestration", () => {
       {
         targetOrganizationId: "target-a",
         idempotencyKey: "synthetic-denied-migration",
-        mapping: reviewedMapping(),
+        mapping,
         authorization: harness.authorization,
         outbox: harness.outbox,
         archiveKey,
@@ -123,6 +129,7 @@ describe("AutoGeo source migration orchestration", () => {
 
   it("does not read source when the approval has expired", async () => {
     const harness = migrationHarness({ expiredApproval: true });
+    const mapping = await bindMappingForMigration();
     const archiveKey = await crypto.subtle.generateKey(
       { name: "AES-GCM", length: 256 },
       false,
@@ -133,7 +140,7 @@ describe("AutoGeo source migration orchestration", () => {
       {
         targetOrganizationId: "target-a",
         idempotencyKey: "synthetic-expired-migration",
-        mapping: reviewedMapping(),
+        mapping,
         authorization: harness.authorization,
         outbox: harness.outbox,
         archiveKey,
@@ -156,6 +163,7 @@ describe("AutoGeo source migration orchestration", () => {
 
   it("does not import unless encrypted Drive read-back succeeds", async () => {
     const harness = migrationHarness({ failDriveWrite: true });
+    const mapping = await bindMappingForMigration();
     const archiveKey = await crypto.subtle.generateKey(
       { name: "AES-GCM", length: 256 },
       false,
@@ -169,7 +177,7 @@ describe("AutoGeo source migration orchestration", () => {
       {
         targetOrganizationId: "target-a",
         idempotencyKey: "synthetic-pending-migration",
-        mapping: reviewedMapping(),
+        mapping,
         authorization: harness.authorization,
         outbox: harness.outbox,
         archiveKey,
@@ -195,6 +203,7 @@ describe("AutoGeo source migration orchestration", () => {
   it("archives an incomplete mapping without importing partial source rows", async () => {
     const mapping = reviewedMapping();
     mapping.answerMappings = {};
+    const boundMapping = await bindMappingForMigration(mapping);
     const harness = migrationHarness();
     const archiveKey = await crypto.subtle.generateKey(
       { name: "AES-GCM", length: 256 },
@@ -210,7 +219,7 @@ describe("AutoGeo source migration orchestration", () => {
       {
         targetOrganizationId: "target-a",
         idempotencyKey: "synthetic-incomplete-mapping",
-        mapping,
+        mapping: boundMapping,
         authorization: harness.authorization,
         outbox: harness.outbox,
         archiveKey,
@@ -237,14 +246,14 @@ describe("AutoGeo source migration orchestration", () => {
   });
 
   it("rejects changed source bytes when an idempotency key already has an outbox record", async () => {
-    const mapping = reviewedMapping();
+    const artifacts = syntheticSourceArtifacts();
+    const mapping = await bindMappingForMigration(reviewedMapping(), artifacts);
     const harness = migrationHarness();
     const archiveKey = await crypto.subtle.generateKey(
       { name: "AES-GCM", length: 256 },
       false,
       ["encrypt", "decrypt"],
     );
-    const artifacts = syntheticSourceArtifacts();
     const run = () =>
       runAutoGeoSourceMigration(
         {
@@ -270,18 +279,18 @@ describe("AutoGeo source migration orchestration", () => {
       .where(eq(projects.organizationId, "target-a"));
     artifacts["runs/run-auto-1/answers.jsonl"] = jsonlBytes({
       answer_id: "answer-auto-1",
-      run_id: "run-auto-1",
       prompt_id: "prompt-auto-1",
-      intent_category: "product_research",
       locale: "en",
       provider: "provider-a",
       model_id: "model-a",
-      model_snapshot_date: "2026-10-01",
-      requested_at: "2026-10-01T10:00:00.000Z",
+      retrieval_mode: "retrieval",
+      asked_utc: "2026-10-01T10:00:00.000Z",
       status: "ok",
-      answer_text: "Changed synthetic source bytes.",
+      attempt: 1,
+      text: "Changed synthetic source bytes.",
       citations: ["https://example.test/source"],
-      error: null,
+      cost_usd: 0.001,
+      cost_source: "reported",
     });
 
     const second = await run();
@@ -290,13 +299,58 @@ describe("AutoGeo source migration orchestration", () => {
       .from(projects)
       .where(eq(projects.organizationId, "target-a"));
 
-    expect(second).toMatchObject({
-      status: "archive_pending",
-      reason: "outbox_unconfirmed",
+    expect(second).toEqual({
+      status: "blocked",
+      reason: "authorization_required",
     });
     expect(
       harness.events.filter((event) => event === "drive-write"),
     ).toHaveLength(1);
     expect(targetAfterSecond).toEqual(targetAfterFirst);
+  });
+
+  it("archives but does not import when approval is revoked after read-back", async () => {
+    const harness = migrationHarness({ revokeOnRecheck: true });
+    const mapping = await bindMappingForMigration();
+    const archiveKey = await crypto.subtle.generateKey(
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"],
+    );
+    const targetProjectsBefore = await testDb.db
+      .select()
+      .from(projects)
+      .where(eq(projects.organizationId, "target-a"));
+
+    const result = await runAutoGeoSourceMigration(
+      {
+        targetOrganizationId: "target-a",
+        idempotencyKey: "synthetic-revoked-after-readback",
+        mapping,
+        authorization: harness.authorization,
+        outbox: harness.outbox,
+        archiveKey,
+        archivePort: harness.archive,
+        async readSourceArtifacts() {
+          return syntheticSourceArtifacts();
+        },
+      },
+      testNow,
+    );
+    const targetProjectsAfter = await testDb.db
+      .select()
+      .from(projects)
+      .where(eq(projects.organizationId, "target-a"));
+
+    expect(result).toMatchObject({
+      status: "archived_unimported",
+      reason: "authorization_required",
+      archiveFileId: "synthetic-drive-file-1",
+    });
+    expect(targetProjectsAfter).toEqual(targetProjectsBefore);
+    expect(harness.remoteArchives.size).toBe(1);
+    expect(harness.events.lastIndexOf("authorization")).toBeGreaterThan(
+      harness.events.indexOf("drive-readback"),
+    );
   });
 });

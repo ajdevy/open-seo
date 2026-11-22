@@ -75,4 +75,10 @@ export const mappingSchema = z
   })
   .strict();
 
+/** Mapping submitted for approval, before the server attaches its evidence binding. */
+export const mappingApprovalSchema = mappingSchema.omit({
+  mappingEvidenceRef: true,
+});
+
 export type AutoGeoMapping = z.infer<typeof mappingSchema>;
+export type AutoGeoMappingForApproval = z.infer<typeof mappingApprovalSchema>;

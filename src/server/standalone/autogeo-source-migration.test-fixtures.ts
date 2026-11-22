@@ -1,6 +1,11 @@
 import type { AutoGeoMapping } from "./autogeo-source-adapter-schema";
 import { AUTOGEO_SOURCE_CONTRACT_REVISION } from "./autogeo-source-contract";
 import type { AutoGeoSourceArchivePort } from "./autogeo-source-archive";
+import { fingerprintAutoGeoSourceArtifacts } from "./autogeo-source-archive";
+import {
+  createAutoGeoMigrationEvidenceBinding,
+  type AutoGeoMigrationEvidence,
+} from "./autogeo-source-migration-evidence";
 import type {
   AutoGeoSourceMigrationOutboxPort,
   AutoGeoSourceMigrationOutboxRecord,
@@ -23,18 +28,25 @@ export function syntheticSourceArtifacts() {
     }),
     "runs/run-auto-1/answers.jsonl": jsonlBytes({
       answer_id: "answer-auto-1",
-      run_id: "run-auto-1",
       prompt_id: "prompt-auto-1",
-      intent_category: "product_research",
       locale: "en",
       provider: "provider-a",
+      retrieval_mode: "retrieval",
       model_id: "model-a",
-      model_snapshot_date: "2026-10-01",
-      requested_at: "2026-10-01T10:00:00.000Z",
+      asked_utc: "2026-10-01T10:00:00.000Z",
+      search_executed: "executed",
+      search_executed_evidence: "synthetic provider search evidence",
+      counts_toward_retrieval_metrics: true,
       status: "ok",
-      answer_text: "Synthetic historical answer.",
+      attempt: 1,
+      text: "Synthetic historical answer.",
       citations: ["https://example.test/source"],
-      error: null,
+      cost_usd: 0.001,
+      cost_source: "reported",
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+      observed_version: "model-a-2026-10",
+      provider_call_id: "synthetic-call-1",
+      idempotency_key: "synthetic-idempotency-1",
     }),
   };
 }
@@ -100,6 +112,34 @@ export function reviewedMapping(): AutoGeoMapping {
   };
 }
 
+const syntheticEvidenceRefs = {
+  sourceReadEvidenceRef: `sha256:${"a".repeat(64)}`,
+  targetWriteEvidenceRef: `sha256:${"b".repeat(64)}`,
+  archiveDestinationEvidenceRef: `sha256:${"c".repeat(64)}`,
+  retentionEvidenceRef: `sha256:${"d".repeat(64)}`,
+  restoreEvidenceRef: `sha256:${"e".repeat(64)}`,
+};
+
+export async function bindMappingForMigration(
+  mapping: AutoGeoMapping = reviewedMapping(),
+  artifacts: Record<string, Uint8Array> = syntheticSourceArtifacts(),
+  targetOrganizationId = "target-a",
+): Promise<AutoGeoMapping> {
+  const evidence: AutoGeoMigrationEvidence = {
+    clientRef: mapping.clientRef,
+    targetOrganizationId,
+    sourceContractRevision: mapping.sourceContractRevision,
+    ...syntheticEvidenceRefs,
+    expiresAt: "2026-11-22T11:00:00.000Z",
+  };
+  const mappingEvidenceRef = await createAutoGeoMigrationEvidenceBinding({
+    mapping,
+    sourceArtifactsFingerprint: `sha256:${await fingerprintAutoGeoSourceArtifacts(artifacts)}`,
+    evidence,
+  });
+  return { ...mapping, mappingEvidenceRef };
+}
+
 function migrationApproval(
   mapping: AutoGeoMapping,
   targetOrganizationId: string,
@@ -111,12 +151,8 @@ function migrationApproval(
     targetOrganizationId,
     sourceContractRevision: mapping.sourceContractRevision,
     mappingEvidenceRef: mapping.mappingEvidenceRef,
-    sourceReadEvidenceRef: "synthetic-evidence:source-rights",
-    targetWriteEvidenceRef: "synthetic-evidence:target-rights",
-    archiveDestinationEvidenceRef: "synthetic-evidence:archive-rights",
-    retentionEvidenceRef: "synthetic-evidence:source-retention",
-    restoreEvidenceRef: "synthetic-evidence:restore-check",
-    approvedBy: "synthetic-reviewer",
+    ...syntheticEvidenceRefs,
+    approvedBy: "operator-secret-authenticated",
     approvedAt,
     expiresAt: new Date(Date.parse(approvedAt) + 60 * 60 * 1000).toISOString(),
   };
@@ -126,8 +162,10 @@ export function migrationHarness(options?: {
   deny?: boolean;
   failDriveWrite?: boolean;
   expiredApproval?: boolean;
+  revokeOnRecheck?: boolean;
 }) {
   const events: string[] = [];
+  let authorizationCalls = 0;
   const outboxRecords = new Map<string, AutoGeoSourceMigrationOutboxRecord>();
   const remoteArchives = new Map<
     string,
@@ -256,9 +294,11 @@ export function migrationHarness(options?: {
         targetOrganizationId: string;
         mapping: AutoGeoMapping;
       }) {
+        authorizationCalls += 1;
         events.push("authorization");
         if (
           options?.deny ||
+          (options?.revokeOnRecheck && authorizationCalls > 1) ||
           clientRef !== mapping.clientRef ||
           targetOrganizationId !== "target-a"
         )

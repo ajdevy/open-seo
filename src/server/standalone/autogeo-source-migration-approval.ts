@@ -6,15 +6,22 @@ import type {
   AutoGeoSourceMigrationAuthorizationPort,
 } from "./autogeo-source-migration";
 import { AUTOGEO_SOURCE_CONTRACT_REVISION } from "./autogeo-source-contract";
+import { mappingApprovalSchema } from "./autogeo-source-adapter-schema";
+import {
+  createAutoGeoMigrationEvidenceBinding,
+  isSha256EvidenceRef,
+  verifyAutoGeoMigrationEvidenceBinding,
+} from "./autogeo-source-migration-evidence";
 
 const MAX_APPROVAL_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
-const OPERATOR_PRINCIPAL = "standalone-operator";
+const OPERATOR_PRINCIPAL = "operator-secret-authenticated";
 
 export type AutoGeoSourceMigrationApprovalEvidence = {
   clientRef: string;
   targetOrganizationId: string;
   sourceContractRevision: AutoGeoMigrationApproval["sourceContractRevision"];
-  mappingEvidenceRef: string;
+  mapping: unknown;
+  sourceArtifactsFingerprint: string;
   sourceReadEvidenceRef: string;
   targetWriteEvidenceRef: string;
   archiveDestinationEvidenceRef: string;
@@ -46,7 +53,11 @@ function approvalFromRow(
 export async function createAutoGeoSourceMigrationApproval(
   evidence: AutoGeoSourceMigrationApprovalEvidence,
   now: Date = new Date(),
-): Promise<{ approvalId: string; approvedAt: string }> {
+): Promise<{
+  approvalId: string;
+  approvedAt: string;
+  mappingEvidenceRef: string;
+}> {
   const approvedAt = now.toISOString();
   const expiresAt = Date.parse(evidence.expiresAt);
   if (
@@ -55,6 +66,38 @@ export async function createAutoGeoSourceMigrationApproval(
     expiresAt > now.getTime() + MAX_APPROVAL_AGE_MS
   )
     throw new Error("Approval expiry must be within the next 30 days.");
+  const normalizedExpiresAt = new Date(expiresAt).toISOString();
+
+  const mapping = mappingApprovalSchema.parse(evidence.mapping);
+  if (
+    mapping.clientRef !== evidence.clientRef ||
+    mapping.sourceContractRevision !== evidence.sourceContractRevision ||
+    !isSha256EvidenceRef(evidence.sourceArtifactsFingerprint) ||
+    ![
+      evidence.sourceReadEvidenceRef,
+      evidence.targetWriteEvidenceRef,
+      evidence.archiveDestinationEvidenceRef,
+      evidence.retentionEvidenceRef,
+      evidence.restoreEvidenceRef,
+    ].every(isSha256EvidenceRef)
+  )
+    throw new Error("Migration evidence references must be SHA-256 digests.");
+
+  const mappingEvidenceRef = await createAutoGeoMigrationEvidenceBinding({
+    mapping,
+    sourceArtifactsFingerprint: evidence.sourceArtifactsFingerprint,
+    evidence: {
+      clientRef: evidence.clientRef,
+      targetOrganizationId: evidence.targetOrganizationId,
+      sourceContractRevision: evidence.sourceContractRevision,
+      sourceReadEvidenceRef: evidence.sourceReadEvidenceRef,
+      targetWriteEvidenceRef: evidence.targetWriteEvidenceRef,
+      archiveDestinationEvidenceRef: evidence.archiveDestinationEvidenceRef,
+      retentionEvidenceRef: evidence.retentionEvidenceRef,
+      restoreEvidenceRef: evidence.restoreEvidenceRef,
+      expiresAt: normalizedExpiresAt,
+    },
+  });
 
   const [target] = await db
     .select({ id: organization.id })
@@ -79,10 +122,6 @@ export async function createAutoGeoSourceMigrationApproval(
           autoGeoSourceMigrationApprovals.sourceContractRevision,
           evidence.sourceContractRevision,
         ),
-        eq(
-          autoGeoSourceMigrationApprovals.mappingEvidenceRef,
-          evidence.mappingEvidenceRef,
-        ),
         eq(autoGeoSourceMigrationApprovals.status, "approved"),
         lte(autoGeoSourceMigrationApprovals.expiresAt, approvedAt),
       ),
@@ -98,10 +137,7 @@ export async function createAutoGeoSourceMigrationApproval(
       autoGeoSourceMigrationApprovals.sourceContractRevision,
       evidence.sourceContractRevision,
     ),
-    eq(
-      autoGeoSourceMigrationApprovals.mappingEvidenceRef,
-      evidence.mappingEvidenceRef,
-    ),
+    eq(autoGeoSourceMigrationApprovals.mappingEvidenceRef, mappingEvidenceRef),
     eq(autoGeoSourceMigrationApprovals.status, "approved"),
   );
   const [activeApproval] = await db
@@ -115,7 +151,16 @@ export async function createAutoGeoSourceMigrationApproval(
   try {
     await db.insert(autoGeoSourceMigrationApprovals).values({
       id: approvalId,
-      ...evidence,
+      clientRef: evidence.clientRef,
+      targetOrganizationId: evidence.targetOrganizationId,
+      sourceContractRevision: evidence.sourceContractRevision,
+      mappingEvidenceRef,
+      sourceReadEvidenceRef: evidence.sourceReadEvidenceRef,
+      targetWriteEvidenceRef: evidence.targetWriteEvidenceRef,
+      archiveDestinationEvidenceRef: evidence.archiveDestinationEvidenceRef,
+      retentionEvidenceRef: evidence.retentionEvidenceRef,
+      restoreEvidenceRef: evidence.restoreEvidenceRef,
+      expiresAt: normalizedExpiresAt,
       approvedBy: OPERATOR_PRINCIPAL,
       approvedAt,
       status: "approved",
@@ -130,7 +175,7 @@ export async function createAutoGeoSourceMigrationApproval(
       throw new Error("An active approval already exists.", { cause: error });
     throw error;
   }
-  return { approvalId, approvedAt };
+  return { approvalId, approvedAt, mappingEvidenceRef };
 }
 
 export async function revokeAutoGeoSourceMigrationApproval(
@@ -184,6 +229,13 @@ export const autoGeoSourceMigrationAuthorization: AutoGeoSourceMigrationAuthoriz
           ),
         )
         .limit(1);
-      return row ? approvalFromRow(row) : null;
+      if (!row) return null;
+      const approval = approvalFromRow(row);
+      return (await verifyAutoGeoMigrationEvidenceBinding(
+        approval,
+        input.mapping,
+      ))
+        ? approval
+        : null;
     },
   };
