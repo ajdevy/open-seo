@@ -158,7 +158,11 @@ function mapAnswer(
     context;
   const prompt = uniquePrompts.get(answer.prompt_id);
   if (!prompt) return null;
-  if (answer.locale !== prompt.row.locale) return null;
+  if (
+    answer.locale !== prompt.row.locale ||
+    answer.intent_category !== prompt.row.intent_category
+  )
+    return null;
   const sourceKey = sourcePromptKey(prompt);
   const targetPromptId = promptMappings.targetIdBySourceKey.get(sourceKey);
   const answerMapping = mapping.answerMappings[`${runId}:${answer.answer_id}`];
@@ -177,7 +181,7 @@ function mapAnswer(
     (answer.status === "ok" && answerMapping.resultStatus !== "completed") ||
     (answer.status === "error" && answerMapping.resultStatus !== "failed") ||
     (answerMapping.resultStatus === "completed" &&
-      (answer.text === undefined || answer.text.length === 0))
+      (answer.answer_text === null || answer.answer_text.length === 0))
   )
     return null;
 
@@ -192,14 +196,12 @@ function mapAnswer(
     questionVersion: prompt.version,
     questionSnapshot: prompt.row.text,
     requestedModel: answer.model_id,
-    observedModel: answer.observed_version?.trim()
-      ? answer.observed_version
-      : null,
+    observedModel: null,
     route: "unknown",
     resultStatus: answerMapping.resultStatus,
     answer:
-      answerMapping.resultStatus === "completed" ? answer.text ?? null : null,
-    searchStatus: answer.search_executed ?? "unknown",
+      answerMapping.resultStatus === "completed" ? answer.answer_text : null,
+    searchStatus: "unknown",
     eligibleForVisibility: null,
     errorCode:
       answerMapping.resultStatus === "failed"

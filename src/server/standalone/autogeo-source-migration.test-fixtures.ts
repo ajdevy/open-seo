@@ -23,24 +23,18 @@ export function syntheticSourceArtifacts() {
     }),
     "runs/run-auto-1/answers.jsonl": jsonlBytes({
       answer_id: "answer-auto-1",
+      run_id: "run-auto-1",
       prompt_id: "prompt-auto-1",
+      intent_category: "product_research",
       locale: "en",
       provider: "provider-a",
-      retrieval_mode: "retrieval",
       model_id: "model-a",
-      asked_utc: "2026-10-01T10:00:00.000Z",
+      model_snapshot_date: "2026-10-01",
+      requested_at: "2026-10-01T10:00:00.000Z",
       status: "ok",
-      attempt: 1,
-      provider_calls: 1,
-      cost_usd: 0.001,
-      cost_source: "provider-reported",
-      text: "Synthetic historical answer.",
+      answer_text: "Synthetic historical answer.",
       citations: ["https://example.test/source"],
-      observed_version: "model-a-2026-10",
-      search_executed: "executed",
-      search_executed_evidence: "provider search execution artifact",
-      counts_toward_retrieval_metrics: true,
-      provider_call_id: "call-auto-1",
+      error: null,
     }),
   };
 }
@@ -152,9 +146,58 @@ export function migrationHarness(options?: {
         throw new Error("synthetic idempotency conflict");
       return previous;
     },
+    async reserveArchiveFileId(record, candidate) {
+      const key = `${record.clientRef}:${record.idempotencyKey}`;
+      const saved = outboxRecords.get(key);
+      if (!saved) throw new Error("synthetic outbox record not found");
+      if (
+        candidate.archiveTarget.organizationId !== record.targetOrganizationId
+      )
+        throw new Error("synthetic archive target mismatch");
+      if (saved.archiveFileId) {
+        if (
+          saved.archiveTarget?.organizationId !==
+            candidate.archiveTarget.organizationId ||
+          saved.archiveTarget.folderId !== candidate.archiveTarget.folderId
+        )
+          throw new Error("synthetic archive target changed");
+        return saved;
+      }
+      const reserved = {
+        ...saved,
+        archiveFileId: candidate.archiveFileId,
+        archiveTarget: candidate.archiveTarget,
+      };
+      outboxRecords.set(key, reserved);
+      events.push("outbox-archive-id-reserved");
+      return reserved;
+    },
+    async markArchived(record, fileId) {
+      const key = `${record.clientRef}:${record.idempotencyKey}`;
+      const saved = outboxRecords.get(key);
+      if (!saved) return false;
+      if (saved.archiveFileId && saved.archiveFileId !== fileId) return false;
+      outboxRecords.set(key, { ...saved, archiveFileId: fileId });
+      events.push("outbox-archive-confirmed");
+      return true;
+    },
   };
   const archive: AutoGeoSourceArchivePort = {
-    async putEncryptedSourceArchive(envelope) {
+    async generateFileId(organizationId) {
+      events.push("drive-id-generate");
+      if (organizationId !== "target-a")
+        throw new Error("synthetic archive target mismatch");
+      return {
+        fileId: "synthetic-drive-file-1",
+        target: {
+          connectionId: "synthetic-connection",
+          organizationId,
+          googleAccountId: "synthetic-google-account",
+          folderId: "synthetic-folder",
+        },
+      };
+    },
+    async putEncryptedSourceArchive(envelope, fileId) {
       events.push("drive-write");
       if (options?.failDriveWrite) throw new Error("synthetic write failure");
       const key = `${envelope.clientRef}:${envelope.idempotencyKey}`;
@@ -169,20 +212,22 @@ export function migrationHarness(options?: {
           ))
       )
         throw new Error("synthetic archive idempotency conflict");
-      const fileId = existing?.fileId ?? "synthetic-drive-file-1";
+      const storedFileId = existing?.fileId ?? fileId;
       remoteArchives.set(key, {
-        fileId,
+        fileId: storedFileId,
         envelope: {
           ...envelope,
           iv: envelope.iv.slice(),
           ciphertext: envelope.ciphertext.slice(),
         },
       });
-      return { fileId };
+      return { fileId: storedFileId };
     },
-    async readEncryptedSourceArchive(clientRef, idempotencyKey) {
+    async readEncryptedSourceArchive(clientRef, idempotencyKey, fileId) {
       events.push("drive-readback");
       const saved = remoteArchives.get(`${clientRef}:${idempotencyKey}`);
+      if (saved && saved.fileId !== fileId)
+        throw new Error("synthetic archive ID mismatch");
       return saved
         ? {
             fileId: saved.fileId,

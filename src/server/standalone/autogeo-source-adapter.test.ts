@@ -13,26 +13,18 @@ function bytes(value: string) {
 function sourceAnswer(): Record<string, unknown> {
   return {
     answer_id: "answer-1",
+    run_id: "run-1",
     prompt_id: "prompt-1",
+    intent_category: "product_research",
     provider: "provider-a",
     locale: "en",
-    retrieval_mode: "retrieval",
     model_id: "model-a",
-    asked_utc: "2026-10-01T10:00:00.000Z",
+    model_snapshot_date: "2026-10-01",
+    requested_at: "2026-10-01T10:00:00.000Z",
     status: "ok",
-    attempt: 1,
-    provider_calls: 1,
-    cost_usd: 0.001,
-    cost_source: "provider-reported",
-    text: "A synthetic answer.",
+    answer_text: "A synthetic answer.",
     citations: ["https://example.test/source"],
-    observed_version: "model-a-2026-10",
-    search_executed: "executed",
-    search_executed_evidence: "provider search execution artifact",
-    counts_toward_retrieval_metrics: true,
-    provider_call_id: "call-1",
-    idempotency_key: "run-1:answer-1",
-    usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+    error: null,
   };
 }
 
@@ -49,9 +41,7 @@ function sourceArtifacts() {
         text: "What is Example?",
       })}\n`,
     ),
-    "runs/run-1/answers.jsonl": bytes(
-      `${JSON.stringify(sourceAnswer())}\n`,
-    ),
+    "runs/run-1/answers.jsonl": bytes(`${JSON.stringify(sourceAnswer())}\n`),
     "runs/run-1/claims.jsonl": bytes("opaque synthetic claim data\n"),
   };
 }
@@ -160,10 +150,10 @@ describe("AutoGeo source adapter", () => {
       questionVersion: 1,
       questionSnapshot: "What is Example?",
       requestedModel: "model-a",
-      observedModel: "model-a-2026-10",
+      observedModel: null,
       route: "unknown",
       resultStatus: "completed",
-      searchStatus: "executed",
+      searchStatus: "unknown",
       eligibleForVisibility: null,
       collectedAt: "2026-10-01T10:01:00.000Z",
     });
@@ -177,7 +167,7 @@ describe("AutoGeo source adapter", () => {
     expect(archive.payload.aiNativeSearchEvidence).toEqual([]);
   });
 
-  it("uses the source run path and distinguishes actual search from retrieval intent", async () => {
+  it("uses the source run path and does not infer route or search execution", async () => {
     const plan = await prepareAutoGeoClientRestore(
       sourceArtifacts(),
       reviewedMapping(),
@@ -188,7 +178,7 @@ describe("AutoGeo source adapter", () => {
     expect(archive.payload.aiRuns[0].id).toBe("run-1");
     expect(archive.payload.aiNativeResults[0]).toMatchObject({
       runId: "run-1",
-      searchStatus: "executed",
+      searchStatus: "unknown",
       route: "unknown",
     });
   });
@@ -255,20 +245,12 @@ describe("AutoGeo source adapter", () => {
     expect(JSON.stringify(plan.report)).not.toContain("do-not-echo");
   });
 
-  it("keeps ephemeral successful answers in the encrypted source archive only", async () => {
+  it("keeps successful source answers without stored text in the encrypted archive only", async () => {
     const source = sourceArtifacts() as Record<string, Uint8Array>;
     const path = "runs/run-1/answers.jsonl";
     const answer = sourceAnswer();
-    delete answer.text;
-    delete answer.citations;
-    delete answer.provider_call_id;
-    delete answer.idempotency_key;
-    answer.privacy_match = {
-      matched: true,
-      rule_version: "synthetic-v1",
-      fact_graph_version: "synthetic-v1",
-      eval_model_id: "synthetic-match-model",
-    };
+    answer.answer_text = null;
+    answer.citations = [];
     source[path] = bytes(`${JSON.stringify(answer)}\n`);
 
     const plan = await prepareAutoGeoClientRestore(source, reviewedMapping());
@@ -279,22 +261,14 @@ describe("AutoGeo source adapter", () => {
     expect(plan.report.blockers).toContain("unmapped_answer_rows_archived");
   });
 
-  it("maps an ephemeral source failure without fabricating an answer", async () => {
+  it("maps a failed source answer without fabricating answer text", async () => {
     const source = sourceArtifacts() as Record<string, Uint8Array>;
     const path = "runs/run-1/answers.jsonl";
     const answer = sourceAnswer();
-    delete answer.text;
-    delete answer.citations;
-    delete answer.observed_version;
-    delete answer.search_executed;
-    delete answer.search_executed_evidence;
-    delete answer.counts_toward_retrieval_metrics;
-    delete answer.provider_call_id;
-    delete answer.idempotency_key;
+    answer.answer_text = null;
+    answer.citations = [];
     answer.status = "error";
-    answer.cost_usd = 0;
-    answer.cost_source = "unreported";
-    answer.error_class = "provider_call_failed";
+    answer.error = "synthetic provider failure";
     source[path] = bytes(`${JSON.stringify(answer)}\n`);
     const mapping = reviewedMapping();
     mapping.answerMappings["run-1:answer-1"].sourceStatus = "error";
@@ -345,9 +319,7 @@ describe("AutoGeo source adapter", () => {
     const source = sourceArtifacts() as Record<string, Uint8Array>;
     const answer = sourceAnswer();
     answer.locale = "mismatched";
-    source["runs/run-1/answers.jsonl"] = bytes(
-      `${JSON.stringify(answer)}\n`,
-    );
+    source["runs/run-1/answers.jsonl"] = bytes(`${JSON.stringify(answer)}\n`);
 
     const plan = await prepareAutoGeoClientRestore(source, reviewedMapping());
 
@@ -379,11 +351,9 @@ describe("AutoGeo source adapter", () => {
   it("rejects answer aliases absent from the pinned producer contract", async () => {
     const source = sourceArtifacts() as Record<string, Uint8Array>;
     const answer = sourceAnswer();
-    answer.answer_text = answer.text;
-    delete answer.text;
-    source["runs/run-1/answers.jsonl"] = bytes(
-      `${JSON.stringify(answer)}\n`,
-    );
+    delete answer.answer_text;
+    answer.text = "A synthetic answer.";
+    source["runs/run-1/answers.jsonl"] = bytes(`${JSON.stringify(answer)}\n`);
 
     const plan = await prepareAutoGeoClientRestore(source, reviewedMapping());
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** Local adapter-contract version; it has not been verified against an AutoGeo source export. */
+/** Exact source repository revision whose documented JSONL contract this adapter accepts. */
 export const AUTOGEO_SOURCE_CONTRACT_REVISION =
   "f676d4cef76cc2b6b1bf93865f8d480c9df25dfb";
 
@@ -15,37 +15,19 @@ const promptFields = [
 ] as const;
 const answerRequiredFields = [
   "answer_id",
+  "run_id",
   "prompt_id",
+  "intent_category",
   "locale",
   "provider",
-  "retrieval_mode",
   "model_id",
-  "asked_utc",
+  "model_snapshot_date",
+  "requested_at",
   "status",
-  "attempt",
-  "provider_calls",
-  "cost_usd",
-  "cost_source",
-] as const;
-const answerOptionalFields = [
-  "text",
+  "answer_text",
   "citations",
   "error",
-  "error_class",
-  "provider_error_code",
-  "provider_call_id",
-  "idempotency_key",
-  "cost_rub",
-  "cost_error",
-  "fx",
-  "usage",
-  "observed_version",
-  "search_executed",
-  "search_executed_evidence",
-  "counts_toward_retrieval_metrics",
-  "privacy_match",
 ] as const;
-const answerFields = [...answerRequiredFields, ...answerOptionalFields];
 const nonblank = z.string().refine((value) => value.trim().length > 0);
 
 const promptRowSchema = z
@@ -63,78 +45,20 @@ const promptRowSchema = z
 const answerRowSchema = z
   .object({
     answer_id: nonblank,
+    run_id: nonblank,
     prompt_id: nonblank,
+    intent_category: nonblank,
     locale: nonblank,
     provider: nonblank,
-    retrieval_mode: z.enum(["parametric", "retrieval"]),
     model_id: nonblank,
-    asked_utc: z.string().datetime(),
+    model_snapshot_date: z.string().date(),
+    requested_at: z.string().datetime(),
     status: z.enum(["ok", "error"]),
-    attempt: z.number().int().positive(),
-    provider_calls: z.number().int().nonnegative(),
-    cost_usd: z.number().finite().nonnegative(),
-    cost_source: z.enum([
-      "provider-reported",
-      "invalid-reported",
-      "unreported",
-      "calculated-rub-cbr",
-      "unknown",
-    ]),
-    text: z.string().optional(),
-    citations: z.array(z.unknown()).optional(),
-    error: z.string().optional(),
-    error_class: z.enum(["selected_model_mismatch", "provider_call_failed"]).optional(),
-    provider_error_code: nonblank.optional(),
-    provider_call_id: z.string().nullable().optional(),
-    idempotency_key: z.string().nullable().optional(),
-    cost_rub: z.number().finite().nonnegative().optional(),
-    cost_error: z.string().optional(),
-    fx: z.record(z.string(), z.unknown()).optional(),
-    usage: z.record(z.string(), z.unknown()).optional(),
-    observed_version: z.string().optional(),
-    search_executed: z
-      .enum(["executed", "not_executed", "attempted_failed", "unknown"])
-      .optional(),
-    search_executed_evidence: z.string().optional(),
-    counts_toward_retrieval_metrics: z.boolean().optional(),
-    privacy_match: z
-      .object({
-        matched: z.boolean(),
-        rule_version: nonblank,
-        fact_graph_version: nonblank,
-        eval_model_id: nonblank,
-      })
-      .strict()
-      .optional(),
+    answer_text: z.string().nullable(),
+    citations: z.array(z.unknown()),
+    error: z.string().nullable(),
   })
-  .strict()
-  .superRefine((row, context) => {
-    const hasText = row.text !== undefined;
-    const hasCitations = row.citations !== undefined;
-    if (hasText !== hasCitations)
-      context.addIssue({
-        code: "custom",
-        message: "text and citations must be persisted together",
-      });
-    if (
-      row.status === "ok" &&
-      !hasText &&
-      row.privacy_match === undefined
-    )
-      context.addIssue({
-        code: "custom",
-        message: "successful ephemeral answers require a privacy match",
-      });
-    if (
-      row.status === "error" &&
-      row.error === undefined &&
-      row.error_class === undefined
-    )
-      context.addIssue({
-        code: "custom",
-        message: "failed answers require an error classification",
-      });
-  });
+  .strict();
 
 export type PromptSourceRow = z.infer<typeof promptRowSchema>;
 export type AnswerSourceRow = z.infer<typeof answerRowSchema>;
@@ -334,12 +258,12 @@ export function parseAutoGeoSourceRows(
       const rows = parseJsonl(
         artifacts[file.path],
         answerRequiredFields,
-        answerFields,
+        answerRequiredFields,
         answerRowSchema,
       );
       const ids = new Set<string>();
       for (const row of rows) {
-        if (ids.has(row.answer_id))
+        if (row.run_id !== file.runId || ids.has(row.answer_id))
           throw new Error("invalid_source_contract");
         ids.add(row.answer_id);
       }

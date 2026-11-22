@@ -270,19 +270,18 @@ describe("AutoGeo source migration orchestration", () => {
       .where(eq(projects.organizationId, "target-a"));
     artifacts["runs/run-auto-1/answers.jsonl"] = jsonlBytes({
       answer_id: "answer-auto-1",
+      run_id: "run-auto-1",
       prompt_id: "prompt-auto-1",
+      intent_category: "product_research",
       locale: "en",
       provider: "provider-a",
-      retrieval_mode: "retrieval",
       model_id: "model-a",
-      asked_utc: "2026-10-01T10:00:00.000Z",
+      model_snapshot_date: "2026-10-01",
+      requested_at: "2026-10-01T10:00:00.000Z",
       status: "ok",
-      attempt: 1,
-      provider_calls: 1,
-      cost_usd: 0.001,
-      cost_source: "provider-reported",
-      text: "Changed synthetic source bytes.",
+      answer_text: "Changed synthetic source bytes.",
       citations: ["https://example.test/source"],
+      error: null,
     });
 
     const second = await run();

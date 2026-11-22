@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTOGEO_SOURCE_ARCHIVE_MAX_ARTIFACT_BYTES,
+  AUTOGEO_SOURCE_ARCHIVE_MAX_CIPHERTEXT_BYTES,
   deliverEncryptedAutoGeoSourceArchive,
+  parseEncryptedAutoGeoSourceArchive,
   prepareEncryptedAutoGeoSourceArchive,
   type EncryptedAutoGeoSourceArchive,
   type AutoGeoSourceArchivePort,
@@ -14,6 +17,16 @@ const sourceArtifacts = {
   "runs/run-1/claims.jsonl": new TextEncoder().encode(
     "private synthetic unsupported claim\n",
   ),
+};
+
+const archiveReservation = {
+  fileId: "synthetic-drive-file-1",
+  target: {
+    connectionId: "synthetic-drive-connection",
+    organizationId: "synthetic-target",
+    googleAccountId: "synthetic-google-account",
+    folderId: "synthetic-folder-id",
+  },
 };
 
 async function testKey() {
@@ -33,7 +46,17 @@ function memoryPort(options?: { loseFirstWriteAck?: boolean }): {
   return {
     writes,
     port: {
-      async putEncryptedSourceArchive(envelope) {
+      async generateFileId(organizationId) {
+        if (organizationId !== archiveReservation.target.organizationId)
+          throw new Error("unexpected target organization");
+        return archiveReservation;
+      },
+      async putEncryptedSourceArchive(envelope, fileId, target) {
+        if (
+          fileId !== archiveReservation.fileId ||
+          target.folderId !== archiveReservation.target.folderId
+        )
+          throw new Error("unexpected archive reservation");
         const key = `${envelope.clientRef}:${envelope.idempotencyKey}`;
         const existing = stored.get(key);
         if (existing) {
@@ -60,13 +83,13 @@ function memoryPort(options?: { loseFirstWriteAck?: boolean }): {
           loseFirstWriteAck = false;
           throw new Error("acknowledgement was lost after the durable write");
         }
-        return { fileId: "synthetic-drive-file-1" };
+        return { fileId };
       },
-      async readEncryptedSourceArchive(clientRef, idempotencyKey) {
+      async readEncryptedSourceArchive(clientRef, idempotencyKey, fileId) {
         const value = stored.get(`${clientRef}:${idempotencyKey}`);
         return value
           ? {
-              fileId: "synthetic-drive-file-1",
+              fileId,
               envelope: {
                 ...value,
                 iv: value.iv.slice(),
@@ -80,6 +103,41 @@ function memoryPort(options?: { loseFirstWriteAck?: boolean }): {
 }
 
 describe("encrypted AutoGeo source archive delivery", () => {
+  it("rejects source archives above the bounded in-memory artifact limit", async () => {
+    const key = await testKey();
+    await expect(
+      prepareEncryptedAutoGeoSourceArchive(
+        {
+          clientRef: "synthetic-client-1",
+          sourceContractRevision: AUTOGEO_SOURCE_CONTRACT_REVISION,
+          idempotencyKey: "archive-over-limit",
+          artifacts: {
+            "prompts/matrix-v1.jsonl": new Uint8Array(
+              AUTOGEO_SOURCE_ARCHIVE_MAX_ARTIFACT_BYTES + 1,
+            ),
+          },
+        },
+        key,
+      ),
+    ).rejects.toThrow("AutoGeo source archive exceeds the 4 MiB limit");
+  });
+
+  it("rejects oversized ciphertext envelopes before delivery", () => {
+    expect(() =>
+      parseEncryptedAutoGeoSourceArchive({
+        algorithm: "AES-GCM-256",
+        schemaVersion: 1,
+        clientRef: "synthetic-client-1",
+        sourceContractRevision: AUTOGEO_SOURCE_CONTRACT_REVISION,
+        idempotencyKey: "archive-over-limit",
+        iv: new Uint8Array(12),
+        ciphertext: new Uint8Array(
+          AUTOGEO_SOURCE_ARCHIVE_MAX_CIPHERTEXT_BYTES + 1,
+        ),
+      }),
+    ).toThrow();
+  });
+
   it("refuses an extractable key for client archive encryption", async () => {
     const extractableKey = await crypto.subtle.generateKey(
       { name: "AES-GCM", length: 256 },
@@ -127,7 +185,12 @@ describe("encrypted AutoGeo source archive delivery", () => {
     expect(ciphertextText).not.toContain("private synthetic question");
     expect(ciphertextText).not.toContain("prompts/matrix-v1.jsonl");
     await expect(
-      deliverEncryptedAutoGeoSourceArchive(envelope, key, port),
+      deliverEncryptedAutoGeoSourceArchive(
+        envelope,
+        key,
+        port,
+        archiveReservation,
+      ),
     ).resolves.toEqual({
       status: "confirmed",
       fileId: "synthetic-drive-file-1",
@@ -146,18 +209,20 @@ describe("encrypted AutoGeo source archive delivery", () => {
       },
       key,
     );
-    const { port } = memoryPort();
+    const { port, writes } = memoryPort();
 
     await expect(
       deliverEncryptedAutoGeoSourceArchive(
         { ...envelope, clientRef: "synthetic-client-2" },
         key,
         port,
+        archiveReservation,
       ),
     ).resolves.toMatchObject({
       status: "unconfirmed",
       reason: "archive_payload_invalid",
     });
+    expect(writes).toHaveLength(0);
   });
 
   it("leaves delivery unconfirmed when read-back bytes differ", async () => {
@@ -174,10 +239,17 @@ describe("encrypted AutoGeo source archive delivery", () => {
     const { port } = memoryPort();
     const corruptingPort: AutoGeoSourceArchivePort = {
       ...port,
-      async readEncryptedSourceArchive(clientRef, idempotencyKey) {
+      async readEncryptedSourceArchive(
+        clientRef,
+        idempotencyKey,
+        fileId,
+        target,
+      ) {
         const saved = await port.readEncryptedSourceArchive(
           clientRef,
           idempotencyKey,
+          fileId,
+          target,
         );
         if (!saved) return null;
         const ciphertext = saved.envelope.ciphertext.slice();
@@ -190,7 +262,12 @@ describe("encrypted AutoGeo source archive delivery", () => {
     };
 
     await expect(
-      deliverEncryptedAutoGeoSourceArchive(envelope, key, corruptingPort),
+      deliverEncryptedAutoGeoSourceArchive(
+        envelope,
+        key,
+        corruptingPort,
+        archiveReservation,
+      ),
     ).resolves.toMatchObject({
       status: "unconfirmed",
       reason: "readback_mismatch",
@@ -212,13 +289,23 @@ describe("encrypted AutoGeo source archive delivery", () => {
     const { port, writes } = memoryPort({ loseFirstWriteAck: true });
 
     await expect(
-      deliverEncryptedAutoGeoSourceArchive(envelope, key, port),
+      deliverEncryptedAutoGeoSourceArchive(
+        envelope,
+        key,
+        port,
+        archiveReservation,
+      ),
     ).resolves.toMatchObject({
       status: "unconfirmed",
       reason: "write_unconfirmed",
     });
     await expect(
-      deliverEncryptedAutoGeoSourceArchive(envelope, key, port),
+      deliverEncryptedAutoGeoSourceArchive(
+        envelope,
+        key,
+        port,
+        archiveReservation,
+      ),
     ).resolves.toMatchObject({
       status: "confirmed",
       fileId: "synthetic-drive-file-1",

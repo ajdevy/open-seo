@@ -11,6 +11,7 @@ import {
   text,
   uniqueIndex,
   primaryKey,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { organization, user } from "./better-auth-schema";
 
@@ -158,6 +159,114 @@ export const projectSettingsSnapshotOutbox = pgTable(
       table.status,
       table.projectId,
       table.revision,
+    ),
+  ],
+);
+
+// Encrypted, create-only source migration envelopes. This intentionally has no
+// organization foreign key or expiry: deleting a target workspace must not
+// silently delete the only retained source archive before restore acceptance.
+export const autoGeoSourceMigrationOutbox = pgTable(
+  "autogeo_source_migration_outbox",
+  {
+    id: text("id").primaryKey(),
+    clientRef: text("client_ref").notNull(),
+    targetOrganizationId: text("target_organization_id").notNull(),
+    sourceContractRevision: text("source_contract_revision").notNull(),
+    mappingEvidenceRef: text("mapping_evidence_ref").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    artifactsFingerprint: text("artifacts_fingerprint").notNull(),
+    encryptedEnvelope: text("encrypted_envelope").notNull(),
+    encryptedEnvelopeStorageId: text("encrypted_envelope_storage_id"),
+    archiveFileId: text("archive_file_id"),
+    archiveConnectionId: text("archive_connection_id"),
+    archiveGoogleAccountId: text("archive_google_account_id"),
+    archiveFolderId: text("archive_folder_id"),
+    status: text("status", { enum: ["pending", "archived"] })
+      .notNull()
+      .default("pending"),
+    createdAt: timestampColumn("created_at").notNull().default(isoNow),
+    archivedAt: timestampColumn("archived_at"),
+  },
+  (table) => [
+    uniqueIndex("autogeo_source_migration_outbox_client_idempotency_idx").on(
+      table.clientRef,
+      table.idempotencyKey,
+    ),
+    uniqueIndex("autogeo_source_migration_outbox_envelope_storage_idx").on(
+      table.encryptedEnvelopeStorageId,
+    ),
+    uniqueIndex("autogeo_source_migration_outbox_archive_id_idx").on(
+      table.archiveConnectionId,
+      table.archiveFileId,
+    ),
+    index("autogeo_source_migration_outbox_status_created_idx").on(
+      table.status,
+      table.createdAt,
+    ),
+  ],
+);
+
+// Ciphertext is split into D1-safe rows; each encoded chunk stays below the
+// per-string/per-row limit while the outbox parent remains the durable binding.
+export const autoGeoSourceMigrationOutboxChunks = pgTable(
+  "autogeo_source_migration_outbox_chunks",
+  {
+    storageId: text("storage_id").notNull(),
+    chunkIndex: integer("chunk_index").notNull(),
+    ciphertextBase64: text("ciphertext_base64").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.storageId, table.chunkIndex] }),
+    foreignKey({
+      name: "autogeo_source_migration_outbox_chunks_storage_fk",
+      columns: [table.storageId],
+      foreignColumns: [autoGeoSourceMigrationOutbox.encryptedEnvelopeStorageId],
+    }).onDelete("restrict"),
+  ],
+);
+
+// Client-specific permission evidence is recorded before source bytes can be
+// read. Only the standalone operator route may create or revoke these human
+// attestations; the migration caller matches every binding against the source
+// mapping and target workspace before it opens the artifact payload.
+export const autoGeoSourceMigrationApprovals = pgTable(
+  "autogeo_source_migration_approvals",
+  {
+    id: text("id").primaryKey(),
+    clientRef: text("client_ref").notNull(),
+    targetOrganizationId: text("target_organization_id").notNull(),
+    sourceContractRevision: text("source_contract_revision").notNull(),
+    mappingEvidenceRef: text("mapping_evidence_ref").notNull(),
+    sourceReadEvidenceRef: text("source_read_evidence_ref").notNull(),
+    targetWriteEvidenceRef: text("target_write_evidence_ref").notNull(),
+    archiveDestinationEvidenceRef: text(
+      "archive_destination_evidence_ref",
+    ).notNull(),
+    retentionEvidenceRef: text("retention_evidence_ref").notNull(),
+    restoreEvidenceRef: text("restore_evidence_ref").notNull(),
+    approvedBy: text("approved_by").notNull(),
+    approvedAt: timestampColumn("approved_at").notNull(),
+    expiresAt: timestampColumn("expires_at").notNull(),
+    status: text("status", { enum: ["approved", "revoked", "expired"] })
+      .notNull()
+      .default("approved"),
+    revokedAt: timestampColumn("revoked_at"),
+    revocationEvidenceRef: text("revocation_evidence_ref"),
+    createdAt: timestampColumn("created_at").notNull().default(isoNow),
+  },
+  (table) => [
+    uniqueIndex("autogeo_source_migration_approvals_active_idx")
+      .on(
+        table.clientRef,
+        table.targetOrganizationId,
+        table.sourceContractRevision,
+        table.mappingEvidenceRef,
+      )
+      .where(sql`${table.status} = 'approved'`),
+    index("autogeo_source_migration_approvals_expiry_idx").on(
+      table.status,
+      table.expiresAt,
     ),
   ],
 );

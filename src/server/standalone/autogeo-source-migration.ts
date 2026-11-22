@@ -14,6 +14,7 @@ import {
   fingerprintAutoGeoSourceArtifacts,
   prepareEncryptedAutoGeoSourceArchive,
   type AutoGeoSourceArchivePort,
+  type AutoGeoSourceArchiveTargetBinding,
   type EncryptedAutoGeoSourceArchive,
 } from "./autogeo-source-archive";
 
@@ -48,6 +49,8 @@ export type AutoGeoSourceMigrationOutboxRecord = {
   idempotencyKey: string;
   artifactsFingerprint: string;
   envelope: EncryptedAutoGeoSourceArchive;
+  archiveFileId?: string | null;
+  archiveTarget?: AutoGeoSourceArchiveTargetBinding | null;
 };
 
 export interface AutoGeoSourceMigrationOutboxPort {
@@ -60,6 +63,17 @@ export interface AutoGeoSourceMigrationOutboxPort {
   putIfAbsent(
     record: AutoGeoSourceMigrationOutboxRecord,
   ): Promise<AutoGeoSourceMigrationOutboxRecord>;
+  reserveArchiveFileId(
+    record: AutoGeoSourceMigrationOutboxRecord,
+    candidate: {
+      archiveFileId: string;
+      archiveTarget: AutoGeoSourceArchiveTargetBinding;
+    },
+  ): Promise<AutoGeoSourceMigrationOutboxRecord>;
+  markArchived(
+    record: AutoGeoSourceMigrationOutboxRecord,
+    fileId: string,
+  ): Promise<boolean>;
 }
 
 export interface AutoGeoSourceMigrationAuthorizationPort {
@@ -246,10 +260,45 @@ export async function runAutoGeoSourceMigration(
       report: plan.report,
     };
 
+  let archiveReservation =
+    persistedRecord.archiveFileId && persistedRecord.archiveTarget
+      ? {
+          fileId: persistedRecord.archiveFileId,
+          target: persistedRecord.archiveTarget,
+        }
+      : null;
+  if (!archiveReservation) {
+    try {
+      const candidate = await input.archivePort.generateFileId(
+        persistedRecord.targetOrganizationId,
+      );
+      persistedRecord = await input.outbox.reserveArchiveFileId(
+        persistedRecord,
+        {
+          archiveFileId: candidate.fileId,
+          archiveTarget: candidate.target,
+        },
+      );
+      if (!persistedRecord.archiveFileId || !persistedRecord.archiveTarget)
+        throw new Error("AutoGeo source archive reservation is missing.");
+      archiveReservation = {
+        fileId: persistedRecord.archiveFileId,
+        target: persistedRecord.archiveTarget,
+      };
+    } catch {
+      return {
+        status: "archive_pending",
+        reason: "outbox_unconfirmed",
+        report: plan.report,
+      };
+    }
+  }
+
   const delivery = await deliverEncryptedAutoGeoSourceArchive(
     persistedRecord.envelope,
     input.archiveKey,
     input.archivePort,
+    archiveReservation,
   );
   if (delivery.status !== "confirmed")
     return {
@@ -260,6 +309,24 @@ export async function runAutoGeoSourceMigration(
           : "drive_readback_unconfirmed",
       report: plan.report,
       ...(delivery.fileId ? { archiveFileId: delivery.fileId } : {}),
+    };
+
+  let archiveRecorded = false;
+  try {
+    archiveRecorded = await input.outbox.markArchived(
+      persistedRecord,
+      delivery.fileId,
+    );
+  } catch {
+    // The remote archive is already confirmed, so keep the source and target
+    // untouched until durable local state can record that confirmation.
+  }
+  if (!archiveRecorded)
+    return {
+      status: "archive_pending",
+      reason: "outbox_unconfirmed",
+      report: plan.report,
+      archiveFileId: delivery.fileId,
     };
 
   // Unsupported or incompletely mapped source rows remain recoverable in the

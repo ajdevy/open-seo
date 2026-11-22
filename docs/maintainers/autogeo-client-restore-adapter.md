@@ -76,10 +76,31 @@ persists the exact encrypted envelope through an atomic outbox port, waits for
 Drive read-back, and then uses the existing idempotent target importer. Changed
 source bytes under a reused idempotency key are rejected.
 
-The production authorization verifier, durable outbox implementation, Drive
-source-archive port, source-workspace reader, and authenticated runtime route are
-not wired here. OAuth callback readiness, per-client destination authorization,
-mapping approval, live restore evidence, and an actual import therefore remain
-unproven. Synthetic tests validate ordering, retry/idempotency, isolation, and
-fail-closed behavior only; they do not authorize client data access or establish
-a production archive.
+The current Story 4.3 source change wires an operator-authenticated
+`POST /api/standalone/autogeo-source-migration` route, database-backed approval
+and encrypted outbox records, a Google Drive source-archive port, and the existing
+idempotent client restore importer. The Drive target is the organization OAuth
+connection and folder selected through Picker. The source archive is persisted
+before delivery and is imported only after exact Drive read-back.
+
+The route currently accepts at most 8 MiB of request JSON and 4 MiB of decoded
+source artifacts. This is a conservative bound for a Worker path that still
+materializes the archive plan, ciphertext, and Drive multipart body in memory.
+Larger inputs fail closed before Drive delivery and must remain with the source
+owner; they are not supported migrations until the full path is streaming and
+verified in the deployed runtime.
+
+Two production authorization boundaries remain open. Approval stores opaque
+evidence references but does not retrieve or validate the referenced evidence;
+`approvedBy` is currently the fixed `standalone-operator` principal. The route
+also accepts artifact bytes in its authenticated request instead of reading a
+verified client workspace. Consequently, source rights, target write rights,
+retention, mapping approval, client inventory, and the source-to-target data
+mapping have not been verified against a real client. The source-defined OAuth
+readiness probe at
+`https://autogeo.flexsentlabs.com/api/google-drive/archive/oauth/callback`
+still returns 404, so no OAuth client, consent, Drive write, or migration was
+performed. Local tests use synthetic evidence, request artifacts, and Drive
+responses; they validate fail-closed ordering, encryption, retry/idempotency,
+and tenant binding only. They do not establish production readiness or a
+verified restore.

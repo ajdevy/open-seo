@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `autogeo_source_migration_outbox_archive_id_idx` ON `autogeo_source_migration_outbox` (`archive_connection_id`,`archive_file_id`);

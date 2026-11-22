@@ -6,6 +6,8 @@ import {
 
 export const AUTOGEO_SOURCE_ARCHIVE_ALGORITHM = "AES-GCM-256";
 export const AUTOGEO_SOURCE_ARCHIVE_SCHEMA_VERSION = 1;
+export const AUTOGEO_SOURCE_ARCHIVE_MAX_ARTIFACT_BYTES = 4 * 1024 * 1024;
+export const AUTOGEO_SOURCE_ARCHIVE_MAX_CIPHERTEXT_BYTES = 8 * 1024 * 1024;
 
 const clientRefSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/);
 const idempotencyKeySchema = z.string().regex(/^[A-Za-z0-9._:-]{1,200}$/);
@@ -20,7 +22,22 @@ export type EncryptedAutoGeoSourceArchive = {
   ciphertext: Uint8Array;
 };
 
+export type AutoGeoSourceArchiveTargetBinding = {
+  connectionId: string;
+  organizationId: string;
+  googleAccountId: string;
+  folderId: string;
+};
+
+export type GeneratedAutoGeoSourceArchiveFileId = {
+  fileId: string;
+  target: AutoGeoSourceArchiveTargetBinding;
+};
+
 export interface AutoGeoSourceArchivePort {
+  generateFileId(
+    organizationId: string,
+  ): Promise<GeneratedAutoGeoSourceArchiveFileId>;
   /**
    * Must be scoped to the supplied clientRef and create-only by idempotencyKey.
    * Replaying the exact envelope returns the same archive object; a different
@@ -28,10 +45,14 @@ export interface AutoGeoSourceArchivePort {
    */
   putEncryptedSourceArchive(
     envelope: EncryptedAutoGeoSourceArchive,
+    fileId: string,
+    target: AutoGeoSourceArchiveTargetBinding,
   ): Promise<{ fileId: string }>;
   readEncryptedSourceArchive(
     clientRef: string,
     idempotencyKey: string,
+    fileId: string,
+    target: AutoGeoSourceArchiveTargetBinding,
   ): Promise<{
     fileId: string;
     envelope: EncryptedAutoGeoSourceArchive;
@@ -77,15 +98,25 @@ const envelopeSchema = z
     iv: z.instanceof(Uint8Array).refine((value) => value.byteLength === 12),
     ciphertext: z
       .instanceof(Uint8Array)
-      .refine((value) => value.byteLength >= 16),
+      .refine(
+        (value) =>
+          value.byteLength >= 16 &&
+          value.byteLength <= AUTOGEO_SOURCE_ARCHIVE_MAX_CIPHERTEXT_BYTES,
+      ),
   })
   .strict();
 
+export function parseEncryptedAutoGeoSourceArchive(
+  value: unknown,
+): EncryptedAutoGeoSourceArchive {
+  return envelopeSchema.parse(value);
+}
+
 const archiveFileSchema = z
   .object({
-    path: z.string().min(1),
+    path: z.string().min(1).max(512),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    base64: z.string(),
+    base64: z.string().max(AUTOGEO_SOURCE_ARCHIVE_MAX_CIPHERTEXT_BYTES),
   })
   .strict();
 
@@ -93,7 +124,7 @@ const archivePayloadSchema = z
   .object({
     format: z.literal("autogeo-source-artifacts"),
     schemaVersion: z.literal(AUTOGEO_SOURCE_ARCHIVE_SCHEMA_VERSION),
-    files: z.array(archiveFileSchema).min(1),
+    files: z.array(archiveFileSchema).min(1).max(2_000),
   })
   .strict();
 
@@ -180,6 +211,12 @@ export async function prepareEncryptedAutoGeoSourceArchive(
   const input = preparedInputSchema.parse(rawInput);
   const paths = Object.keys(input.artifacts);
   classifyAutoGeoSourcePaths(paths);
+  const totalArtifactBytes = paths.reduce(
+    (total, path) => total + input.artifacts[path].byteLength,
+    0,
+  );
+  if (totalArtifactBytes > AUTOGEO_SOURCE_ARCHIVE_MAX_ARTIFACT_BYTES)
+    throw new Error("AutoGeo source archive exceeds the 4 MiB limit.");
   if (!validArchiveKey(key)) throw new Error("invalid source archive key");
 
   const files = await Promise.all(
@@ -263,7 +300,22 @@ async function verifyPayload(
     const paths = files.map((file) => file.path);
     classifyAutoGeoSourcePaths(paths);
     if (new Set(paths).size !== paths.length) return null;
+    let totalArtifactBytes = 0;
     for (const file of files) {
+      if (
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+          file.base64,
+        )
+      )
+        return null;
+      const padding = file.base64.endsWith("==")
+        ? 2
+        : file.base64.endsWith("=")
+          ? 1
+          : 0;
+      totalArtifactBytes += Math.floor((file.base64.length * 3) / 4) - padding;
+      if (totalArtifactBytes > AUTOGEO_SOURCE_ARCHIVE_MAX_ARTIFACT_BYTES)
+        return null;
       const bytes = decodeBase64(file.base64);
       if ((await sha256(bytes)) !== file.sha256) return null;
     }
@@ -277,14 +329,21 @@ export async function deliverEncryptedAutoGeoSourceArchive(
   rawEnvelope: EncryptedAutoGeoSourceArchive,
   key: CryptoKey,
   port: AutoGeoSourceArchivePort,
+  reservation: GeneratedAutoGeoSourceArchiveFileId,
 ): Promise<AutoGeoSourceArchiveDelivery> {
   const parsed = envelopeSchema.safeParse(rawEnvelope);
   if (!parsed.success || !validArchiveKey(key))
     return { status: "unconfirmed", reason: "invalid_envelope" };
   const envelope = parsed.data;
+  if ((await verifyPayload(envelope.ciphertext, envelope, key)) === null)
+    return { status: "unconfirmed", reason: "archive_payload_invalid" };
   let receipt: { fileId: string };
   try {
-    receipt = await port.putEncryptedSourceArchive(envelope);
+    receipt = await port.putEncryptedSourceArchive(
+      envelope,
+      reservation.fileId,
+      reservation.target,
+    );
   } catch {
     return { status: "unconfirmed", reason: "write_unconfirmed" };
   }
@@ -296,6 +355,8 @@ export async function deliverEncryptedAutoGeoSourceArchive(
     saved = await port.readEncryptedSourceArchive(
       envelope.clientRef,
       envelope.idempotencyKey,
+      reservation.fileId,
+      reservation.target,
     );
   } catch {
     return {
