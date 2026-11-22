@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -6,25 +6,33 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { z } from "zod";
 
-const workflow = z
-  .object({
-    jobs: z.object({
-      preview: z.object({
-        steps: z.array(
-          z.object({ name: z.string(), run: z.string().optional() }),
-        ),
-      }),
-    }),
-  })
-  .parse(parse(readFileSync(".github/workflows/pr-preview.yml", "utf8")));
-const script = workflow.jobs.preview.steps.find(
-  (step) => step.name === "Verify Access protection",
-)?.run;
-if (!script) throw new Error("Preview Access verification step is missing");
+const previewWorkflowPath = ".github/workflows/pr-preview.yml";
+const previewWorkflowExists = existsSync(previewWorkflowPath);
+const script = previewWorkflowExists
+  ? z
+      .object({
+        jobs: z.object({
+          preview: z.object({
+            steps: z.array(
+              z.object({ name: z.string(), run: z.string().optional() }),
+            ),
+          }),
+        }),
+      })
+      .parse(parse(readFileSync(previewWorkflowPath, "utf8")))
+      .jobs.preview.steps.find(
+        (step) => step.name === "Verify Access protection",
+      )?.run
+  : undefined;
+if (previewWorkflowExists && !script)
+  throw new Error("Preview Access verification step is missing");
 
 const access = "302 https://example.cloudflareaccess.com/cdn-cgi/access/login";
 
-describe("preview Access verification", () => {
+// The public mirror intentionally deletes this private-only workflow so its
+// CI never runs deploy code with Cloudflare secrets. Keep the contract test
+// active in the private repository and skip it only when that workflow is absent.
+describe.skipIf(!previewWorkflowExists)("preview Access verification", () => {
   it.each([
     { responses: [access], status: 0, retries: 0 },
     { responses: ["404 ", access], status: 0, retries: 1 },
