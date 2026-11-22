@@ -9,17 +9,22 @@ on:
       - .github/workflows/autogeo-upstream-candidate-compatibility.yml
       - .github/workflows/autogeo-upstream-sync-tests.yml
       - docs/maintainers/autogeo-fork.md
+      - docs/maintainers/upstream-release-deployment.md
       - scripts/autogeo/**
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: autogeo-upstream-sync-tests-${{ github.event.pull_request.number }}
+  group: autogeo-upstream-sync-tests-${{ github.event.pull_request.number || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   policy-tests:
+    if: >-
+      github.event_name == 'pull_request' ||
+      startsWith(github.ref, 'refs/heads/autogeo/upstream/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

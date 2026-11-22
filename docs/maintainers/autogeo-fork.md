@@ -29,12 +29,19 @@ install dependencies, run provider requests, publish images, migrate databases,
 or deploy the app. A successful sync proves Git integration; candidate
 compatibility checks and deployment acceptance remain separate.
 
-The job uses the repository-scoped `GITHUB_TOKEN` with Contents and Pull Requests
-write permissions so it can publish a candidate branch and open a draft PR. No
-personal GitHub token or provider credentials are installed in the fork.
-Checkout does not persist the token; push receives credentials from `gh` in
-memory. The candidate branch does not trigger a production deployment.
-The source release is recorded in `autogeo-upstream.json`.
+The job uses the repository-scoped `GITHUB_TOKEN` with Contents, Pull Requests,
+and Actions write permissions so it can publish a candidate branch, open a
+draft PR, and dispatch the two read-only candidate checks. No personal GitHub
+token or provider credentials are installed in the fork. Checkout does not
+persist the token; push receives credentials from `gh` in memory.
+
+A pull request opened by `GITHUB_TOKEN` does not start ordinary `pull_request`
+workflows automatically, so the sync job dispatches policy tests and candidate
+compatibility on the exact release branch. Before checking out candidate code,
+the compatibility workflow verifies that its PR number, branch, repository,
+base, and full head SHA still match the open fork-owned PR. The candidate
+branch does not trigger a production deployment. The source release is
+recorded in `autogeo-upstream.json`.
 
 Candidate pull requests run the compatibility workflow on an ephemeral
 GitHub-hosted runner with read-only repository permissions and no provider or
@@ -47,6 +54,14 @@ The sync job runs on the Ductor CI fleet with label `open-seo-sync`. Its runner
 accepts only this workflow from this repository's `main` on schedule or manual
 dispatch. It has no Docker socket or production mounts. A passing candidate CI
 does not establish production deployment or runtime acceptance.
+
+The default branch must have the `AutoGeo main review gate` repository ruleset
+active. It requires pull requests, strict passing `policy-tests` and
+`compatibility` checks, and blocks branch deletion and non-fast-forward updates;
+it has no bypass actors. Ductor's exact-SHA Reviewer and QA gates remain
+separate prerequisites and are not replaced by GitHub Actions. The
+predeployment backup, restore, rollback and postdeployment health evidence are
+specified in [the deployment gate](upstream-release-deployment.md).
 
 ## AutoGEO execution policy
 

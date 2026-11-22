@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from upstream_release_sync import STATE, git, merge_release, release_branch, validate_release
+from validate_candidate_pr import validate_pull_request
 
 
 class ReleaseMergeTest(unittest.TestCase):
@@ -181,14 +182,21 @@ class WorkflowReviewSafetyTest(unittest.TestCase):
         self.assertNotIn("HEAD:refs/heads/main", workflow)
         self.assertIn("gh pr create", workflow)
         self.assertIn("--draft", workflow)
+        self.assertIn("actions: write", workflow)
+        self.assertIn("gh workflow run autogeo-upstream-candidate-compatibility.yml", workflow)
+        self.assertIn("gh workflow run autogeo-upstream-sync-tests.yml", workflow)
+        self.assertIn('--ref "$RELEASE_BRANCH"', workflow)
+        self.assertIn('--field pull_request_number="$PR_NUMBER"', workflow)
 
     def test_policy_tests_run_on_isolated_read_only_runner(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/autogeo-upstream-sync-tests.yml").read_text()
         self.assertIn("pull_request:", workflow)
+        self.assertIn("docs/maintainers/upstream-release-deployment.md", workflow)
         self.assertIn("runs-on: ubuntu-24.04", workflow)
         self.assertNotIn("self-hosted", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
+        self.assertIn("github.ref_name", workflow)
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn("python3 -I -B -m unittest discover", workflow)
 
@@ -204,6 +212,7 @@ class WorkflowReviewSafetyTest(unittest.TestCase):
         self.assertIn("runs-on: ubuntu-24.04", workflow)
         self.assertNotIn("self-hosted", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
+        self.assertIn("pull-requests: read", workflow)
         self.assertIn("persist-credentials: false", workflow)
         for action in (
             "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
@@ -224,6 +233,89 @@ class WorkflowReviewSafetyTest(unittest.TestCase):
                 self.assertIn(command, workflow)
         self.assertIn("pnpm test:ci --maxWorkers=4", workflow)
         self.assertNotIn("pnpm deploy", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("pull_request_number", workflow)
+        self.assertIn("validate_candidate_pr.py", workflow)
+        self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
+
+    def test_dispatched_candidate_pr_is_exact_open_fork_head(self):
+        sha = "a" * 40
+        pull = {
+            "state": "open",
+            "base": {"ref": "main", "repo": {"full_name": "ajdevy/open-seo"}},
+            "head": {
+                "ref": "autogeo/upstream/v1.2.3",
+                "sha": sha,
+                "repo": {"full_name": "ajdevy/open-seo"},
+            },
+        }
+        validate_pull_request(
+            pull,
+            repository="ajdevy/open-seo",
+            branch="autogeo/upstream/v1.2.3",
+            commit_sha=sha,
+        )
+
+        mutations = (
+            {"state": "closed"},
+            {"base": {"ref": "release", "repo": {"full_name": "ajdevy/open-seo"}}},
+            {"head": {**pull["head"], "sha": "b" * 40}},
+            {"head": {**pull["head"], "repo": {"full_name": "attacker/open-seo"}}},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                validate_pull_request(
+                    {**pull, **mutation},
+                    repository="ajdevy/open-seo",
+                    branch="autogeo/upstream/v1.2.3",
+                    commit_sha=sha,
+                )
+
+    def test_dispatched_candidate_rejects_untrusted_ref_or_repository(self):
+        pull = {
+            "state": "open",
+            "base": {"ref": "main", "repo": {"full_name": "ajdevy/open-seo"}},
+            "head": {
+                "ref": "autogeo/upstream/v1.2.3",
+                "sha": "a" * 40,
+                "repo": {"full_name": "ajdevy/open-seo"},
+            },
+        }
+        for repository, branch, sha in (
+            ("attacker/open-seo", "autogeo/upstream/v1.2.3", "a" * 40),
+            ("ajdevy/open-seo", "main", "a" * 40),
+            ("ajdevy/open-seo", "autogeo/upstream/v1.2.3", "short"),
+        ):
+            with self.subTest(repository=repository, branch=branch), self.assertRaises(ValueError):
+                validate_pull_request(
+                    pull,
+                    repository=repository,
+                    branch=branch,
+                    commit_sha=sha,
+                )
+
+    def test_policy_workflow_can_be_dispatched_for_token_created_candidate(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/autogeo-upstream-sync-tests.yml").read_text()
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("startsWith(github.ref, 'refs/heads/autogeo/upstream/v')", workflow)
+
+    def test_deployment_runbook_separates_ci_backup_and_runtime_evidence(self):
+        root = Path(__file__).resolve().parents[2]
+        runbook = (root / "docs/maintainers/upstream-release-deployment.md").read_text()
+        for required in (
+            "terminal exact-SHA Reviewer `APPROVE` and QA `PASS`",
+            "fresh application-consistent backup",
+            "read-back",
+            "isolated location",
+            "rollback image digest",
+            "empty\nencrypted Ductor journal",
+            "zero active Codex\nprocesses",
+            "`/api/health`",
+            "local health test is not live runtime proof",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, runbook)
 
 
 if __name__ == "__main__":

@@ -4,21 +4,31 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open upstream release candidate pull request to validate
+        required: true
+        type: string
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
-  group: autogeo-upstream-candidate-${{ github.event.pull_request.number }}
+  group: autogeo-upstream-candidate-${{ github.event.pull_request.number || inputs.pull_request_number || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   compatibility:
-    if: startsWith(github.head_ref, 'autogeo/upstream/v')
+    if: >-
+      (github.event_name == 'pull_request' && startsWith(github.head_ref, 'autogeo/upstream/v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/autogeo/upstream/v'))
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
+      pull-requests: read
     services:
       postgres:
         image: postgres:16
@@ -34,6 +44,15 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
+      - name: Verify the dispatched candidate pull request
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_BRANCH: ${{ github.ref_name }}
+          CANDIDATE_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ inputs.pull_request_number }}
+          REPOSITORY: ${{ github.repository }}
+        run: python3 -I -B scripts/autogeo/validate_candidate_pr.py
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
