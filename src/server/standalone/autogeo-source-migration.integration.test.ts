@@ -192,6 +192,50 @@ describe("AutoGeo source migration orchestration", () => {
     expect(targetProjectsAfter).toEqual(targetProjectsBefore);
   });
 
+  it("archives an incomplete mapping without importing partial source rows", async () => {
+    const mapping = reviewedMapping();
+    mapping.answerMappings = {};
+    const harness = migrationHarness();
+    const archiveKey = await crypto.subtle.generateKey(
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"],
+    );
+    const targetProjectsBefore = await testDb.db
+      .select()
+      .from(projects)
+      .where(eq(projects.organizationId, "target-a"));
+
+    const result = await runAutoGeoSourceMigration(
+      {
+        targetOrganizationId: "target-a",
+        idempotencyKey: "synthetic-incomplete-mapping",
+        mapping,
+        authorization: harness.authorization,
+        outbox: harness.outbox,
+        archiveKey,
+        archivePort: harness.archive,
+        async readSourceArtifacts() {
+          return syntheticSourceArtifacts();
+        },
+      },
+      testNow,
+    );
+    const targetProjectsAfter = await testDb.db
+      .select()
+      .from(projects)
+      .where(eq(projects.organizationId, "target-a"));
+
+    expect(result).toMatchObject({
+      status: "archived_unimported",
+      reason: "incomplete_source_mapping",
+      report: { unmappedAnswers: 1 },
+    });
+    expect(harness.outboxRecords.size).toBe(1);
+    expect(harness.remoteArchives.size).toBe(1);
+    expect(targetProjectsAfter).toEqual(targetProjectsBefore);
+  });
+
   it("rejects changed source bytes when an idempotency key already has an outbox record", async () => {
     const mapping = reviewedMapping();
     const harness = migrationHarness();

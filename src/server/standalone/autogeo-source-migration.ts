@@ -97,9 +97,10 @@ export type AutoGeoSourceMigrationResult =
         | "authorization_required";
     }
   | {
-      status: "blocked";
+      status: "archived_unimported";
       reason: "incomplete_source_mapping";
       report: AutoGeoRestorePlan["report"];
+      archiveFileId: string;
     }
   | {
       status: "archive_pending";
@@ -203,12 +204,8 @@ export async function runAutoGeoSourceMigration(
 
   const artifacts = await input.readSourceArtifacts(approval.data);
   const plan = await prepareAutoGeoClientRestore(artifacts, mapping);
-  if (plan.report.blockers.length > 0 || !plan.archive)
-    return {
-      status: "blocked",
-      reason: "incomplete_source_mapping",
-      report: plan.report,
-    };
+  const importEligible =
+    plan.report.blockers.length === 0 && plan.archive !== null;
 
   const artifactsFingerprint = await fingerprintAutoGeoSourceArtifacts(
     plan.archiveArtifacts,
@@ -263,6 +260,16 @@ export async function runAutoGeoSourceMigration(
           : "drive_readback_unconfirmed",
       report: plan.report,
       ...(delivery.fileId ? { archiveFileId: delivery.fileId } : {}),
+    };
+
+  // Unsupported or incompletely mapped source rows remain recoverable in the
+  // verified private archive. They are never turned into partial OpenSEO data.
+  if (!importEligible)
+    return {
+      status: "archived_unimported",
+      reason: "incomplete_source_mapping",
+      report: plan.report,
+      archiveFileId: delivery.fileId,
     };
 
   let imported: Awaited<ReturnType<typeof importClientRestoreArchive>>;
