@@ -4,13 +4,6 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - .github/workflows/autogeo-upstream-release-sync.yml
-      - .github/workflows/autogeo-upstream-candidate-compatibility.yml
-      - .github/workflows/autogeo-upstream-sync-tests.yml
-      - docs/maintainers/autogeo-fork.md
-      - docs/maintainers/upstream-release-deployment.md
-      - scripts/autogeo/**
   workflow_dispatch:
 
 permissions:

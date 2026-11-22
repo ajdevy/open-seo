@@ -191,8 +191,9 @@ class WorkflowReviewSafetyTest(unittest.TestCase):
     def test_policy_tests_run_on_isolated_read_only_runner(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/autogeo-upstream-sync-tests.yml").read_text()
+        triggers = workflow.split("permissions:", 1)[0]
         self.assertIn("pull_request:", workflow)
-        self.assertIn("docs/maintainers/upstream-release-deployment.md", workflow)
+        self.assertNotIn("\n    paths:\n", triggers)
         self.assertIn("runs-on: ubuntu-24.04", workflow)
         self.assertNotIn("self-hosted", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
@@ -237,6 +238,16 @@ class WorkflowReviewSafetyTest(unittest.TestCase):
         self.assertIn("pull_request_number", workflow)
         self.assertIn("validate_candidate_pr.py", workflow)
         self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
+        trusted_checkout = workflow.index("name: Check out trusted policy scripts")
+        dispatched_validation = workflow.index("name: Verify the dispatched candidate pull request")
+        candidate_checkout = workflow.index("name: Check out candidate for compatibility tests")
+        self.assertLess(trusted_checkout, dispatched_validation)
+        self.assertLess(dispatched_validation, candidate_checkout)
+        self.assertIn("ref: main", workflow[trusted_checkout:dispatched_validation])
+        self.assertIn(
+            "if: github.event_name == 'workflow_dispatch'",
+            workflow[trusted_checkout:dispatched_validation],
+        )
 
     def test_dispatched_candidate_pr_is_exact_open_fork_head(self):
         sha = "a" * 40
