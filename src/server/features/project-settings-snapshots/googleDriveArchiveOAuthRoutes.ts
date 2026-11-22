@@ -10,7 +10,9 @@ import {
 } from "@/db/schema";
 import { resolveUserContextFromHeaders } from "@/middleware/ensure-user/resolve";
 import {
+  hasTargetBoundPendingSourceMigrations,
   lockGoogleDriveArchiveConnectionTarget,
+  targetBoundPendingSourceMigrationsQuery,
   targetBoundPendingSnapshotQuery,
 } from "./archiveTargetRepository";
 import { hasTargetBoundPendingProjectSettingsSnapshots } from "./snapshotRepository";
@@ -106,9 +108,10 @@ async function handleFolderRequest(
   if (!input.success) return genericError(400, "invalid_folder_selection");
   if (
     input.data.id !== connection.folderId &&
-    (await hasTargetBoundPendingProjectSettingsSnapshots(
+    ((await hasTargetBoundPendingProjectSettingsSnapshots(
       context.organizationId,
-    ))
+    )) ||
+      (await hasTargetBoundPendingSourceMigrations(context.organizationId)))
   )
     return genericError(409, "archive_target_change_blocked");
   const accessToken = await accessTokenForConnection(connection, config);
@@ -145,8 +148,16 @@ async function handleFolderRequest(
             : eq(googleDriveArchiveConnections.folderId, connection.folderId),
           or(
             eq(googleDriveArchiveConnections.folderId, folder.id),
-            notExists(
-              targetBoundPendingSnapshotQuery(tx, context.organizationId),
+            and(
+              notExists(
+                targetBoundPendingSnapshotQuery(tx, context.organizationId),
+              ),
+              notExists(
+                targetBoundPendingSourceMigrationsQuery(
+                  tx,
+                  context.organizationId,
+                ),
+              ),
             ),
           ),
         ),
@@ -209,6 +220,9 @@ async function handleDisconnectRequest(
             : eq(googleDriveArchiveConnections.folderId, connection.folderId),
           notExists(
             targetBoundPendingSnapshotQuery(tx, context.organizationId),
+          ),
+          notExists(
+            targetBoundPendingSourceMigrationsQuery(tx, context.organizationId),
           ),
         ),
       ),

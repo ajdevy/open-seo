@@ -38,6 +38,7 @@ import { GDPR_STORAGE_ERASURE_PATH } from "@/shared/gdpr-erasure";
 import { handleOperatorRequest } from "@/server/standalone/admin";
 import { handleImport, isLegacyImportActive } from "@/server/standalone/import";
 import { handleClientRestore } from "@/server/standalone/client-restore";
+import { handleAutoGeoSourceMigrationRequest } from "@/server/standalone/autogeo-source-migration-route";
 import { hasOperatorSecret } from "@/server/standalone/operator-auth";
 import { handleGoogleDriveArchiveOAuthCallback } from "@/server/features/project-settings-snapshots/googleDriveArchiveOAuthCallback";
 import { GOOGLE_DRIVE_ARCHIVE_CALLBACK_PATH } from "@/server/features/project-settings-snapshots/googleDriveArchiveOAuthShared";
@@ -217,6 +218,8 @@ async function handleAppRequest(
     if (await isLegacyImportActive()) {
       return new Response("Data import in progress", { status: 503 });
     }
+    if (pathname === "/api/standalone/autogeo-source-migration")
+      return handleAutoGeoSourceMigrationRequest(publicRequest);
     if (pathname === "/api/standalone/client-restore")
       return handleClientRestore(publicRequest);
     if (pathname === "/api/standalone/admin") {

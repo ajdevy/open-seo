@@ -1,6 +1,8 @@
 import { and, eq, exists, isNotNull, isNull, sql } from "drizzle-orm";
+import { db } from "@/db";
 import type { runBatch } from "@/db/runBatch";
 import {
+  autoGeoSourceMigrationOutbox,
   googleDriveArchiveConnections,
   projectSettingsSnapshotOutbox,
   projects,
@@ -117,4 +119,74 @@ export function archiveTargetMatchesProject(
   target: GoogleDriveArchiveTargetBinding,
 ) {
   return exists(archiveTargetForProjectQuery(tx, projectId, target));
+}
+
+export function archiveTargetForOrganizationQuery(
+  tx: Tx,
+  organizationId: string,
+  target: GoogleDriveArchiveTargetBinding,
+) {
+  return tx
+    .select({ id: googleDriveArchiveConnections.id })
+    .from(googleDriveArchiveConnections)
+    .where(
+      and(
+        eq(googleDriveArchiveConnections.id, target.connectionId),
+        eq(googleDriveArchiveConnections.organizationId, organizationId),
+        eq(googleDriveArchiveConnections.organizationId, target.organizationId),
+        eq(
+          googleDriveArchiveConnections.googleAccountId,
+          target.googleAccountId,
+        ),
+        eq(googleDriveArchiveConnections.folderId, target.folderId),
+        eq(googleDriveArchiveConnections.status, "connected"),
+      ),
+    );
+}
+
+export function archiveTargetMatchesOrganization(
+  tx: Tx,
+  organizationId: string,
+  target: GoogleDriveArchiveTargetBinding,
+) {
+  return exists(archiveTargetForOrganizationQuery(tx, organizationId, target));
+}
+
+export function targetBoundPendingSourceMigrationsQuery(
+  tx: Tx,
+  organizationId: string,
+) {
+  return tx
+    .select({ id: autoGeoSourceMigrationOutbox.id })
+    .from(autoGeoSourceMigrationOutbox)
+    .where(
+      and(
+        eq(autoGeoSourceMigrationOutbox.targetOrganizationId, organizationId),
+        eq(autoGeoSourceMigrationOutbox.status, "pending"),
+        isNotNull(autoGeoSourceMigrationOutbox.archiveFileId),
+        isNotNull(autoGeoSourceMigrationOutbox.archiveConnectionId),
+        isNotNull(autoGeoSourceMigrationOutbox.archiveGoogleAccountId),
+        isNotNull(autoGeoSourceMigrationOutbox.archiveFolderId),
+      ),
+    );
+}
+
+export async function hasTargetBoundPendingSourceMigrations(
+  organizationId: string,
+) {
+  const [pending] = await db
+    .select({ id: autoGeoSourceMigrationOutbox.id })
+    .from(autoGeoSourceMigrationOutbox)
+    .where(
+      and(
+        eq(autoGeoSourceMigrationOutbox.targetOrganizationId, organizationId),
+        eq(autoGeoSourceMigrationOutbox.status, "pending"),
+        isNotNull(autoGeoSourceMigrationOutbox.archiveFileId),
+        isNotNull(autoGeoSourceMigrationOutbox.archiveConnectionId),
+        isNotNull(autoGeoSourceMigrationOutbox.archiveGoogleAccountId),
+        isNotNull(autoGeoSourceMigrationOutbox.archiveFolderId),
+      ),
+    )
+    .limit(1);
+  return Boolean(pending);
 }

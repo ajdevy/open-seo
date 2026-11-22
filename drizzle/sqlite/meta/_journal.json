@@ -519,6 +519,41 @@
       "when": 1795194629000,
       "tag": "0073_legacy_terminal_spend_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "6",
+      "when": 1795314881833,
+      "tag": "0074_late_power_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "6",
+      "when": 1795315612820,
+      "tag": "0075_complex_gressill",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "6",
+      "when": 1795316218944,
+      "tag": "0076_black_arachne",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "6",
+      "when": 1795318424342,
+      "tag": "0077_romantic_maginty",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "6",
+      "when": 1795350985225,
+      "tag": "0078_right_mastermind",
+      "breakpoints": true
     }
   ]
 }
