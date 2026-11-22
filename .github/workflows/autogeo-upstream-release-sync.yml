@@ -19,7 +19,9 @@ jobs:
     runs-on: [self-hosted, linux, x64, ductor, open-seo-sync]
     timeout-minutes: 15
     permissions:
+      actions: write
       contents: write
+      pull-requests: write
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
@@ -31,12 +33,6 @@ jobs:
           persist-credentials: false
       - name: Check release merge behavior
         run: python3 -I -B -m unittest discover -s scripts/autogeo -p 'test_upstream_release_sync.py' -v
-      - name: Verify authenticated fork push
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
-            push --dry-run origin HEAD:refs/heads/main
       - name: Merge latest published stable release
         id: release
         env:
@@ -50,6 +46,43 @@ jobs:
         if: steps.release.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.branch }}
         run: |
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
-            push origin HEAD:refs/heads/main
+            push origin "HEAD:refs/heads/$RELEASE_BRANCH"
+      - name: Open draft pull request for review
+        if: steps.release.outputs.changed == 'true'
+        id: review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.branch }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          pr_url=$(gh pr create \
+            --draft \
+            --base main \
+            --head "$RELEASE_BRANCH" \
+            --title "chore: merge OpenSEO $RELEASE_TAG" \
+            --body "Automated candidate from the latest published stable OpenSEO release. Review the diff and required compatibility checks before merging. This workflow does not merge to main or deploy the application.")
+          pr_number="${pr_url##*/}"
+          if [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then
+            echo "Could not parse the created pull request number." >&2
+            exit 1
+          fi
+          echo "pull_request_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "pull_request_url=$pr_url" >> "$GITHUB_OUTPUT"
+      - name: Dispatch read-only checks for the token-created pull request
+        if: steps.release.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.branch }}
+          PR_NUMBER: ${{ steps.review.outputs.pull_request_number }}
+        run: |
+          # GITHUB_TOKEN-created pull_request runs are approval-required. Explicit
+          # workflow_dispatch events run without that approval state and are
+          # limited to read-only GitHub-hosted workflows on the candidate ref.
+          gh workflow run autogeo-upstream-candidate-compatibility.yml \
+            --ref "$RELEASE_BRANCH" \
+            --field pull_request_number="$PR_NUMBER"
+          gh workflow run autogeo-upstream-sync-tests.yml \
+            --ref "$RELEASE_BRANCH"

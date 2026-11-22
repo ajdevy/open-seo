@@ -1,0 +1,32 @@
+name: AutoGeo upstream sync policy tests
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autogeo-upstream-sync-tests-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  policy-tests:
+    if: >-
+      github.event_name == 'pull_request' ||
+      startsWith(github.ref, 'refs/heads/autogeo/upstream/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Test upstream sync and candidate safeguards
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -I -B -m unittest discover -s scripts/autogeo -p 'test_upstream_release_sync.py' -v
